@@ -18,6 +18,7 @@ pub struct AgentSnapshot {
     /// Display-ready session field (session name or "—" when stopped).
     pub session_name: String,
     pub running: bool,
+    pub ctx_pct: Option<u8>,
     /// Present only when tail was requested for this snapshot.
     pub tail_lines: Option<Vec<String>>,
     pub tail_error: Option<String>,
@@ -45,15 +46,12 @@ pub fn gather_workspace_snapshots_with_selected_tail(
         let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
         let running = TmuxSession::session_exists(&session);
 
-        let detected = if running {
-            Some(detect_status(
-                &runtime_name,
-                &session,
-                project_root,
-                &agent.name,
-            ))
+        let (detected, ctx_pct) = if running {
+            let (status, ctx_pct) =
+                detect_status(&runtime_name, &session, project_root, &agent.name);
+            (Some(status), ctx_pct)
         } else {
-            None
+            (None, None)
         };
 
         let include_tail = selected_agent.is_some_and(|name| name == agent.name);
@@ -76,6 +74,7 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             session,
             running,
             detected,
+            ctx_pct,
             tail,
             tail_error,
         ));
@@ -91,6 +90,7 @@ fn build_snapshot(
     session: String,
     running: bool,
     detected_status: Option<AgentStatus>,
+    ctx_pct: Option<u8>,
     tail_lines: Option<Vec<String>>,
     tail_error: Option<String>,
 ) -> AgentSnapshot {
@@ -103,6 +103,7 @@ fn build_snapshot(
             status_raw: "Stopped".to_string(),
             session_name: "—".to_string(),
             running: false,
+            ctx_pct: None,
             tail_lines: None,
             tail_error: None,
         };
@@ -118,6 +119,7 @@ fn build_snapshot(
         status_raw: status.to_string(),
         session_name: session,
         running: true,
+        ctx_pct,
         tail_lines,
         tail_error,
     }
@@ -128,21 +130,69 @@ fn detect_status(
     session: &str,
     project_root: &Path,
     agent_name: &str,
-) -> AgentStatus {
+) -> (AgentStatus, Option<u8>) {
     if let Some(adapter) = runtime::get_adapter(runtime_name, None) {
         match TmuxSession::capture_pane(session, 50) {
             Ok(output) => {
                 let status = adapter.detect_status(&output);
+                let ctx_pct = extract_context_pct(&output);
                 if let AgentStatus::AuthFailed(ref reason) = status {
                     let _ = state::save_emergency_state(project_root, agent_name, &output, reason);
                 }
-                status
+                (status, ctx_pct)
             }
-            Err(_) => AgentStatus::Unknown,
+            Err(_) => (AgentStatus::Unknown, None),
         }
     } else {
-        AgentStatus::Unknown
+        (AgentStatus::Unknown, None)
     }
+}
+
+fn extract_context_pct(output: &str) -> Option<u8> {
+    let mut fallback: Option<u8> = None;
+    for line in output.lines().rev().take(30) {
+        let lower = line.to_lowercase();
+        let pct = parse_percent_in_line(&lower);
+        if pct.is_none() {
+            continue;
+        }
+        let pct = pct.unwrap_or(0);
+        let has_ctx_hint = lower.contains("context")
+            || lower.contains("ctx")
+            || lower.contains("window")
+            || lower.contains("tokens");
+        if has_ctx_hint {
+            return Some(pct);
+        }
+        if fallback.is_none() {
+            fallback = Some(pct);
+        }
+    }
+    fallback
+}
+
+fn parse_percent_in_line(line: &str) -> Option<u8> {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let mut start = i;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if start == i {
+                i += 1;
+                continue;
+            }
+            if let Ok(n) = line[start..i].parse::<u16>()
+                && n <= 100
+            {
+                return Some(n as u8);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 fn format_status(status: &AgentStatus) -> String {
@@ -181,6 +231,7 @@ mod tests {
             "tutti-ws-backend".to_string(),
             true,
             Some(AgentStatus::Working),
+            Some(67),
             Some(vec!["line".to_string()]),
             None,
         );
@@ -190,6 +241,7 @@ mod tests {
         assert_eq!(snapshot.status_raw, "Working");
         assert_eq!(snapshot.session_name, "tutti-ws-backend");
         assert!(snapshot.running);
+        assert_eq!(snapshot.ctx_pct, Some(67));
         assert_eq!(snapshot.tail_lines.unwrap(), vec!["line".to_string()]);
     }
 
@@ -202,6 +254,7 @@ mod tests {
             "tutti-ws-frontend".to_string(),
             false,
             Some(AgentStatus::Working),
+            Some(52),
             Some(vec!["ignored".to_string()]),
             Some("ignored".to_string()),
         );
@@ -211,7 +264,15 @@ mod tests {
         assert_eq!(snapshot.status_raw, "Stopped");
         assert_eq!(snapshot.session_name, "—");
         assert!(!snapshot.running);
+        assert!(snapshot.ctx_pct.is_none());
         assert!(snapshot.tail_lines.is_none());
         assert!(snapshot.tail_error.is_none());
+    }
+
+    #[test]
+    fn parse_percent_in_line_extracts_valid_pct() {
+        assert_eq!(parse_percent_in_line("ctx 82%"), Some(82));
+        assert_eq!(parse_percent_in_line("context=101%"), None);
+        assert_eq!(parse_percent_in_line("no percent"), None);
     }
 }

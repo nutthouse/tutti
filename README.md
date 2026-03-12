@@ -9,7 +9,7 @@ No new subscriptions. No API keys. No vendor lock-in. Bring your own agents.
 ```
 tt up                    # launch your agent team from a tutti.toml
 tt status                # see what every agent is doing right now
-tt usage --by-workspace  # inspect capacity and token usage
+tt usage --by-workspace  # inspect API-profile token/capacity usage
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt logs backend -f       # follow captured output for an agent
@@ -45,8 +45,10 @@ That doesn't scale. Tutti does.
 ## Quick Start
 
 ```bash
-# Install
-curl -fsSL https://tutti.dev/install.sh | bash
+# Install (from source)
+git clone https://github.com/nutthouse/tutti.git
+cd tutti
+cargo install --path . --locked
 
 # Initialize in your project
 cd your-project
@@ -59,6 +61,13 @@ $EDITOR tutti.toml
 tt up
 ```
 
+If `tt` is not found after install, add Cargo bin to your shell PATH:
+
+```bash
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
 ## Project Status (March 2026)
 
 ### Built and usable now
@@ -67,7 +76,7 @@ tt up
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
 - Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
-- Token/capacity reporting via `tt usage` (from local Claude Code session logs)
+- Token/capacity reporting via `tt usage` for API profiles (`plan = "api"`) from local Claude Code + Codex session logs
 - `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
 
 ### Planned / in progress
@@ -130,6 +139,8 @@ reset_day = "monday"
 weekly_hours = 45.0
 ```
 
+`tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
+
 ## Core Concepts
 
 ### Voices
@@ -154,8 +165,8 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 ### Observability (Built)
 - Real-time status for all running agents
-- Profile/workspace token usage and capacity estimates (`tt usage`)
-- Interactive terminal watch mode with quick attach/peek flow
+- Profile/workspace token usage and capacity estimates (`tt usage`, API profiles only)
+- Interactive terminal watch mode with `PLAN` + live `CTX` plus quick attach/peek flow
 - Per-agent log capture and tailing (`tt logs`)
 
 ### Handoffs (Planned)
@@ -221,7 +232,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 | Runtime | Status | Notes |
 |---------|--------|-------|
 | Claude Code | ✅ Primary | Full support including context monitoring |
-| Codex CLI | ✅ Supported | Token tracking via CLI output |
+| Codex CLI | ✅ Supported | Token tracking via local Codex session logs |
 | Aider | ✅ Supported | Model-agnostic |
 | Gemini CLI | 🔜 Planned | |
 | Custom | 🔜 Planned | Any CLI agent via adapter interface |

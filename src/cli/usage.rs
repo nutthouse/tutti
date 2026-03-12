@@ -42,6 +42,12 @@ pub fn run(profile_filter: Option<&str>, by_workspace: bool) -> Result<()> {
     }
 
     for profile in &profiles {
+        if !usage_enabled_for_profile(profile) {
+            print_non_api_notice(profile);
+            println!();
+            continue;
+        }
+
         // Sensible default:
         // - Single-profile setups: include unassigned workspaces.
         // - Multi-profile setups: require explicit [workspace.auth].default_profile.
@@ -68,6 +74,38 @@ pub fn run(profile_filter: Option<&str>, by_workspace: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn usage_enabled_for_profile(profile: &crate::config::ProfileConfig) -> bool {
+    profile
+        .plan
+        .as_deref()
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("api"))
+}
+
+fn print_non_api_notice(profile: &crate::config::ProfileConfig) {
+    let lines = format_non_api_notice_lines(profile);
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+fn format_non_api_notice_lines(profile: &crate::config::ProfileConfig) -> [String; 3] {
+    let plan_display = profile.plan.as_deref().unwrap_or("unknown").to_uppercase();
+    [
+        format!(
+            "Profile: {} ({})",
+            profile.name.bold(),
+            plan_display.dimmed()
+        ),
+        format!("  {} usage metrics are API-only for now.", "info".cyan()),
+        format!(
+            "  Set {} in {} to enable {} for this profile.",
+            "`plan = \"api\"`".cyan(),
+            "~/.config/tutti/config.toml".cyan(),
+            "`tt usage`".cyan()
+        ),
+    ]
 }
 
 /// Map workspace names to their default profile.
@@ -226,6 +264,34 @@ mod tests {
             reset_day: None,
             weekly_hours: None,
         }
+    }
+
+    #[test]
+    fn usage_enabled_for_api_plan_is_case_insensitive() {
+        let mut p = profile("api-profile");
+        p.plan = Some("API".to_string());
+        assert!(usage_enabled_for_profile(&p));
+    }
+
+    #[test]
+    fn usage_enabled_for_profile_rejects_non_api_and_missing() {
+        let p = profile("none");
+        assert!(!usage_enabled_for_profile(&p));
+
+        let mut p2 = profile("max");
+        p2.plan = Some("max".to_string());
+        assert!(!usage_enabled_for_profile(&p2));
+    }
+
+    #[test]
+    fn format_non_api_notice_mentions_api_only_and_required_plan() {
+        let mut p = profile("personal");
+        p.plan = Some("max".to_string());
+        let lines = format_non_api_notice_lines(&p);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("personal"));
+        assert!(lines[1].contains("API-only"));
+        assert!(lines[2].contains("plan = \"api\""));
     }
 
     #[test]

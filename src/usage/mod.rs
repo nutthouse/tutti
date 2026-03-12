@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ── JSONL deserialization types ──
 
@@ -50,6 +50,48 @@ struct JsonlMessage {
     model: Option<String>,
     #[serde(default)]
     usage: Option<TokenUsage>,
+}
+
+// ── Codex rollout deserialization types ──
+
+#[derive(Debug, Deserialize)]
+struct CodexRolloutLine {
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default, rename = "type")]
+    line_type: String,
+    #[serde(default)]
+    payload: Option<CodexPayload>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CodexPayload {
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, rename = "type")]
+    event_type: Option<String>,
+    #[serde(default)]
+    info: Option<CodexTokenInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct CodexTokenInfo {
+    #[serde(default)]
+    total_token_usage: Option<CodexTokenUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct CodexTokenUsage {
+    #[serde(default)]
+    input_tokens: i64,
+    #[serde(default)]
+    cached_input_tokens: i64,
+    #[serde(default)]
+    output_tokens: i64,
+    #[serde(default)]
+    reasoning_output_tokens: i64,
 }
 
 // ── Aggregation types ──
@@ -122,7 +164,42 @@ pub fn claude_data_dir(workspace_path: &Path) -> Option<PathBuf> {
     if dir.is_dir() { Some(dir) } else { None }
 }
 
+/// Get available Codex rollout root directories.
+fn codex_rollout_roots() -> Vec<PathBuf> {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let codex_home = PathBuf::from(home).join(".codex");
+    let mut roots = Vec::new();
+    for rel in ["sessions", "archived_sessions"] {
+        let dir = codex_home.join(rel);
+        if dir.is_dir() {
+            roots.push(dir);
+        }
+    }
+    roots
+}
+
+fn is_codex_rollout_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "jsonl")
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("rollout-"))
+}
+
 // ── JSONL parsing ──
+
+fn parse_timestamp_utc(ts_str: &str) -> Option<DateTime<Utc>> {
+    if let Ok(dt) = ts_str.parse::<DateTime<Utc>>() {
+        return Some(dt);
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(Utc.from_utc_datetime(&ndt));
+    }
+    None
+}
 
 /// Parse a JSONL file and aggregate events into the provided buckets.
 /// Each bucket has a `since` cutoff — events at or after the cutoff are merged in.
@@ -172,16 +249,8 @@ pub fn parse_jsonl_into(
             None => continue,
         };
 
-        let ts = match event.timestamp.as_deref() {
-            Some(ts_str) => match ts_str.parse::<DateTime<Utc>>() {
-                Ok(dt) => dt,
-                Err(_) => {
-                    match chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%.f") {
-                        Ok(ndt) => Utc.from_utc_datetime(&ndt),
-                        Err(_) => continue,
-                    }
-                }
-            },
+        let ts = match event.timestamp.as_deref().and_then(parse_timestamp_utc) {
+            Some(ts) => ts,
             None => continue,
         };
 
@@ -241,16 +310,8 @@ pub fn parse_jsonl_file(
             None => continue,
         };
 
-        let ts = match event.timestamp.as_deref() {
-            Some(ts_str) => match ts_str.parse::<DateTime<Utc>>() {
-                Ok(dt) => dt,
-                Err(_) => {
-                    match chrono::NaiveDateTime::parse_from_str(ts_str, "%Y-%m-%dT%H:%M:%S%.f") {
-                        Ok(ndt) => Utc.from_utc_datetime(&ndt),
-                        Err(_) => continue,
-                    }
-                }
-            },
+        let ts = match event.timestamp.as_deref().and_then(parse_timestamp_utc) {
+            Some(ts) => ts,
             None => continue,
         };
 
@@ -342,6 +403,12 @@ pub fn scan_workspace_usage(
         }
     }
 
+    let (codex_usage, codex_by_agent) = scan_codex_workspace_usage(workspace_path, since)?;
+    total_usage.merge(&codex_usage);
+    for (agent, usage) in codex_by_agent {
+        by_agent.entry(agent).or_default().merge(&usage);
+    }
+
     Ok(WorkspaceUsage {
         workspace_name: workspace_name.to_string(),
         usage: total_usage,
@@ -402,6 +469,15 @@ fn scan_workspace_dual(
         }
     }
 
+    let (codex_weekly, codex_by_agent_weekly) =
+        scan_codex_workspace_usage(workspace_path, weekly_since)?;
+    let (codex_today, _) = scan_codex_workspace_usage(workspace_path, today_since)?;
+    weekly_total.merge(&codex_weekly);
+    today_total.merge(&codex_today);
+    for (agent, usage) in codex_by_agent_weekly {
+        by_agent.entry(agent).or_default().merge(&usage);
+    }
+
     let ws_usage = WorkspaceUsage {
         workspace_name: workspace_name.to_string(),
         usage: weekly_total,
@@ -409,6 +485,194 @@ fn scan_workspace_dual(
     };
 
     Ok((ws_usage, today_total))
+}
+
+fn scan_codex_workspace_usage(
+    workspace_path: &Path,
+    since: DateTime<Utc>,
+) -> Result<(AggregatedUsage, HashMap<String, AggregatedUsage>)> {
+    let mut total_usage = AggregatedUsage::default();
+    let mut by_agent: HashMap<String, AggregatedUsage> = HashMap::new();
+
+    for root in codex_rollout_roots() {
+        scan_codex_rollout_tree(
+            &root,
+            workspace_path,
+            since,
+            &mut total_usage,
+            &mut by_agent,
+        )?;
+    }
+
+    Ok((total_usage, by_agent))
+}
+
+fn scan_codex_rollout_tree(
+    dir: &Path,
+    workspace_path: &Path,
+    since: DateTime<Utc>,
+    total_usage: &mut AggregatedUsage,
+    by_agent: &mut HashMap<String, AggregatedUsage>,
+) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_codex_rollout_tree(&path, workspace_path, since, total_usage, by_agent)?;
+            continue;
+        }
+        if !is_codex_rollout_file(&path) {
+            continue;
+        }
+        if let Some((agent_name, usage)) = parse_codex_rollout_file(&path, workspace_path, since)? {
+            total_usage.merge(&usage);
+            if let Some(agent_name) = agent_name {
+                by_agent.entry(agent_name).or_default().merge(&usage);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_codex_rollout_file(
+    path: &Path,
+    workspace_path: &Path,
+    since: DateTime<Utc>,
+) -> Result<Option<(Option<String>, AggregatedUsage)>> {
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut agg = AggregatedUsage::default();
+    let mut model = "codex".to_string();
+    let mut prev_total = CodexTokenUsage::default();
+    let mut has_prev_total = false;
+    let mut session_scope: Option<Option<String>> = None;
+    let mut had_matching_token_event = false;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        let event: CodexRolloutLine = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        match event.line_type.as_str() {
+            "session_meta" => {
+                if let Some(payload) = event.payload
+                    && let Some(cwd) = payload.cwd
+                {
+                    session_scope = classify_codex_cwd(&cwd, workspace_path);
+                }
+            }
+            "turn_context" => {
+                if let Some(payload) = event.payload
+                    && let Some(m) = payload.model
+                {
+                    model = m;
+                }
+            }
+            "event_msg" => {
+                let payload = match event.payload {
+                    Some(p) => p,
+                    None => continue,
+                };
+                if payload.event_type.as_deref() != Some("token_count") {
+                    continue;
+                }
+                let total = match payload.info.and_then(|info| info.total_token_usage) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let ts = match event.timestamp.as_deref().and_then(parse_timestamp_utc) {
+                    Some(ts) => ts,
+                    None => continue,
+                };
+
+                let delta = if has_prev_total {
+                    codex_usage_delta(&prev_total, &total)
+                } else {
+                    codex_usage_delta(&CodexTokenUsage::default(), &total)
+                };
+                prev_total = total;
+                has_prev_total = true;
+
+                // We only count events that map to this workspace.
+                if session_scope.is_none() {
+                    continue;
+                }
+                if ts < since {
+                    continue;
+                }
+
+                had_matching_token_event = true;
+                if delta.input_tokens > 0
+                    || delta.cache_read_input_tokens > 0
+                    || delta.output_tokens > 0
+                {
+                    agg.add_event(&model, &delta);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !had_matching_token_event {
+        return Ok(None);
+    }
+
+    agg.session_count = 1;
+    Ok(Some((session_scope.unwrap_or(None), agg)))
+}
+
+fn classify_codex_cwd(cwd: &Path, workspace_path: &Path) -> Option<Option<String>> {
+    if !cwd.starts_with(workspace_path) {
+        return None;
+    }
+
+    let worktrees_root = workspace_path.join(".tutti").join("worktrees");
+    if cwd.starts_with(&worktrees_root)
+        && let Ok(relative) = cwd.strip_prefix(&worktrees_root)
+        && let Some(Component::Normal(agent)) = relative.components().next()
+    {
+        return Some(Some(agent.to_string_lossy().to_string()));
+    }
+
+    Some(None)
+}
+
+fn codex_usage_delta(previous: &CodexTokenUsage, current: &CodexTokenUsage) -> TokenUsage {
+    let output_delta =
+        non_negative_to_u64(current.output_tokens.saturating_sub(previous.output_tokens))
+            .saturating_add(non_negative_to_u64(
+                current
+                    .reasoning_output_tokens
+                    .saturating_sub(previous.reasoning_output_tokens),
+            ));
+
+    TokenUsage {
+        input_tokens: non_negative_to_u64(
+            current.input_tokens.saturating_sub(previous.input_tokens),
+        ),
+        output_tokens: output_delta,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: non_negative_to_u64(
+            current
+                .cached_input_tokens
+                .saturating_sub(previous.cached_input_tokens),
+        ),
+    }
+}
+
+fn non_negative_to_u64(value: i64) -> u64 {
+    if value <= 0 { 0 } else { value as u64 }
 }
 
 // ── Time calculations ──
@@ -614,6 +878,69 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].2.input_tokens, 2000);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_codex_rollout_file_computes_delta_and_agent() {
+        let dir = std::env::temp_dir().join("tutti_test_codex_delta");
+        let workspace = dir.join("workspace");
+        let worktree = workspace.join(".tutti").join("worktrees").join("frontend");
+        let _ = fs::create_dir_all(&worktree);
+        let file_path = dir.join("rollout-2026-03-13T10-00-00-test.jsonl");
+
+        let jsonl = format!(
+            r#"{{"timestamp":"2026-03-13T10:00:00Z","type":"session_meta","payload":{{"cwd":"{}"}}}}
+{{"timestamp":"2026-03-13T10:00:00Z","type":"turn_context","payload":{{"model":"gpt-5.3-codex"}}}}
+{{"timestamp":"2026-03-13T10:00:01Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":5,"total_tokens":135}}}}}}}}
+{{"timestamp":"2026-03-13T10:00:02Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":130,"cached_input_tokens":30,"output_tokens":16,"reasoning_output_tokens":9,"total_tokens":185}}}}}}}}
+{{"timestamp":"2026-03-13T10:00:03Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":130,"cached_input_tokens":30,"output_tokens":16,"reasoning_output_tokens":9,"total_tokens":185}}}}}}}}
+"#,
+            worktree.display()
+        );
+        fs::write(&file_path, jsonl).unwrap();
+
+        let since = "2026-03-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let (agent, usage) = parse_codex_rollout_file(&file_path, &workspace, since)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(agent.as_deref(), Some("frontend"));
+        assert_eq!(usage.session_count, 1);
+        assert_eq!(usage.total.input_tokens, 130);
+        assert_eq!(usage.total.cache_read_input_tokens, 30);
+        assert_eq!(usage.total.output_tokens, 25);
+        assert_eq!(usage.by_model["gpt-5.3-codex"].cache_read_input_tokens, 30);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_codex_rollout_file_respects_since_cutoff() {
+        let dir = std::env::temp_dir().join("tutti_test_codex_since");
+        let workspace = dir.join("workspace");
+        let _ = fs::create_dir_all(&workspace);
+        let file_path = dir.join("rollout-2026-03-13T10-00-00-since.jsonl");
+
+        let jsonl = format!(
+            r#"{{"timestamp":"2026-03-13T10:00:00Z","type":"session_meta","payload":{{"cwd":"{}"}}}}
+{{"timestamp":"2026-03-13T10:00:00Z","type":"turn_context","payload":{{"model":"gpt-5.3-codex"}}}}
+{{"timestamp":"2026-03-13T10:00:01Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":4,"total_tokens":134}}}}}}}}
+{{"timestamp":"2026-03-13T10:00:10Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":160,"cached_input_tokens":20,"output_tokens":25,"reasoning_output_tokens":6,"total_tokens":211}}}}}}}}
+"#,
+            workspace.display()
+        );
+        fs::write(&file_path, jsonl).unwrap();
+
+        let since = "2026-03-13T10:00:05Z".parse::<DateTime<Utc>>().unwrap();
+        let (_agent, usage) = parse_codex_rollout_file(&file_path, &workspace, since)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(usage.total.input_tokens, 60);
+        assert_eq!(usage.total.cache_read_input_tokens, 10);
+        assert_eq!(usage.total.output_tokens, 7);
 
         let _ = fs::remove_dir_all(&dir);
     }
