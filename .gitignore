@@ -1,0 +1,8 @@
+/target
+.tutti/
+.DS_Store
+*.swp
+*.swo
+*~
+tutti-ARCHITECTURE.md
+tutti-README.md

@@ -1,0 +1,96 @@
+use clap::{Parser, Subcommand};
+
+pub mod attach;
+pub mod down;
+pub mod init;
+pub mod peek;
+pub mod status;
+pub mod up;
+pub mod workspaces;
+
+#[derive(Parser)]
+#[command(name = "tt", about = "tutti — your agents, all together", version)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Initialize a new tutti.toml in the current directory
+    Init,
+
+    /// Launch agent sessions
+    Up {
+        /// Launch only this agent (default: all)
+        agent: Option<String>,
+
+        /// Target a specific workspace by name (default: current directory)
+        #[arg(short, long)]
+        workspace: Option<String>,
+
+        /// Launch all agents in all registered workspaces
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Stop agent sessions
+    Down {
+        /// Stop only this agent (default: all)
+        agent: Option<String>,
+
+        /// Target a specific workspace by name (default: current directory)
+        #[arg(short, long)]
+        workspace: Option<String>,
+
+        /// Stop all agents in all registered workspaces
+        #[arg(long)]
+        all: bool,
+
+        /// Also remove git worktrees
+        #[arg(long)]
+        clean: bool,
+    },
+
+    /// Show status of all agents
+    Status {
+        /// Show all registered workspaces
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Show status of all agents (alias for status)
+    Voices {
+        /// Show all registered workspaces
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Attach to an agent's terminal session
+    Attach {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+    },
+
+    /// Read-only view of an agent's terminal
+    Peek {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Number of lines to capture (default: 50)
+        #[arg(short, long, default_value = "50")]
+        lines: u32,
+    },
+
+    /// List all registered workspaces
+    Workspaces {
+        #[command(subcommand)]
+        command: Option<WorkspacesSubcommand>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorkspacesSubcommand {
+    /// Show status overview of all workspaces
+    Status,
+}
