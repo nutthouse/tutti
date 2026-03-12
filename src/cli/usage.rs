@@ -5,6 +5,7 @@ use crate::usage::{
 };
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub fn run(profile_filter: Option<&str>, by_workspace: bool) -> Result<()> {
@@ -19,8 +20,9 @@ pub fn run(profile_filter: Option<&str>, by_workspace: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Match each workspace to its profile
+    // Match each workspace to its explicit profile assignment.
     let workspace_profiles = build_workspace_profile_map(&global);
+    let single_profile_mode = global.profiles.len() == 1;
 
     let profiles: Vec<_> = if let Some(filter) = profile_filter {
         global
@@ -40,30 +42,15 @@ pub fn run(profile_filter: Option<&str>, by_workspace: bool) -> Result<()> {
     }
 
     for profile in &profiles {
-        let workspaces: Vec<(String, PathBuf)> = workspace_profiles
-            .iter()
-            .filter(|(_, prof_name)| prof_name == &profile.name)
-            .map(|(name, _)| {
-                let path = global
-                    .registered_workspaces
-                    .iter()
-                    .find(|w| w.name == *name)
-                    .map(|w| w.path.clone())
-                    .unwrap_or_default();
-                (name.clone(), path)
-            })
-            .collect();
-
-        // Also include workspaces without explicit profile assignment if this is the only/first profile
-        let workspaces = if workspaces.is_empty() && profiles.len() == 1 {
-            global
-                .registered_workspaces
-                .iter()
-                .map(|w| (w.name.clone(), w.path.clone()))
-                .collect()
-        } else {
-            workspaces
-        };
+        // Sensible default:
+        // - Single-profile setups: include unassigned workspaces.
+        // - Multi-profile setups: require explicit [workspace.auth].default_profile.
+        let workspaces = resolve_workspaces_for_profile(
+            &global,
+            &workspace_profiles,
+            &profile.name,
+            single_profile_mode,
+        );
 
         match summarize_profile(profile, &workspaces) {
             Ok(summary) => {
@@ -84,8 +71,8 @@ pub fn run(profile_filter: Option<&str>, by_workspace: bool) -> Result<()> {
 }
 
 /// Map workspace names to their default profile.
-fn build_workspace_profile_map(global: &GlobalConfig) -> Vec<(String, String)> {
-    let mut map = Vec::new();
+fn build_workspace_profile_map(global: &GlobalConfig) -> HashMap<String, String> {
+    let mut map = HashMap::new();
 
     for ws in &global.registered_workspaces {
         // Try to load the workspace config to find its default_profile
@@ -93,11 +80,28 @@ fn build_workspace_profile_map(global: &GlobalConfig) -> Vec<(String, String)> {
             && let Some(auth) = &config.workspace.auth
             && let Some(profile_name) = &auth.default_profile
         {
-            map.push((ws.name.clone(), profile_name.clone()));
+            map.insert(ws.name.clone(), profile_name.clone());
         }
     }
 
     map
+}
+
+fn resolve_workspaces_for_profile(
+    global: &GlobalConfig,
+    workspace_profiles: &HashMap<String, String>,
+    profile_name: &str,
+    include_unassigned: bool,
+) -> Vec<(String, PathBuf)> {
+    global
+        .registered_workspaces
+        .iter()
+        .filter(|ws| match workspace_profiles.get(&ws.name) {
+            Some(mapped_profile) => mapped_profile == profile_name,
+            None => include_unassigned,
+        })
+        .map(|ws| (ws.name.clone(), ws.path.clone()))
+        .collect()
 }
 
 fn print_profile_summary(summary: &ProfileUsageSummary, by_workspace: bool) {
@@ -203,4 +207,74 @@ fn print_workspace_breakdown(workspaces: &[WorkspaceUsage]) {
     }
 
     println!("  {}", table.to_string().replace('\n', "\n  "));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{GlobalConfig, ProfileConfig, RegisteredWorkspace};
+
+    fn profile(name: &str) -> ProfileConfig {
+        ProfileConfig {
+            name: name.to_string(),
+            provider: "anthropic".to_string(),
+            command: "claude".to_string(),
+            max_concurrent: None,
+            monthly_budget: None,
+            priority: None,
+            plan: None,
+            reset_day: None,
+            weekly_hours: None,
+        }
+    }
+
+    #[test]
+    fn resolve_workspaces_single_profile_includes_unassigned() {
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![profile("personal")],
+            registered_workspaces: vec![
+                RegisteredWorkspace {
+                    name: "a".to_string(),
+                    path: PathBuf::from("/tmp/a"),
+                },
+                RegisteredWorkspace {
+                    name: "b".to_string(),
+                    path: PathBuf::from("/tmp/b"),
+                },
+            ],
+            dashboard: None,
+            resilience: None,
+        };
+        let map = HashMap::from([("a".to_string(), "personal".to_string())]);
+
+        let resolved = resolve_workspaces_for_profile(&global, &map, "personal", true);
+        let names: Vec<_> = resolved.into_iter().map(|(name, _)| name).collect();
+
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn resolve_workspaces_multi_profile_excludes_unassigned() {
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![profile("personal"), profile("work")],
+            registered_workspaces: vec![
+                RegisteredWorkspace {
+                    name: "a".to_string(),
+                    path: PathBuf::from("/tmp/a"),
+                },
+                RegisteredWorkspace {
+                    name: "b".to_string(),
+                    path: PathBuf::from("/tmp/b"),
+                },
+            ],
+            dashboard: None,
+            resilience: None,
+        };
+        let map = HashMap::from([("a".to_string(), "work".to_string())]);
+
+        let resolved = resolve_workspaces_for_profile(&global, &map, "personal", false);
+        assert!(resolved.is_empty());
+    }
 }

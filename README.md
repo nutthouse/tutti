@@ -9,8 +9,8 @@ No new subscriptions. No API keys. No vendor lock-in. Bring your own agents.
 ```
 tt up                    # launch your agent team from a tutti.toml
 tt status                # see what every agent is doing right now
-tt handoff agent-3       # auto-generate a context packet for a fresh session
-tt dash                  # open the web dashboard
+tt usage --by-workspace  # inspect capacity and token usage
+tt watch                 # interactive terminal status dashboard
 ```
 
 ## The Problem
@@ -25,13 +25,13 @@ That doesn't scale. Tutti does.
 
 **Org code.** Your agent team topology — who does what, how they communicate, what context they share — is defined in a `tutti.toml` file. Version it. Share it. Fork someone else's.
 
-**Observable by default.** Live dashboard showing every agent's status (working / idle / blocked / errored), token usage, cost attribution, elapsed time, and context health — across all providers.
+**Observable by default (today: terminal UI, planned: web UI).** Today Tutti ships a live terminal watch mode plus status and usage commands. A web dashboard is planned.
 
-**Automated handoffs.** When an agent's context gets thin, Tutti serializes the working state into a handoff packet — the current task, relevant file paths, decisions made, what's left — and can spin up a fresh session pre-loaded with that context. No more writing handoff prompts by hand.
+**Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
 
-**Resilient by default.** OAuth will break. Providers will go down. Rate limits will hit. Tutti detects auth failures, distinguishes individual agent errors from provider-wide outages, preserves state before anything is lost, and can pause/resume or failover to alternate subscriptions. Your work survives provider chaos.
+**Resilience (partially built).** Tutti detects auth failures and captures emergency state. Provider-wide outage handling, pause/resume, and profile failover are planned.
 
-**Multi-subscription aware.** Run Claude Pro for some agents and Claude Max for heavy workloads. Rotate to a backup subscription when rate limits hit. Set budget caps per profile. Tutti manages the complexity of multiple subscriptions across multiple providers so you don't have to.
+**Multi-subscription aware (partially built).** Profile configuration and capacity tracking are built. Automatic rate-limit rotation/failover is planned.
 
 ## What Tutti Is Not
 
@@ -57,13 +57,38 @@ $EDITOR tutti.toml
 tt up
 ```
 
+## Project Status (March 2026)
+
+### Built and usable now
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `attach`, `peek`, `usage`, `workspaces`
+- Runtime adapters: Claude Code, Codex CLI, Aider
+- Dependency-aware startup order (`depends_on`)
+- Per-agent git worktree isolation
+- Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
+- Token/capacity reporting via `tt usage` (from local Claude Code session logs)
+
+### Planned / in progress
+- Automated handoff packet generation and session replacement
+- Web dashboard and API/WebSocket UI
+- Provider-level failover/rate-limit rotation
+- Richer cost attribution and context-health telemetry
+- Community phrase/arrangement registry
+
 ## tutti.toml
 
 The team topology file. This is the "org code" — it defines your agent team as a versionable, forkable configuration.
 
 ```toml
-[team]
+[workspace]
 name = "my-project"
+description = "My project workspace"
+
+[workspace.auth]
+default_profile = "claude-personal" # profile from ~/.config/tutti/config.toml
+
+[defaults]
+worktree = true
+runtime = "claude-code"
 
 [[agent]]
 name = "backend"
@@ -83,37 +108,19 @@ runtime = "codex"
 scope = "tests/**"
 prompt = "Write and maintain tests. Run the test suite after changes."
 depends_on = ["backend", "frontend"]
+```
 
-[handoff]
-auto = true                      # auto-generate handoff packets at 20% context
-threshold = 0.2
-include = ["active_task", "file_changes", "decisions", "blockers"]
+Profiles are configured globally in `~/.config/tutti/config.toml`:
 
-[observe]
-dashboard = true                 # serve web dashboard on localhost
-port = 4040
-track_cost = true
-
-# Subscription profiles (for multi-account setups)
+```toml
 [[profile]]
 name = "claude-personal"
 provider = "anthropic"
 command = "claude"
 max_concurrent = 5
-monthly_budget = 100.00
-
-[[profile]]
-name = "claude-work"
-provider = "anthropic"
-command = "claude"
-max_concurrent = 10
-priority = 2                     # fallback when personal hits limits
-
-# Resilience
-[resilience]
-provider_down_strategy = "pause" # pause agents, preserve state, resume when back
-save_state_on_failure = true
-rate_limit_strategy = "rotate"   # auto-switch to fallback profile on rate limit
+plan = "max"
+reset_day = "monday"
+weekly_hours = 45.0
 ```
 
 ## Core Concepts
@@ -132,46 +139,42 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 ## Features
 
-### Agent Management
+### Agent Management (Built)
 - Spawn and manage agents from any supported runtime
 - Git worktree isolation per agent (configurable)
 - Session persistence across restarts
-- Start, pause, resume, and terminate individual agents
+- Start and terminate individual agents (`tt up` / `tt down`)
 
-### Observability
+### Observability (Built)
 - Real-time status for all running agents
-- Per-agent token usage and cost tracking (multi-provider)
-- Context window health monitoring
-- Activity timeline and decision log
+- Profile/workspace token usage and capacity estimates (`tt usage`)
+- Interactive terminal watch mode with quick attach/peek flow
 
-### Handoffs
+### Handoffs (Planned)
 - Automatic context serialization when context runs low
 - Configurable handoff packet contents
 - One-command session replacement with context transfer
 - Handoff history for audit and replay
 
-### Dashboard
+### Dashboard (Planned)
 - Web-based dashboard at localhost (optional)
 - Click into any agent to see live output
 - Cost breakdown by agent, by provider, by time period
 - Provider health panel (auth status, rate limit state)
 - Team topology visualization
 
-### Resilience
+### Resilience (Partially Built)
 - Auth failure detection (OAuth expiry, provider outages)
-- Correlated failure detection (provider-level vs individual agent)
-- Automatic state preservation on any failure
-- Pause/resume agents when providers recover
-- Failover to alternate runtimes or subscription profiles
-- Rate limit detection and automatic profile rotation
+- Emergency state capture on auth failures
+- Correlated failure detection (provider-level vs individual agent) (planned)
+- Pause/resume + automatic failover (planned)
 
-### Subscription Management
+### Subscription Management (Partially Built)
 - Multiple profiles per provider (personal, work, team accounts)
-- Per-profile rate limit tracking and budget caps
-- Automatic rotation when limits are hit
-- `tt profiles` to see subscription health across all accounts
+- Per-profile capacity settings (`plan`, `reset_day`, `weekly_hours`)
+- Automatic profile rotation and `tt profiles` command (planned)
 
-### Community
+### Community (Planned)
 - Share and discover arrangements (team configs)
 - Publish and install phrases (reusable prompts/skills)
 - `tt browse` to explore what others are running
@@ -181,7 +184,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ```
 ┌─────────────────────────────────────┐
 │           tt (CLI)                  │
-│  init · up · status · handoff · dash│
+│  init · up · status · watch · usage │
 ├─────────────────────────────────────┤
 │        Orchestration Core           │
 │  Team topology · Agent lifecycle    │
@@ -234,14 +237,15 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [ ] Core CLI (`tt init`, `tt up`, `tt status`, `tt voices`)
-- [ ] Claude Code runtime adapter
-- [ ] Codex runtime adapter  
-- [ ] Aider runtime adapter
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt attach`, `tt peek`, `tt workspaces`)
+- [x] Claude Code runtime adapter
+- [x] Codex runtime adapter  
+- [x] Aider runtime adapter
+- [x] `tt usage` profile/workspace capacity reporting
 - [ ] Context health monitoring
 - [ ] Automatic handoff packet generation
 - [ ] Web dashboard
-- [ ] Cost tracking and attribution
+- [ ] Cost tracking and attribution (provider-accurate)
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
 - [ ] Agent-to-agent communication protocol
