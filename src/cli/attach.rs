@@ -6,7 +6,6 @@ pub fn run(agent_ref: &str) -> Result<()> {
     crate::session::tmux::check_tmux()?;
 
     let (workspace_name, agent_name, config) = resolve_agent_ref(agent_ref)?;
-    let _ = &config; // verify agent exists
 
     let session = TmuxSession::session_name(&workspace_name, &agent_name);
 
@@ -14,6 +13,28 @@ pub fn run(agent_ref: &str) -> Result<()> {
         return Err(TuttiError::AgentNotRunning(agent_name.to_string()));
     }
 
+    // Build list of other agents for the status bar hint
+    let others: Vec<&str> = config
+        .agents
+        .iter()
+        .filter(|a| a.name != agent_name)
+        .map(|a| a.name.as_str())
+        .collect();
+
+    let switch_hint = if others.is_empty() {
+        String::new()
+    } else {
+        let first_other = others[0];
+        format!(" ── tt attach {first_other}")
+    };
+
+    // Set a tmux status bar on the session before attaching
+    let status_line = format!(
+        " tutti: {} ({}) ── Ctrl+b d to detach{}",
+        agent_name, workspace_name, switch_hint
+    );
+
+    TmuxSession::set_status_bar(&session, &status_line)?;
     TmuxSession::attach_session(&session)
 }
 

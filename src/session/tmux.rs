@@ -119,6 +119,33 @@ impl TmuxSession {
         Ok(sessions)
     }
 
+    /// Set a sticky status bar on a session (bottom line).
+    pub fn set_status_bar(session: &str, text: &str) -> Result<()> {
+        // Enable status bar for this session
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", session, "status", "on"])
+            .output();
+        let _ = Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                session,
+                "status-style",
+                "bg=#1a1a2e,fg=#e0e0e0",
+            ])
+            .output();
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", session, "status-left-length", "120"])
+            .output();
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", session, "status-left", text])
+            .output();
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", session, "status-right", ""])
+            .output();
+        Ok(())
+    }
+
     /// Exec into tmux attach (replaces the current process on unix).
     pub fn attach_session(session: &str) -> Result<()> {
         let status = Command::new("tmux")
