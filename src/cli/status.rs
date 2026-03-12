@@ -6,6 +6,56 @@ use crate::state;
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 
+/// A row of agent status data, used by both `status` and `watch`.
+pub struct AgentStatusRow {
+    pub name: String,
+    pub runtime: String,
+    /// ANSI-colored status for display.
+    pub status: String,
+    /// Plain status string (no ANSI) for persisting to state files.
+    pub raw_status: String,
+    pub session: String,
+}
+
+/// Gather status for all agents in a config.
+pub fn gather_agent_statuses(
+    config: &TuttiConfig,
+    project_root: &std::path::Path,
+) -> Vec<AgentStatusRow> {
+    let mut rows = Vec::new();
+
+    for agent in &config.agents {
+        let runtime_name = agent
+            .resolved_runtime(&config.defaults)
+            .unwrap_or_else(|| "—".to_string());
+
+        let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
+        let running = TmuxSession::session_exists(&session);
+
+        let (status, raw_status) = if running {
+            detect_status_pair(&runtime_name, &session, project_root, &agent.name)
+        } else {
+            ("Stopped".dimmed().to_string(), "Stopped".to_string())
+        };
+
+        let session_display = if running {
+            session.clone()
+        } else {
+            "—".to_string()
+        };
+
+        rows.push(AgentStatusRow {
+            name: agent.name.clone(),
+            runtime: runtime_name,
+            status,
+            raw_status,
+            session: session_display,
+        });
+    }
+
+    rows
+}
+
 pub fn run(all: bool) -> Result<()> {
     crate::session::tmux::check_tmux()?;
 
@@ -43,7 +93,8 @@ fn run_all() -> Result<()> {
         match TuttiConfig::load(&ws.path) {
             Ok((config, config_path)) => {
                 let project_root = config_path.parent().unwrap();
-                if config.agents.is_empty() {
+                let rows = gather_agent_statuses(&config, project_root);
+                if rows.is_empty() {
                     table.add_row(vec![
                         ws.name.clone(),
                         "(no agents defined)".dimmed().to_string(),
@@ -53,32 +104,18 @@ fn run_all() -> Result<()> {
                     ]);
                     continue;
                 }
-                for (i, agent) in config.agents.iter().enumerate() {
+                for (i, row) in rows.iter().enumerate() {
                     let ws_col = if i == 0 {
                         ws.name.clone()
                     } else {
                         "".to_string()
                     };
-                    let runtime_name = agent
-                        .resolved_runtime(&config.defaults)
-                        .unwrap_or_else(|| "—".to_string());
-                    let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
-                    let running = TmuxSession::session_exists(&session);
-
-                    let status = if running {
-                        detect_and_format_status(&runtime_name, &session, project_root, &agent.name)
-                    } else {
-                        "Stopped".dimmed().to_string()
-                    };
-
-                    let session_display = if running { session } else { "—".to_string() };
-
                     table.add_row(vec![
                         ws_col,
-                        agent.name.clone(),
-                        runtime_name,
-                        status,
-                        session_display,
+                        row.name.clone(),
+                        row.runtime.clone(),
+                        row.status.clone(),
+                        row.session.clone(),
                     ]);
                 }
             }
@@ -99,60 +136,39 @@ fn run_all() -> Result<()> {
 }
 
 fn print_agent_table(config: &TuttiConfig, project_root: &std::path::Path) {
+    let rows = gather_agent_statuses(config, project_root);
+
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
     table.set_header(vec!["Agent", "Runtime", "Status", "Session"]);
 
-    for agent in &config.agents {
-        let runtime_name = agent
-            .resolved_runtime(&config.defaults)
-            .unwrap_or_else(|| "—".to_string());
-
-        let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
-        let running = TmuxSession::session_exists(&session);
-
-        let status = if running {
-            detect_and_format_status(&runtime_name, &session, project_root, &agent.name)
-        } else {
-            "Stopped".dimmed().to_string()
-        };
-
-        let session_display = if running {
-            session.clone()
-        } else {
-            "—".to_string()
-        };
-
-        table.add_row(vec![
-            agent.name.clone(),
-            runtime_name,
-            status,
-            session_display,
-        ]);
+    for row in &rows {
+        table.add_row(vec![&row.name, &row.runtime, &row.status, &row.session]);
     }
 
     println!("{table}");
 }
 
-fn detect_and_format_status(
+/// Returns (formatted_status, raw_status) pair.
+fn detect_status_pair(
     runtime_name: &str,
     session: &str,
     project_root: &std::path::Path,
     agent_name: &str,
-) -> String {
-    if let Some(adapter) = runtime::get_adapter(runtime_name) {
+) -> (String, String) {
+    if let Some(adapter) = runtime::get_adapter(runtime_name, None) {
         match TmuxSession::capture_pane(session, 50) {
             Ok(output) => {
                 let s = adapter.detect_status(&output);
                 if let AgentStatus::AuthFailed(ref reason) = s {
                     let _ = state::save_emergency_state(project_root, agent_name, &output, reason);
                 }
-                format_status(&s)
+                (format_status(&s), s.to_string())
             }
-            Err(_) => "Unknown".dimmed().to_string(),
+            Err(_) => ("Unknown".dimmed().to_string(), "Unknown".to_string()),
         }
     } else {
-        "Unknown".dimmed().to_string()
+        ("Unknown".dimmed().to_string(), "Unknown".to_string())
     }
 }
 

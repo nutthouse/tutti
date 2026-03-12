@@ -1,4 +1,6 @@
+pub mod aider;
 pub mod claude_code;
+pub mod codex;
 
 /// Status of an agent as detected from terminal output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,10 +50,272 @@ pub trait RuntimeAdapter {
     fn detect_auth_failure(&self, terminal_output: &str) -> Option<String>;
 }
 
-/// Get a runtime adapter by name.
-pub fn get_adapter(runtime: &str) -> Option<Box<dyn RuntimeAdapter>> {
-    match runtime {
-        "claude-code" => Some(Box::new(claude_code::ClaudeCodeAdapter)),
-        _ => None,
+/// Shared configuration that drives the default RuntimeAdapter implementation.
+struct RuntimeConfig {
+    default_command: &'static str,
+    prompt_flag: &'static str,
+    auth_patterns: &'static [&'static str],
+    working_patterns: &'static [&'static str],
+    idle_patterns: &'static [&'static str],
+}
+
+/// Common adapter that holds an optional command override and runtime-specific config.
+struct CommonAdapter {
+    command: Option<String>,
+    config: &'static RuntimeConfig,
+}
+
+impl RuntimeAdapter for CommonAdapter {
+    fn command_name(&self) -> &str {
+        self.command
+            .as_deref()
+            .unwrap_or(self.config.default_command)
+    }
+
+    fn is_available(&self) -> bool {
+        which::which(self.command_name()).is_ok()
+    }
+
+    fn build_spawn_command(&self, prompt: Option<&str>) -> String {
+        let cmd = self.command_name();
+        match prompt {
+            Some(p) => format!("{cmd} {} {}", self.config.prompt_flag, shell_escape(p)),
+            None => cmd.to_string(),
+        }
+    }
+
+    fn detect_status(&self, terminal_output: &str) -> AgentStatus {
+        if let Some(reason) = self.detect_auth_failure(terminal_output) {
+            return AgentStatus::AuthFailed(reason);
+        }
+
+        let recent: String = terminal_output
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for pattern in self.config.working_patterns {
+            if recent.contains(pattern) {
+                return AgentStatus::Working;
+            }
+        }
+
+        for pattern in self.config.idle_patterns {
+            if recent.contains(pattern) {
+                return AgentStatus::Idle;
+            }
+        }
+
+        AgentStatus::Unknown
+    }
+
+    fn detect_auth_failure(&self, terminal_output: &str) -> Option<String> {
+        let lower = terminal_output.to_lowercase();
+        for pattern in self.config.auth_patterns {
+            if lower.contains(&pattern.to_lowercase()) {
+                return Some(pattern.to_string());
+            }
+        }
+        None
+    }
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Get a runtime adapter by name, with an optional command override from a profile.
+pub fn get_adapter(
+    runtime: &str,
+    command_override: Option<&str>,
+) -> Option<Box<dyn RuntimeAdapter>> {
+    let config: &'static RuntimeConfig = match runtime {
+        "claude-code" => &claude_code::CONFIG,
+        "codex" => &codex::CONFIG,
+        "aider" => &aider::CONFIG,
+        _ => return None,
+    };
+    Some(Box::new(CommonAdapter {
+        command: command_override.map(|s| s.to_string()),
+        config,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn adapter(runtime: &str) -> Box<dyn RuntimeAdapter> {
+        get_adapter(runtime, None).unwrap()
+    }
+
+    // -- Claude Code tests --
+
+    #[test]
+    fn claude_detect_working_from_spinner() {
+        let a = adapter("claude-code");
+        assert_eq!(
+            a.detect_status("Some previous output\n⠋ Thinking..."),
+            AgentStatus::Working
+        );
+    }
+
+    #[test]
+    fn claude_detect_idle() {
+        let a = adapter("claude-code");
+        assert_eq!(
+            a.detect_status("Done.\n\nWhat would you like to do?"),
+            AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn claude_detect_auth_failure() {
+        let a = adapter("claude-code");
+        assert!(matches!(
+            a.detect_status("Error: authentication_error - your token has expired"),
+            AgentStatus::AuthFailed(_)
+        ));
+    }
+
+    #[test]
+    fn claude_detect_unknown() {
+        let a = adapter("claude-code");
+        assert_eq!(
+            a.detect_status("random output with nothing recognizable"),
+            AgentStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn claude_spawn_with_prompt() {
+        let a = adapter("claude-code");
+        let cmd = a.build_spawn_command(Some("You are a backend developer"));
+        assert!(cmd.contains("claude"));
+        assert!(cmd.contains("--prompt"));
+    }
+
+    #[test]
+    fn claude_spawn_without_prompt() {
+        let a = adapter("claude-code");
+        assert_eq!(a.build_spawn_command(None), "claude");
+    }
+
+    #[test]
+    fn claude_command_override() {
+        let a = get_adapter("claude-code", Some("/usr/local/bin/claude-dev")).unwrap();
+        assert_eq!(a.command_name(), "/usr/local/bin/claude-dev");
+        assert_eq!(a.build_spawn_command(None), "/usr/local/bin/claude-dev");
+    }
+
+    // -- Codex tests --
+
+    #[test]
+    fn codex_detect_working_from_spinner() {
+        let a = adapter("codex");
+        assert_eq!(
+            a.detect_status("Some previous output\n⠋ Thinking..."),
+            AgentStatus::Working
+        );
+    }
+
+    #[test]
+    fn codex_detect_idle() {
+        let a = adapter("codex");
+        assert_eq!(
+            a.detect_status("Done.\n\nWhat would you like to do?"),
+            AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn codex_detect_auth_failure() {
+        let a = adapter("codex");
+        assert!(matches!(
+            a.detect_status("Error: invalid_api_key - check your OpenAI API key"),
+            AgentStatus::AuthFailed(_)
+        ));
+    }
+
+    #[test]
+    fn codex_detect_unknown() {
+        let a = adapter("codex");
+        assert_eq!(
+            a.detect_status("random output with nothing recognizable"),
+            AgentStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn codex_spawn_with_prompt() {
+        let a = adapter("codex");
+        let cmd = a.build_spawn_command(Some("You are a backend developer"));
+        assert!(cmd.contains("codex"));
+        assert!(cmd.contains("--prompt"));
+    }
+
+    #[test]
+    fn codex_spawn_without_prompt() {
+        let a = adapter("codex");
+        assert_eq!(a.build_spawn_command(None), "codex");
+    }
+
+    // -- Aider tests --
+
+    #[test]
+    fn aider_detect_working_from_spinner() {
+        let a = adapter("aider");
+        assert_eq!(
+            a.detect_status("Some previous output\n⠋ Applying changes..."),
+            AgentStatus::Working
+        );
+    }
+
+    #[test]
+    fn aider_detect_idle() {
+        let a = adapter("aider");
+        assert_eq!(a.detect_status("Done.\n\naider> "), AgentStatus::Idle);
+    }
+
+    #[test]
+    fn aider_detect_auth_failure() {
+        let a = adapter("aider");
+        assert!(matches!(
+            a.detect_status("Error: AuthenticationError - invalid credentials"),
+            AgentStatus::AuthFailed(_)
+        ));
+    }
+
+    #[test]
+    fn aider_detect_unknown() {
+        let a = adapter("aider");
+        assert_eq!(
+            a.detect_status("random output with nothing recognizable"),
+            AgentStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn aider_spawn_with_prompt() {
+        let a = adapter("aider");
+        let cmd = a.build_spawn_command(Some("You are a backend developer"));
+        assert!(cmd.contains("aider"));
+        assert!(cmd.contains("--message"));
+    }
+
+    #[test]
+    fn aider_spawn_without_prompt() {
+        let a = adapter("aider");
+        assert_eq!(a.build_spawn_command(None), "aider");
+    }
+
+    #[test]
+    fn unknown_runtime_returns_none() {
+        assert!(get_adapter("unknown", None).is_none());
     }
 }

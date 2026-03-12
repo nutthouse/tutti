@@ -1,4 +1,5 @@
 use crate::error::{Result, TuttiError};
+use std::collections::HashMap;
 use std::process::Command;
 
 /// Check that tmux is installed and on PATH.
@@ -24,8 +25,26 @@ impl TmuxSession {
     }
 
     /// Create a new tmux session running the given command.
-    /// The session starts detached.
-    pub fn create_session(session: &str, working_dir: &str, shell_cmd: &str) -> Result<()> {
+    /// The session starts detached. Environment variables are passed via `env` prefix
+    /// so the spawned process inherits them immediately.
+    pub fn create_session(
+        session: &str,
+        working_dir: &str,
+        shell_cmd: &str,
+        env_vars: &HashMap<String, String>,
+    ) -> Result<()> {
+        // Prefix the command with env KEY=VALUE so the spawned process sees them.
+        let full_cmd = if env_vars.is_empty() {
+            shell_cmd.to_string()
+        } else {
+            let exports: String = env_vars
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, shell_escape_value(v)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("env {exports} {shell_cmd}")
+        };
+
         let output = Command::new("tmux")
             .args([
                 "new-session",
@@ -34,7 +53,7 @@ impl TmuxSession {
                 session,
                 "-c",
                 working_dir,
-                shell_cmd,
+                &full_cmd,
             ])
             .output()?;
 
@@ -131,4 +150,9 @@ impl TmuxSession {
         }
         Ok(())
     }
+}
+
+/// Shell-escape a value for use in `env KEY=VALUE` commands.
+fn shell_escape_value(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

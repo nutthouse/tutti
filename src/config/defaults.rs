@@ -38,6 +38,8 @@ prompt = "You own the UI. Follow existing component patterns."
 # scope = "tests/**"
 # prompt = "Write and maintain tests."
 # depends_on = ["backend", "frontend"]
+# [agent.env]
+# CUSTOM_VAR = "value"           # agent-level env vars (override workspace env)
 
 # [[agent]]
 # name = "pr-monitor"

@@ -6,6 +6,7 @@ pub mod init;
 pub mod peek;
 pub mod status;
 pub mod up;
+pub mod watch;
 pub mod workspaces;
 
 #[derive(Parser)]
@@ -64,6 +65,13 @@ pub enum Commands {
         /// Show all registered workspaces
         #[arg(long)]
         all: bool,
+    },
+
+    /// Live-updating status dashboard
+    Watch {
+        /// Refresh interval in seconds (default: 2)
+        #[arg(short, long, default_value = "2")]
+        interval: u64,
     },
 
     /// Attach to an agent's terminal session

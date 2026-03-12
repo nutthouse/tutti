@@ -27,6 +27,7 @@ fn main() {
             clean,
         } => cli::down::run(agent.as_deref(), workspace.as_deref(), all, clean),
         Commands::Status { all } | Commands::Voices { all } => cli::status::run(all),
+        Commands::Watch { interval, .. } => cli::watch::run(interval),
         Commands::Attach { ref agent } => cli::attach::run(agent),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
         Commands::Workspaces { ref command } => match command {

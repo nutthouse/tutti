@@ -73,6 +73,9 @@ pub struct AgentConfig {
     pub branch: Option<String>,
     #[serde(default)]
     pub persistent: bool,
+    /// Agent-level environment variables (override workspace env).
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +227,9 @@ impl TuttiConfig {
             }
         }
 
+        // Check for dependency cycles
+        topological_sort(&self.agents)?;
+
         // Check runtimes are known
         let known_runtimes = ["claude-code", "codex", "aider"];
         for agent in &self.agents {
@@ -239,6 +245,50 @@ impl TuttiConfig {
 
         Ok(())
     }
+}
+
+/// Topological sort of agents using Kahn's algorithm.
+/// Returns agents in dependency order (dependencies first).
+pub fn topological_sort(agents: &[AgentConfig]) -> Result<Vec<&AgentConfig>> {
+    let name_to_idx: HashMap<&str, usize> = agents
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.name.as_str(), i))
+        .collect();
+
+    let n = agents.len();
+    let mut in_degree = vec![0usize; n];
+    let mut adjacency: Vec<Vec<usize>> = vec![vec![]; n];
+
+    for (i, agent) in agents.iter().enumerate() {
+        for dep in &agent.depends_on {
+            if let Some(&dep_idx) = name_to_idx.get(dep.as_str()) {
+                adjacency[dep_idx].push(i);
+                in_degree[i] += 1;
+            }
+        }
+    }
+
+    let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+    let mut sorted = Vec::with_capacity(n);
+
+    while let Some(idx) = queue.pop() {
+        sorted.push(&agents[idx]);
+        for &neighbor in &adjacency[idx] {
+            in_degree[neighbor] -= 1;
+            if in_degree[neighbor] == 0 {
+                queue.push(neighbor);
+            }
+        }
+    }
+
+    if sorted.len() != n {
+        return Err(TuttiError::ConfigValidation(
+            "dependency cycle detected among agents".to_string(),
+        ));
+    }
+
+    Ok(sorted)
 }
 
 impl GlobalConfig {
@@ -520,6 +570,52 @@ depends_on = ["foo"]
     }
 
     #[test]
+    fn validate_dependency_cycle() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "a"
+runtime = "claude-code"
+depends_on = ["b"]
+
+[[agent]]
+name = "b"
+runtime = "claude-code"
+depends_on = ["c"]
+
+[[agent]]
+name = "c"
+runtime = "claude-code"
+depends_on = ["a"]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn validate_agent_env_parses() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "foo"
+runtime = "claude-code"
+
+[agent.env]
+CUSTOM_KEY = "custom_value"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.agents[0].env.get("CUSTOM_KEY").map(|s| s.as_str()),
+            Some("custom_value")
+        );
+    }
+
+    #[test]
     fn validate_unknown_runtime() {
         let toml_str = r#"
 [workspace]
@@ -549,6 +645,7 @@ runtime = "invalid-runtime"
             worktree: None,
             branch: None,
             persistent: false,
+            env: HashMap::new(),
         };
         assert_eq!(
             agent.resolved_runtime(&defaults),
@@ -567,6 +664,7 @@ runtime = "invalid-runtime"
             worktree: None,
             branch: None,
             persistent: false,
+            env: HashMap::new(),
         };
         assert_eq!(agent.resolved_branch(), "tutti/backend");
     }

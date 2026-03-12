@@ -76,6 +76,15 @@ pub fn load_all_states(project_root: &Path) -> Result<Vec<AgentState>> {
     Ok(states)
 }
 
+/// Update the status field of an existing agent state file, if it exists.
+pub fn update_status_if_exists(project_root: &Path, agent_name: &str, status: &str) -> Result<()> {
+    if let Some(mut state) = load_agent_state(project_root, agent_name)? {
+        state.status = status.to_string();
+        save_agent_state(project_root, &state)?;
+    }
+    Ok(())
+}
+
 /// Save emergency handoff state when auth failure is detected.
 pub fn save_emergency_state(
     project_root: &Path,
