@@ -81,6 +81,9 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 # command = "claude"
 # max_concurrent = 10
 # priority = 2                     # fallback when personal hits limits
+# plan = "max"                     # "free", "pro", "max", "team", "api"
+# reset_day = "monday"             # weekly reset day for capacity tracking
+# weekly_hours = 45.0              # capacity ceiling in compute-hours
 
 # Dashboard settings
 # [dashboard]

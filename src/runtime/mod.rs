@@ -10,12 +10,14 @@ pub enum AgentStatus {
     /// Agent is idle / waiting for input.
     Idle,
     /// Agent encountered an error.
+    #[allow(dead_code)]
     Errored,
     /// Agent's auth token has expired or is invalid.
     AuthFailed(String),
     /// Session exists but status is unknown.
     Unknown,
     /// Session is not running.
+    #[allow(dead_code)]
     Stopped,
 }
 

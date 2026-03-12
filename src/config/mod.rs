@@ -130,6 +130,15 @@ pub struct ProfileConfig {
     pub monthly_budget: Option<f64>,
     #[serde(default)]
     pub priority: Option<u32>,
+    /// Subscription plan: "free", "pro", "max", "team", "api"
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// Weekly reset day: "monday", "tuesday", etc.
+    #[serde(default)]
+    pub reset_day: Option<String>,
+    /// Weekly capacity ceiling in compute-hours (e.g. 45.0 for Max)
+    #[serde(default)]
+    pub weekly_hours: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -56,6 +56,7 @@ pub fn load_agent_state(project_root: &Path, agent_name: &str) -> Result<Option<
 }
 
 /// Load all agent states from .tutti/state/.
+#[allow(dead_code)]
 pub fn load_all_states(project_root: &Path) -> Result<Vec<AgentState>> {
     let state_dir = project_root.join(".tutti").join("state");
     if !state_dir.exists() {

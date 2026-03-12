@@ -101,6 +101,7 @@ impl TmuxSession {
     }
 
     /// List all tutti-prefixed tmux sessions.
+    #[allow(dead_code)]
     pub fn list_tutti_sessions() -> Result<Vec<String>> {
         let output = Command::new("tmux")
             .args(["list-sessions", "-F", "#{session_name}"])
@@ -161,6 +162,7 @@ impl TmuxSession {
     }
 
     /// Attach read-only to a tmux session.
+    #[allow(dead_code)]
     pub fn attach_readonly(session: &str) -> Result<()> {
         let status = Command::new("tmux")
             .args(["attach-session", "-t", session, "-r"])

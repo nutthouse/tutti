@@ -1,10 +1,10 @@
 use crate::config::TuttiConfig;
-use crate::error::{Result, TuttiError};
+use crate::error::Result;
 use crate::session::TmuxSession;
 use crate::state;
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::thread;
 use std::time::Duration;
 

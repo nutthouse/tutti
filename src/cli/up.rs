@@ -27,8 +27,11 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
     let project_root = config_path.parent().unwrap();
     state::ensure_tutti_dir(project_root)?;
 
+    // Load global config once for profile resolution and capacity check
+    let global = GlobalConfig::load().ok();
+
     // Resolve profile command override
-    let command_override = resolve_profile_command(&config);
+    let command_override = resolve_profile_command(&config, global.as_ref());
 
     // Build workspace-level env vars
     let workspace_env = build_workspace_env(&config);
@@ -136,6 +139,10 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
     println!("{}", "Launched agents:".bold());
     print_launch_summary(&launched);
     println!();
+
+    // Best-effort capacity warning
+    capacity_warning(&config, project_root, global.as_ref());
+
     println!(
         "Use {} to see status, {} to connect.",
         "tt status".cyan(),
@@ -167,11 +174,9 @@ fn build_workspace_env(config: &TuttiConfig) -> HashMap<String, String> {
 }
 
 /// Resolve the command override from the default profile, if set.
-fn resolve_profile_command(config: &TuttiConfig) -> Option<String> {
+fn resolve_profile_command(config: &TuttiConfig, global: Option<&GlobalConfig>) -> Option<String> {
     let profile_name = config.workspace.auth.as_ref()?.default_profile.as_ref()?;
-
-    let global = GlobalConfig::load().ok()?;
-    let profile = global.get_profile(profile_name)?;
+    let profile = global?.get_profile(profile_name)?;
     Some(profile.command.clone())
 }
 
@@ -189,7 +194,52 @@ fn print_launch_summary(launched: &[(String, String, String)]) {
     println!("{table}");
 }
 
+/// Best-effort capacity warning after launch. Never blocks or errors.
+fn capacity_warning(
+    config: &crate::config::TuttiConfig,
+    project_root: &Path,
+    global: Option<&GlobalConfig>,
+) {
+    let profile_name = match config
+        .workspace
+        .auth
+        .as_ref()
+        .and_then(|a| a.default_profile.as_ref())
+    {
+        Some(name) => name,
+        None => return,
+    };
+
+    let global = match global {
+        Some(g) => g,
+        None => return,
+    };
+
+    let profile = match global.get_profile(profile_name) {
+        Some(p) => p,
+        None => return,
+    };
+
+    if profile.weekly_hours.is_none() {
+        return;
+    }
+
+    match crate::usage::quick_capacity_check(profile, project_root) {
+        Ok(Some(pct)) if pct > 80.0 => {
+            eprintln!(
+                "  {} capacity at ~{:.0}% — run {} for details",
+                "warn".yellow(),
+                pct,
+                "tt usage".cyan()
+            );
+            eprintln!();
+        }
+        _ => {}
+    }
+}
+
 /// Check that git is available (needed for worktrees).
+#[allow(dead_code)]
 pub fn check_git(project_root: &Path) -> Result<()> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--git-dir"])
@@ -238,7 +288,7 @@ fn run_all() -> Result<()> {
                 let project_root = config_path.parent().unwrap();
                 state::ensure_tutti_dir(project_root)?;
 
-                let command_override = resolve_profile_command(&config);
+                let command_override = resolve_profile_command(&config, Some(&global));
                 let workspace_env = build_workspace_env(&config);
 
                 // Use topological sort for dependency ordering

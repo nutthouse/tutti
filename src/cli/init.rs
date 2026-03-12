@@ -1,7 +1,6 @@
 use crate::config::defaults::{DEFAULT_CONFIG, DEFAULT_GLOBAL_CONFIG};
 use crate::config::{GlobalConfig, global_config_path};
 use crate::error::{Result, TuttiError};
-use std::path::Path;
 
 pub fn run() -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -40,7 +39,8 @@ pub fn run() -> Result<()> {
 }
 
 /// Init into a specific directory (used for testing).
-pub fn run_in(dir: &Path) -> Result<()> {
+#[cfg(test)]
+pub fn run_in(dir: &std::path::Path) -> Result<()> {
     let config_path = dir.join("tutti.toml");
 
     if config_path.exists() {

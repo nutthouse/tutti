@@ -6,6 +6,7 @@ pub mod init;
 pub mod peek;
 pub mod status;
 pub mod up;
+pub mod usage;
 pub mod watch;
 pub mod workspaces;
 
@@ -88,6 +89,17 @@ pub enum Commands {
         /// Number of lines to capture (default: 50)
         #[arg(short, long, default_value = "50")]
         lines: u32,
+    },
+
+    /// Show subscription capacity and token usage
+    Usage {
+        /// Filter to a specific profile
+        #[arg(short = 'p', long)]
+        profile: Option<String>,
+
+        /// Break down usage by workspace
+        #[arg(long)]
+        by_workspace: bool,
     },
 
     /// List all registered workspaces

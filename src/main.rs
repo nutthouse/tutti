@@ -4,6 +4,7 @@ mod error;
 mod runtime;
 mod session;
 mod state;
+mod usage;
 mod worktree;
 
 use clap::Parser;
@@ -30,6 +31,10 @@ fn main() {
         Commands::Watch { interval, .. } => cli::watch::run(interval),
         Commands::Attach { ref agent } => cli::attach::run(agent),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
+        Commands::Usage {
+            ref profile,
+            by_workspace,
+        } => cli::usage::run(profile.as_deref(), by_workspace),
         Commands::Workspaces { ref command } => match command {
             Some(WorkspacesSubcommand::Status) => cli::workspaces::status(),
             None => cli::workspaces::list(),
