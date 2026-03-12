@@ -9,7 +9,7 @@ No new subscriptions. No API keys. No vendor lock-in. Bring your own agents.
 ```
 tt up                    # launch your agent team from a tutti.toml
 tt status                # see what every agent is doing right now
-tt usage --by-workspace  # inspect API-profile token/capacity usage
+tt usage --by-workspace  # inspect API-profile token usage + plan %
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt logs backend -f       # follow captured output for an agent

@@ -135,7 +135,7 @@ fn detect_status(
         match TmuxSession::capture_pane(session, 50) {
             Ok(output) => {
                 let status = adapter.detect_status(&output);
-                let ctx_pct = extract_context_pct(&output);
+                let ctx_pct = extract_context_pct_for_runtime(runtime_name, &output);
                 if let AgentStatus::AuthFailed(ref reason) = status {
                     let _ = state::save_emergency_state(project_root, agent_name, &output, reason);
                 }
@@ -148,7 +148,37 @@ fn detect_status(
     }
 }
 
-fn extract_context_pct(output: &str) -> Option<u8> {
+fn extract_context_pct_for_runtime(runtime_name: &str, output: &str) -> Option<u8> {
+    let runtime = runtime_name.to_ascii_lowercase();
+    if runtime.contains("claude") {
+        return extract_context_pct_with_hints(
+            output,
+            &["context", "ctx", "window", "compact", "token", "tokens"],
+        );
+    }
+    if runtime.contains("codex") {
+        return extract_context_pct_with_hints(output, &["context", "ctx", "window", "tokens"]);
+    }
+
+    // Unknown runtimes: keep a generic fallback so watch remains useful.
+    extract_context_pct_with_hints(output, &["context", "ctx", "window", "tokens"])
+        .or_else(|| extract_any_percent(output))
+}
+
+fn extract_context_pct_with_hints(output: &str, hints: &[&str]) -> Option<u8> {
+    for line in output.lines().rev().take(40) {
+        let lower = line.to_lowercase();
+        if !hints.iter().any(|hint| lower.contains(hint)) {
+            continue;
+        }
+        if let Some(pct) = parse_percent_in_line(&lower) {
+            return Some(pct);
+        }
+    }
+    None
+}
+
+fn extract_any_percent(output: &str) -> Option<u8> {
     let mut fallback: Option<u8> = None;
     for line in output.lines().rev().take(30) {
         let lower = line.to_lowercase();
@@ -274,5 +304,26 @@ mod tests {
         assert_eq!(parse_percent_in_line("ctx 82%"), Some(82));
         assert_eq!(parse_percent_in_line("context=101%"), None);
         assert_eq!(parse_percent_in_line("no percent"), None);
+    }
+
+    #[test]
+    fn claude_ctx_prefers_context_hint() {
+        let output = "build progress: 95%\ncontext window 71%\n";
+        assert_eq!(
+            extract_context_pct_for_runtime("claude-code", output),
+            Some(71)
+        );
+    }
+
+    #[test]
+    fn codex_ctx_ignores_unrelated_percent_without_hint() {
+        let output = "build progress: 95%\nall good\n";
+        assert_eq!(extract_context_pct_for_runtime("codex", output), None);
+    }
+
+    #[test]
+    fn unknown_runtime_falls_back_to_any_percent() {
+        let output = "build progress: 95%\n";
+        assert_eq!(extract_context_pct_for_runtime("custom", output), Some(95));
     }
 }

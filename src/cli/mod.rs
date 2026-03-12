@@ -115,7 +115,7 @@ pub enum Commands {
     /// Fuzzy picker for running agents; attach with Enter
     Switch,
 
-    /// Show subscription capacity and token usage
+    /// Show API-profile capacity and token usage
     Usage {
         /// Filter to a specific profile
         #[arg(short = 'p', long)]

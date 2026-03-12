@@ -316,6 +316,11 @@ fn capacity_warning(
         None => return,
     };
 
+    // Usage/capacity tracking is API-only.
+    if !is_api_usage_plan(profile.plan.as_deref()) {
+        return;
+    }
+
     if profile.weekly_hours.is_none() {
         return;
     }
@@ -332,6 +337,10 @@ fn capacity_warning(
         }
         _ => {}
     }
+}
+
+fn is_api_usage_plan(plan: Option<&str>) -> bool {
+    plan.is_some_and(|p| p.trim().eq_ignore_ascii_case("api"))
 }
 
 /// Check that git is available (needed for worktrees).
@@ -711,5 +720,19 @@ mod tests {
         };
 
         assert!(resolve_profile_limit(&config, &global).is_none());
+    }
+
+    #[test]
+    fn is_api_usage_plan_is_case_insensitive() {
+        assert!(is_api_usage_plan(Some("api")));
+        assert!(is_api_usage_plan(Some("API")));
+        assert!(is_api_usage_plan(Some(" Api ")));
+    }
+
+    #[test]
+    fn is_api_usage_plan_rejects_non_api_and_missing() {
+        assert!(!is_api_usage_plan(None));
+        assert!(!is_api_usage_plan(Some("max")));
+        assert!(!is_api_usage_plan(Some("pro")));
     }
 }

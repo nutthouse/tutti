@@ -1,7 +1,7 @@
 use crate::config::GlobalConfig;
 use crate::error::{Result, TuttiError};
 use crate::usage::{
-    ProfileUsageSummary, WorkspaceUsage, estimate_total_hours, format_tokens, summarize_profile,
+    ProfileUsageSummary, TokenUsage, WorkspaceUsage, format_tokens, summarize_profile,
 };
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
@@ -157,31 +157,37 @@ fn print_profile_summary(summary: &ProfileUsageSummary, by_workspace: bool) {
     );
     println!();
 
-    // Period summary table
-    let today_hours = estimate_total_hours(&summary.today);
-    let weekly_hours = estimate_total_hours(&summary.weekly);
-
+    // Period summary table (token-first, no hour estimate columns)
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
-    table.set_header(vec!["Period", "Input", "Output", "~Hours"]);
+    table.set_header(vec!["Period", "Input", "Cached", "Output", "Total"]);
     table.add_row(vec![
         "Today".to_string(),
-        format_tokens(summary.today.total.total_input()),
+        format_tokens(summary.today.total.input_tokens),
+        format_tokens(total_cached_tokens(&summary.today.total)),
         format_tokens(summary.today.total.output_tokens),
-        format!("~{:.1}h", today_hours),
+        format_tokens(total_tokens(&summary.today.total)),
     ]);
     table.add_row(vec![
         "This week".to_string(),
-        format_tokens(summary.weekly.total.total_input()),
+        format_tokens(summary.weekly.total.input_tokens),
+        format_tokens(total_cached_tokens(&summary.weekly.total)),
         format_tokens(summary.weekly.total.output_tokens),
-        format!("~{:.1}h", weekly_hours),
+        format_tokens(total_tokens(&summary.weekly.total)),
     ]);
     println!("  {}", table.to_string().replace('\n', "\n  "));
 
-    // Capacity bar
-    if let (Some(pct), Some(ceiling)) = (summary.capacity_pct, summary.weekly_hours) {
+    // Capacity bar (% of configured plan ceiling)
+    if let Some(pct) = summary.capacity_pct {
         println!();
-        print_capacity_bar(pct, ceiling);
+        print_capacity_bar(pct);
+    } else {
+        println!();
+        println!(
+            "  Capacity: {} (set {} on this profile to compute plan %)",
+            "n/a".dimmed(),
+            "`weekly_hours`".cyan()
+        );
     }
 
     // Workspace breakdown
@@ -191,7 +197,7 @@ fn print_profile_summary(summary: &ProfileUsageSummary, by_workspace: bool) {
     }
 }
 
-fn print_capacity_bar(pct: f64, ceiling: f64) {
+fn print_capacity_bar(pct: f64) {
     let pct_clamped = pct.clamp(0.0, 100.0);
     let bar_width = 20;
     let filled = ((pct_clamped / 100.0) * bar_width as f64).round() as usize;
@@ -209,42 +215,49 @@ fn print_capacity_bar(pct: f64, ceiling: f64) {
     };
 
     println!(
-        "  Capacity: {} {:.0}% of {:.1}h",
+        "  Capacity: {} {:.0}% of configured plan ceiling",
         bar,
-        pct.min(999.0),
-        ceiling
+        pct.min(999.0)
     );
 }
 
 fn print_workspace_breakdown(workspaces: &[WorkspaceUsage]) {
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
-    table.set_header(vec!["Workspace", "Input", "Output", "~Hours"]);
+    table.set_header(vec!["Workspace", "Input", "Cached", "Output", "Total"]);
 
     for ws in workspaces {
-        let hours = estimate_total_hours(&ws.usage);
         table.add_row(vec![
             ws.workspace_name.clone(),
-            format_tokens(ws.usage.total.total_input()),
+            format_tokens(ws.usage.total.input_tokens),
+            format_tokens(total_cached_tokens(&ws.usage.total)),
             format_tokens(ws.usage.total.output_tokens),
-            format!("~{:.1}h", hours),
+            format_tokens(total_tokens(&ws.usage.total)),
         ]);
 
         // Agent sub-rows
         let mut agents: Vec<_> = ws.by_agent.iter().collect();
         agents.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (agent_name, agent_usage) in agents {
-            let agent_hours = estimate_total_hours(agent_usage);
             table.add_row(vec![
                 format!("  ↳ {agent_name}"),
-                format_tokens(agent_usage.total.total_input()),
+                format_tokens(agent_usage.total.input_tokens),
+                format_tokens(total_cached_tokens(&agent_usage.total)),
                 format_tokens(agent_usage.total.output_tokens),
-                format!("~{:.1}h", agent_hours),
+                format_tokens(total_tokens(&agent_usage.total)),
             ]);
         }
     }
 
     println!("  {}", table.to_string().replace('\n', "\n  "));
+}
+
+fn total_cached_tokens(usage: &TokenUsage) -> u64 {
+    usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+}
+
+fn total_tokens(usage: &TokenUsage) -> u64 {
+    usage.total_input() + usage.output_tokens
 }
 
 #[cfg(test)]
@@ -292,6 +305,18 @@ mod tests {
         assert!(lines[0].contains("personal"));
         assert!(lines[1].contains("API-only"));
         assert!(lines[2].contains("plan = \"api\""));
+    }
+
+    #[test]
+    fn total_helpers_include_cached_and_output() {
+        let usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 30,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 50,
+        };
+        assert_eq!(total_cached_tokens(&usage), 70);
+        assert_eq!(total_tokens(&usage), 200);
     }
 
     #[test]

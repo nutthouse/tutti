@@ -132,7 +132,6 @@ pub struct WorkspaceUsage {
 pub struct ProfileUsageSummary {
     pub profile_name: String,
     pub plan: Option<String>,
-    pub weekly_hours: Option<f64>,
     pub reset_start: DateTime<Utc>,
     pub reset_end: DateTime<Utc>,
     pub today: AggregatedUsage,
@@ -771,7 +770,6 @@ pub fn summarize_profile(
     Ok(ProfileUsageSummary {
         profile_name: profile.name.clone(),
         plan: profile.plan.clone(),
-        weekly_hours: profile.weekly_hours,
         reset_start,
         reset_end,
         today: today_usage,
