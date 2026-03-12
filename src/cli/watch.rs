@@ -2,6 +2,7 @@ use crate::config::TuttiConfig;
 use crate::error::Result;
 use crate::session::TmuxSession;
 use crate::state;
+use chrono::Utc;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -15,7 +16,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
-use std::io::{self, Read, Stdout};
+use std::io::{self, Read, Stdout, Write};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::snapshot::AgentSnapshot;
@@ -38,10 +40,12 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
     let agent_names: Vec<String> = config.agents.iter().map(|a| a.name.clone()).collect();
     let mut selected: usize = 0;
     let peek_lines: u32 = 20;
+    let log_capture_lines: u32 = 200;
     let refresh_interval = Duration::from_secs(interval.max(1));
     let restart_cooldown = Duration::from_secs(20);
     let mut previous_running = HashMap::<String, bool>::new();
     let mut last_restart_attempt = HashMap::<String, Instant>::new();
+    let mut last_logged_snapshot = HashMap::<String, String>::new();
     let mut last_event: Option<String> = None;
 
     loop {
@@ -71,6 +75,14 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
                 &snapshot.agent_name,
                 &snapshot.status_raw,
             );
+        }
+        if let Err(e) = capture_tick_logs(
+            project_root,
+            &snapshots,
+            &mut last_logged_snapshot,
+            log_capture_lines,
+        ) {
+            last_event = Some(format!("log capture warning: {e}"));
         }
         if let Some(event) = detect_and_handle_crashes(
             &config,
@@ -326,6 +338,54 @@ fn show_full_peek(workspace_name: &str, agent_names: &[String], selected: usize)
     }
     println!("\nPress any key to return to watch...");
     let _ = io::stdin().read(&mut [0u8]);
+    Ok(())
+}
+
+fn capture_tick_logs(
+    project_root: &Path,
+    snapshots: &[AgentSnapshot],
+    last_logged_snapshot: &mut HashMap<String, String>,
+    lines: u32,
+) -> Result<()> {
+    let log_dir = project_root.join(".tutti").join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+
+    for snapshot in snapshots {
+        if !snapshot.running {
+            continue;
+        }
+
+        let pane_output = match TmuxSession::capture_pane(&snapshot.session_name, lines) {
+            Ok(output) => output,
+            Err(_) => continue,
+        };
+
+        if last_logged_snapshot
+            .get(&snapshot.agent_name)
+            .is_some_and(|prev| prev == &pane_output)
+        {
+            continue;
+        }
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join(format!("{}.log", snapshot.agent_name)))?;
+
+        writeln!(
+            file,
+            "\n--- {} [{}] ---",
+            Utc::now().to_rfc3339(),
+            snapshot.status_raw
+        )?;
+        write!(file, "{pane_output}")?;
+        if !pane_output.ends_with('\n') {
+            writeln!(file)?;
+        }
+
+        last_logged_snapshot.insert(snapshot.agent_name.clone(), pane_output);
+    }
+
     Ok(())
 }
 

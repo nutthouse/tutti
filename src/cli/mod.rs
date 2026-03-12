@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 pub mod attach;
 pub mod down;
 pub mod init;
+pub mod logs;
 pub mod peek;
 pub mod snapshot;
 pub mod status;
@@ -95,6 +96,20 @@ pub enum Commands {
         /// Number of lines to capture (default: 50)
         #[arg(short, long, default_value = "50")]
         lines: u32,
+    },
+
+    /// Tail captured logs for an agent
+    Logs {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Number of lines to show initially (default: 50)
+        #[arg(short, long, default_value = "50")]
+        lines: u32,
+
+        /// Follow log output
+        #[arg(short = 'f', long)]
+        follow: bool,
     },
 
     /// Fuzzy picker for running agents; attach with Enter

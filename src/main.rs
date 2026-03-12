@@ -34,6 +34,11 @@ fn main() {
         } => cli::watch::run(interval, restart_persistent),
         Commands::Attach { ref agent } => cli::attach::run(agent),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
+        Commands::Logs {
+            ref agent,
+            lines,
+            follow,
+        } => cli::logs::run(agent, lines, follow),
         Commands::Switch => cli::switch::run(),
         Commands::Usage {
             ref profile,

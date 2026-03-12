@@ -12,6 +12,7 @@ tt status                # see what every agent is doing right now
 tt usage --by-workspace  # inspect capacity and token usage
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
+tt logs backend -f       # follow captured output for an agent
 ```
 
 ## The Problem
@@ -61,7 +62,7 @@ tt up
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `usage`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -155,6 +156,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Real-time status for all running agents
 - Profile/workspace token usage and capacity estimates (`tt usage`)
 - Interactive terminal watch mode with quick attach/peek flow
+- Per-agent log capture and tailing (`tt logs`)
 
 ### Handoffs (Planned)
 - Automatic context serialization when context runs low
@@ -244,7 +246,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter
