@@ -28,9 +28,13 @@ fn main() {
             clean,
         } => cli::down::run(agent.as_deref(), workspace.as_deref(), all, clean),
         Commands::Status { all } | Commands::Voices { all } => cli::status::run(all),
-        Commands::Watch { interval, .. } => cli::watch::run(interval),
+        Commands::Watch {
+            interval,
+            restart_persistent,
+        } => cli::watch::run(interval, restart_persistent),
         Commands::Attach { ref agent } => cli::attach::run(agent),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
+        Commands::Switch => cli::switch::run(),
         Commands::Usage {
             ref profile,
             by_workspace,

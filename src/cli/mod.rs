@@ -6,6 +6,7 @@ pub mod init;
 pub mod peek;
 pub mod snapshot;
 pub mod status;
+pub mod switch;
 pub mod up;
 pub mod usage;
 pub mod watch;
@@ -74,6 +75,10 @@ pub enum Commands {
         /// Refresh interval in seconds (default: 2)
         #[arg(short, long, default_value = "2")]
         interval: u64,
+
+        /// Auto-restart crashed agents marked `persistent = true`
+        #[arg(long)]
+        restart_persistent: bool,
     },
 
     /// Attach to an agent's terminal session
@@ -91,6 +96,9 @@ pub enum Commands {
         #[arg(short, long, default_value = "50")]
         lines: u32,
     },
+
+    /// Fuzzy picker for running agents; attach with Enter
+    Switch,
 
     /// Show subscription capacity and token usage
     Usage {

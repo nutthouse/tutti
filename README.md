@@ -11,6 +11,7 @@ tt up                    # launch your agent team from a tutti.toml
 tt status                # see what every agent is doing right now
 tt usage --by-workspace  # inspect capacity and token usage
 tt watch                 # interactive terminal status dashboard
+tt switch                # fuzzy-pick a running agent and attach
 ```
 
 ## The Problem
@@ -60,12 +61,13 @@ tt up
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `attach`, `peek`, `usage`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `usage`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
 - Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
 - Token/capacity reporting via `tt usage` (from local Claude Code session logs)
+- `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
 
 ### Planned / in progress
 - Automated handoff packet generation and session replacement
@@ -176,6 +178,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ### Subscription Management (Partially Built)
 - Multiple profiles per provider (personal, work, team accounts)
 - Per-profile capacity settings (`plan`, `reset_day`, `weekly_hours`)
+- Per-profile concurrency limits (`max_concurrent`) enforced by `tt up`
 - Automatic profile rotation and `tt profiles` command (planned)
 
 ### Community (Planned)
@@ -241,7 +244,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt attach`, `tt peek`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter

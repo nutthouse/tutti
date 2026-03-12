@@ -6,8 +6,14 @@ use crate::state;
 use crate::worktree;
 use chrono::Utc;
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+#[derive(Debug, Clone)]
+struct ProfileLimit {
+    profile_name: String,
+    max_concurrent: u32,
+}
 
 pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) -> Result<()> {
     crate::session::tmux::check_tmux()?;
@@ -29,6 +35,15 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
 
     // Load global config once for profile resolution and capacity check
     let global = GlobalConfig::load().ok();
+    let profile_limit = global
+        .as_ref()
+        .and_then(|g| resolve_profile_limit(&config, g));
+    let mut active_for_profile = match (global.as_ref(), profile_limit.as_ref()) {
+        (Some(g), Some(limit)) => {
+            count_active_for_profile(g, &limit.profile_name, Some((&config, project_root)))
+        }
+        _ => 0,
+    };
 
     // Resolve profile command override
     let command_override = resolve_profile_command(&config, global.as_ref());
@@ -58,6 +73,7 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
     };
 
     let mut launched = Vec::new();
+    let mut refused_by_limit = false;
 
     for agent in &agents {
         let runtime_name = agent.resolved_runtime(&config.defaults).ok_or_else(|| {
@@ -78,6 +94,21 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
 
         if TmuxSession::session_exists(&session) {
             println!("  {} {} (already running)", "skip".yellow(), agent.name);
+            continue;
+        }
+
+        if let Some(limit) = &profile_limit
+            && active_for_profile >= limit.max_concurrent
+        {
+            refused_by_limit = true;
+            eprintln!(
+                "  {} profile '{}' is at max_concurrent ({}/{}) — refusing to launch {}",
+                "warn".yellow(),
+                limit.profile_name,
+                active_for_profile,
+                limit.max_concurrent,
+                agent.name
+            );
             continue;
         }
 
@@ -127,9 +158,20 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
         state::save_agent_state(project_root, &agent_state)?;
 
         launched.push((agent.name.clone(), session, runtime_name));
+        if profile_limit.is_some() {
+            active_for_profile += 1;
+        }
     }
 
     if launched.is_empty() {
+        if let Some(limit) = &profile_limit
+            && refused_by_limit
+        {
+            return Err(TuttiError::ConfigValidation(format!(
+                "profile '{}' reached max_concurrent ({}/{})",
+                limit.profile_name, active_for_profile, limit.max_concurrent
+            )));
+        }
         println!("No agents to launch.");
         return Ok(());
     }
@@ -178,6 +220,60 @@ fn resolve_profile_command(config: &TuttiConfig, global: Option<&GlobalConfig>) 
     let profile_name = config.workspace.auth.as_ref()?.default_profile.as_ref()?;
     let profile = global?.get_profile(profile_name)?;
     Some(profile.command.clone())
+}
+
+fn resolve_profile_limit(config: &TuttiConfig, global: &GlobalConfig) -> Option<ProfileLimit> {
+    let profile_name = config.workspace.auth.as_ref()?.default_profile.as_ref()?;
+    let profile = global.get_profile(profile_name)?;
+    Some(ProfileLimit {
+        profile_name: profile_name.clone(),
+        max_concurrent: profile.max_concurrent?,
+    })
+}
+
+fn workspace_default_profile(config: &TuttiConfig) -> Option<&str> {
+    config.workspace.auth.as_ref()?.default_profile.as_deref()
+}
+
+fn count_active_for_profile(
+    global: &GlobalConfig,
+    profile_name: &str,
+    extra_workspace: Option<(&TuttiConfig, &Path)>,
+) -> u32 {
+    let mut count = 0;
+    let mut seen_roots = HashSet::new();
+
+    for ws in &global.registered_workspaces {
+        if let Ok((config, config_path)) = TuttiConfig::load(&ws.path)
+            && workspace_default_profile(&config) == Some(profile_name)
+        {
+            let project_root = config_path.parent().unwrap();
+            seen_roots.insert(project_root.to_path_buf());
+            count += count_running_agents(&config);
+        }
+    }
+
+    if let Some((config, project_root)) = extra_workspace {
+        let root_buf = project_root.to_path_buf();
+        if !seen_roots.contains(&root_buf)
+            && workspace_default_profile(config) == Some(profile_name)
+        {
+            count += count_running_agents(config);
+        }
+    }
+
+    count
+}
+
+fn count_running_agents(config: &TuttiConfig) -> u32 {
+    config
+        .agents
+        .iter()
+        .filter(|agent| {
+            let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
+            TmuxSession::session_exists(&session)
+        })
+        .count() as u32
 }
 
 fn print_launch_summary(launched: &[(String, String, String)]) {
@@ -277,6 +373,18 @@ fn run_all() -> Result<()> {
         return Ok(());
     }
 
+    let mut active_by_profile = HashMap::<String, u32>::new();
+    for ws in &global.registered_workspaces {
+        if let Ok((config, _)) = TuttiConfig::load(&ws.path)
+            && let Some(profile_name) = workspace_default_profile(&config)
+        {
+            let running = count_running_agents(&config);
+            *active_by_profile
+                .entry(profile_name.to_string())
+                .or_insert(0) += running;
+        }
+    }
+
     for ws in &global.registered_workspaces {
         println!("Workspace: {}", ws.name);
         match TuttiConfig::load(&ws.path) {
@@ -289,6 +397,7 @@ fn run_all() -> Result<()> {
                 state::ensure_tutti_dir(project_root)?;
 
                 let command_override = resolve_profile_command(&config, Some(&global));
+                let profile_limit = resolve_profile_limit(&config, &global);
                 let workspace_env = build_workspace_env(&config);
 
                 // Use topological sort for dependency ordering
@@ -333,6 +442,17 @@ fn run_all() -> Result<()> {
                         continue;
                     }
 
+                    if let Some(limit) = &profile_limit {
+                        let active = *active_by_profile.get(&limit.profile_name).unwrap_or(&0);
+                        if active >= limit.max_concurrent {
+                            eprintln!(
+                                "  Skipping {} (profile '{}' at max_concurrent {}/{})",
+                                agent.name, limit.profile_name, active, limit.max_concurrent
+                            );
+                            continue;
+                        }
+                    }
+
                     let mut env = workspace_env.clone();
                     for (k, v) in &agent.env {
                         env.insert(k.clone(), v.clone());
@@ -358,6 +478,12 @@ fn run_all() -> Result<()> {
                     };
                     let _ = state::save_agent_state(project_root, &agent_state);
                     println!("  launched {}", agent.name);
+
+                    if let Some(limit) = &profile_limit {
+                        *active_by_profile
+                            .entry(limit.profile_name.clone())
+                            .or_insert(0) += 1;
+                    }
                 }
             }
             Err(e) => {
@@ -372,7 +498,7 @@ fn run_all() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, DefaultsConfig};
+    use crate::config::{AgentConfig, DefaultsConfig, GlobalConfig, ProfileConfig, WorkspaceAuth};
 
     fn make_agent(name: &str, deps: Vec<&str>) -> AgentConfig {
         AgentConfig {
@@ -503,5 +629,87 @@ mod tests {
         }
         assert_eq!(env.get("GIT_AUTHOR_NAME").unwrap(), "Agent User");
         assert_eq!(env.get("GIT_COMMITTER_NAME").unwrap(), "Workspace User");
+    }
+
+    #[test]
+    fn resolve_profile_limit_reads_max_concurrent() {
+        let config = TuttiConfig {
+            workspace: crate::config::WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: Some(WorkspaceAuth {
+                    default_profile: Some("personal".to_string()),
+                }),
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("claude-code".to_string()),
+            },
+            agents: vec![],
+            handoff: None,
+            observe: None,
+        };
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![ProfileConfig {
+                name: "personal".to_string(),
+                provider: "anthropic".to_string(),
+                command: "claude".to_string(),
+                max_concurrent: Some(3),
+                monthly_budget: None,
+                priority: None,
+                plan: None,
+                reset_day: None,
+                weekly_hours: None,
+            }],
+            registered_workspaces: vec![],
+            dashboard: None,
+            resilience: None,
+        };
+
+        let limit = resolve_profile_limit(&config, &global).unwrap();
+        assert_eq!(limit.profile_name, "personal");
+        assert_eq!(limit.max_concurrent, 3);
+    }
+
+    #[test]
+    fn resolve_profile_limit_none_when_unset() {
+        let config = TuttiConfig {
+            workspace: crate::config::WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: Some(WorkspaceAuth {
+                    default_profile: Some("personal".to_string()),
+                }),
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("claude-code".to_string()),
+            },
+            agents: vec![],
+            handoff: None,
+            observe: None,
+        };
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![ProfileConfig {
+                name: "personal".to_string(),
+                provider: "anthropic".to_string(),
+                command: "claude".to_string(),
+                max_concurrent: None,
+                monthly_budget: None,
+                priority: None,
+                plan: None,
+                reset_day: None,
+                weekly_hours: None,
+            }],
+            registered_workspaces: vec![],
+            dashboard: None,
+            resilience: None,
+        };
+
+        assert!(resolve_profile_limit(&config, &global).is_none());
     }
 }

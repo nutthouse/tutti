@@ -20,3 +20,6 @@ comfy-table = "7"
 colored = "3"
 chrono = { version = "0.4", features = ["serde"] }
 which = "7"
+ratatui = "0.29"
+crossterm = "0.29"
+fuzzy-matcher = "0.3"
