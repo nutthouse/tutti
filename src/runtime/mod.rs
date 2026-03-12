@@ -53,6 +53,7 @@ pub trait RuntimeAdapter {
 /// Shared configuration that drives the default RuntimeAdapter implementation.
 struct RuntimeConfig {
     default_command: &'static str,
+    /// Flag before the prompt (e.g. "--message"). Empty string means positional arg.
     prompt_flag: &'static str,
     auth_patterns: &'static [&'static str],
     working_patterns: &'static [&'static str],
@@ -79,6 +80,9 @@ impl RuntimeAdapter for CommonAdapter {
     fn build_spawn_command(&self, prompt: Option<&str>) -> String {
         let cmd = self.command_name();
         match prompt {
+            Some(p) if self.config.prompt_flag.is_empty() => {
+                format!("{cmd} {}", shell_escape(p))
+            }
             Some(p) => format!("{cmd} {} {}", self.config.prompt_flag, shell_escape(p)),
             None => cmd.to_string(),
         }
@@ -196,8 +200,9 @@ mod tests {
     fn claude_spawn_with_prompt() {
         let a = adapter("claude-code");
         let cmd = a.build_spawn_command(Some("You are a backend developer"));
-        assert!(cmd.contains("claude"));
-        assert!(cmd.contains("--prompt"));
+        assert!(cmd.starts_with("claude "));
+        assert!(!cmd.contains("--prompt"));
+        assert!(cmd.contains("'You are a backend developer'"));
     }
 
     #[test]

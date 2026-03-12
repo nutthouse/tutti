@@ -2,7 +2,7 @@ use super::RuntimeConfig;
 
 pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
     default_command: "claude",
-    prompt_flag: "--prompt",
+    prompt_flag: "",
     auth_patterns: &[
         "invalid_api_key",
         "authentication_error",

@@ -24,37 +24,19 @@ impl TmuxSession {
             .is_ok_and(|out| out.status.success())
     }
 
-    /// Create a new tmux session running the given command.
-    /// The session starts detached. Environment variables are passed via `env` prefix
-    /// so the spawned process inherits them immediately.
+    /// Create a new tmux session and run the given command inside it.
+    /// The session starts a normal shell, then sends the command via `send-keys`
+    /// so the shell survives if the command exits. Environment variables are
+    /// exported before the command runs.
     pub fn create_session(
         session: &str,
         working_dir: &str,
         shell_cmd: &str,
         env_vars: &HashMap<String, String>,
     ) -> Result<()> {
-        // Prefix the command with env KEY=VALUE so the spawned process sees them.
-        let full_cmd = if env_vars.is_empty() {
-            shell_cmd.to_string()
-        } else {
-            let exports: String = env_vars
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, shell_escape_value(v)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("env {exports} {shell_cmd}")
-        };
-
+        // Create a detached session with a normal shell
         let output = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                session,
-                "-c",
-                working_dir,
-                &full_cmd,
-            ])
+            .args(["new-session", "-d", "-s", session, "-c", working_dir])
             .output()?;
 
         if !output.status.success() {
@@ -63,6 +45,20 @@ impl TmuxSession {
                 "failed to create session '{session}': {stderr}"
             )));
         }
+
+        // Export env vars into the shell
+        for (key, value) in env_vars {
+            let export_cmd = format!("export {}={}", key, shell_escape_value(value));
+            let _ = Command::new("tmux")
+                .args(["send-keys", "-t", session, &export_cmd, "Enter"])
+                .output();
+        }
+
+        // Send the actual command
+        let _ = Command::new("tmux")
+            .args(["send-keys", "-t", session, shell_cmd, "Enter"])
+            .output();
+
         Ok(())
     }
 
