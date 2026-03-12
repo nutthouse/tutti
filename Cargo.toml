@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Multi-agent orchestration CLI — your agents, all together"
 license = "MIT"
-repository = "https://github.com/adamnutt/tutti"
+repository = "https://github.com/nutthouse/tutti"
 
 [[bin]]
 name = "tt"

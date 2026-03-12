@@ -1,6 +1,6 @@
 /// Default tutti.toml template written by `tt init`.
 pub const DEFAULT_CONFIG: &str = r#"# tutti.toml — your agent team configuration
-# Docs: https://github.com/adamnutt/tutti
+# Docs: https://github.com/nutthouse/tutti
 
 [workspace]
 name = "my-project"
