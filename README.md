@@ -72,7 +72,11 @@ tt up
 - Web dashboard and API/WebSocket UI
 - Provider-level failover/rate-limit rotation
 - Richer cost attribution and context-health telemetry
+- OpenClaw skill for agent-in-agent Tutti workflows
 - Community phrase/arrangement registry
+
+### Integration docs
+- External agent/orchestrator contract: `docs/AGENT_INTEGRATION_CONTRACT.md`
 
 ## tutti.toml
 
@@ -246,6 +250,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [ ] Automatic handoff packet generation
 - [ ] Web dashboard
 - [ ] Cost tracking and attribution (provider-accurate)
+- [ ] OpenClaw skill for Tutti orchestration workflows
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
 - [ ] Agent-to-agent communication protocol

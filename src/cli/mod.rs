@@ -4,6 +4,7 @@ pub mod attach;
 pub mod down;
 pub mod init;
 pub mod peek;
+pub mod snapshot;
 pub mod status;
 pub mod up;
 pub mod usage;

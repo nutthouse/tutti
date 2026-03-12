@@ -8,7 +8,7 @@ use std::io::{self, Read};
 use std::thread;
 use std::time::Duration;
 
-use super::status::gather_agent_statuses;
+use super::snapshot::gather_workspace_snapshots_with_selected_tail;
 
 pub fn run(interval: u64) -> Result<()> {
     crate::session::tmux::check_tmux()?;
@@ -33,7 +33,13 @@ pub fn run(interval: u64) -> Result<()> {
         // Clear terminal
         print!("\x1B[2J\x1B[H");
 
-        let rows = gather_agent_statuses(&config, project_root);
+        let selected_name = &agent_names[selected];
+        let snapshots = gather_workspace_snapshots_with_selected_tail(
+            &config,
+            project_root,
+            Some(selected_name),
+            peek_lines,
+        );
 
         // Header
         println!(
@@ -50,43 +56,53 @@ pub fn run(interval: u64) -> Result<()> {
         table.load_preset(UTF8_BORDERS_ONLY);
         table.set_header(vec!["", "Agent", "Runtime", "Status"]);
 
-        for (i, row) in rows.iter().enumerate() {
+        for (i, snapshot) in snapshots.iter().enumerate() {
             let marker = if i == selected {
                 ">".bold().to_string()
             } else {
                 " ".to_string()
             };
-            table.add_row(vec![&marker, &row.name, &row.runtime, &row.status]);
+            table.add_row(vec![
+                &marker,
+                &snapshot.agent_name,
+                &snapshot.runtime,
+                &snapshot.status_display,
+            ]);
         }
 
         println!("{table}");
 
         // Peek at selected agent's output
-        let selected_name = &agent_names[selected];
-        let session = TmuxSession::session_name(&config.workspace.name, selected_name);
-
         println!("\n{}", format!("─── {} ───", selected_name).bold());
 
-        if TmuxSession::session_exists(&session) {
-            match TmuxSession::capture_pane(&session, peek_lines) {
-                Ok(output) => {
-                    // Show last N non-empty lines
-                    let lines: Vec<&str> = output
-                        .lines()
-                        .rev()
-                        .take(peek_lines as usize)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect();
-                    for line in lines {
-                        println!("  {}", line.dimmed());
-                    }
+        if let Some(selected_snapshot) = snapshots.iter().find(|s| s.agent_name == *selected_name) {
+            if !selected_snapshot.running {
+                println!("  {}", "(not running)".dimmed());
+            } else if let Some(err) = &selected_snapshot.tail_error {
+                println!("  {}", err.dimmed());
+            } else if let Some(lines) = &selected_snapshot.tail_lines {
+                for line in lines {
+                    println!("  {}", line.dimmed());
                 }
-                Err(_) => println!("  {}", "(could not read output)".dimmed()),
+            } else {
+                let session = TmuxSession::session_name(&config.workspace.name, selected_name);
+                match TmuxSession::capture_pane(&session, peek_lines) {
+                    Ok(output) => {
+                        let lines: Vec<&str> = output
+                            .lines()
+                            .rev()
+                            .take(peek_lines as usize)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                        for line in lines {
+                            println!("  {}", line.dimmed());
+                        }
+                    }
+                    Err(_) => println!("  {}", "(could not read output)".dimmed()),
+                }
             }
-        } else {
-            println!("  {}", "(not running)".dimmed());
         }
 
         println!(
@@ -95,8 +111,12 @@ pub fn run(interval: u64) -> Result<()> {
         );
 
         // Update state files
-        for row in &rows {
-            let _ = state::update_status_if_exists(project_root, &row.name, &row.raw_status);
+        for snapshot in &snapshots {
+            let _ = state::update_status_if_exists(
+                project_root,
+                &snapshot.agent_name,
+                &snapshot.status_raw,
+            );
         }
 
         // Poll for key input during the sleep interval
