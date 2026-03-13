@@ -96,6 +96,7 @@ source ~/.zshrc
 ### Integration docs
 - External agent/orchestrator contract: `docs/AGENT_INTEGRATION_CONTRACT.md`
 - OpenClaw skill contract: `docs/OPENCLAW_SKILL_CONTRACT.md`
+- OpenClaw skill starter: `skills/openclaw/SKILL.md`
 
 ## tutti.toml
 
