@@ -1,6 +1,7 @@
 use crate::error::{Result, TuttiError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,12 +40,47 @@ pub struct VerifyLastSummary {
     pub agent_scope: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityState {
+    Working,
+    Idle,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthState {
+    Ok,
+    Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHealth {
+    pub workspace: String,
+    pub agent: String,
+    pub runtime: String,
+    pub session_name: String,
+    pub running: bool,
+    pub activity_state: ActivityState,
+    pub auth_state: AuthState,
+    pub last_output_change_at: Option<DateTime<Utc>>,
+    pub last_probe_at: DateTime<Utc>,
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub pane_hash: Option<u64>,
+}
+
 /// Ensure the .tutti/ directory structure exists.
 pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
     let tutti_dir = project_root.join(".tutti");
     let subdirs = [
         "state",
         "state/runtime-settings",
+        "state/health",
+        "state/workflow-outputs",
         "worktrees",
         "handoffs",
         "logs",
@@ -123,6 +159,95 @@ pub fn load_verify_last_summary(project_root: &Path) -> Result<Option<VerifyLast
     let summary: VerifyLastSummary =
         serde_json::from_str(&contents).map_err(|e| TuttiError::State(e.to_string()))?;
     Ok(Some(summary))
+}
+
+pub fn save_agent_health(project_root: &Path, health: &AgentHealth) -> Result<()> {
+    let state_dir = project_root.join(".tutti").join("state").join("health");
+    std::fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join(format!("{}.json", health.agent));
+    let json = serde_json::to_string_pretty(health)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+pub fn load_agent_health(project_root: &Path, agent_name: &str) -> Result<Option<AgentHealth>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("health")
+        .join(format!("{agent_name}.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(path)?;
+    let health: AgentHealth =
+        serde_json::from_str(&contents).map_err(|e| TuttiError::State(e.to_string()))?;
+    Ok(Some(health))
+}
+
+pub fn load_all_health(project_root: &Path) -> Result<Vec<AgentHealth>> {
+    let dir = project_root.join(".tutti").join("state").join("health");
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            let contents = std::fs::read_to_string(path)?;
+            if let Ok(health) = serde_json::from_str::<AgentHealth>(&contents) {
+                out.push(health);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.agent.cmp(&b.agent));
+    Ok(out)
+}
+
+pub fn save_scheduler_last_runs(
+    project_root: &Path,
+    map: &HashMap<String, DateTime<Utc>>,
+) -> Result<()> {
+    let state_dir = project_root.join(".tutti").join("state");
+    std::fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join("scheduler-last-runs.json");
+    let json = serde_json::to_string_pretty(map)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+pub fn load_scheduler_last_runs(project_root: &Path) -> Result<HashMap<String, DateTime<Utc>>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("scheduler-last-runs.json");
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let contents = std::fs::read_to_string(path)?;
+    let parsed = serde_json::from_str::<HashMap<String, DateTime<Utc>>>(&contents)
+        .map_err(|e| TuttiError::State(e.to_string()))?;
+    Ok(parsed)
+}
+
+pub fn save_workflow_output(
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+    json: &serde_json::Value,
+) -> Result<PathBuf> {
+    let dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-outputs")
+        .join(run_id);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{step_id}.json"));
+    let body = serde_json::to_string_pretty(json)?;
+    std::fs::write(&path, body)?;
+    Ok(path)
 }
 
 /// Load all agent states from .tutti/state/.
@@ -323,6 +448,65 @@ mod tests {
         assert_eq!(loaded.failed_steps, vec![2]);
         assert!(loaded.strict);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn health_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-health-state-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let health = AgentHealth {
+            workspace: "ws".to_string(),
+            agent: "backend".to_string(),
+            runtime: "claude-code".to_string(),
+            session_name: "tutti-ws-backend".to_string(),
+            running: true,
+            activity_state: ActivityState::Working,
+            auth_state: AuthState::Ok,
+            last_output_change_at: Some(Utc::now()),
+            last_probe_at: Utc::now(),
+            reason: None,
+            pane_hash: Some(123),
+        };
+
+        save_agent_health(&dir, &health).unwrap();
+        let loaded = load_agent_health(&dir, "backend").unwrap().unwrap();
+        assert_eq!(loaded.agent, "backend");
+        assert_eq!(loaded.activity_state, ActivityState::Working);
+
+        let all = load_all_health(&dir).unwrap();
+        assert_eq!(all.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scheduler_last_runs_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-scheduler-state-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let mut map = HashMap::new();
+        map.insert("ws/verify".to_string(), Utc::now());
+        save_scheduler_last_runs(&dir, &map).unwrap();
+        let loaded = load_scheduler_last_runs(&dir).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("ws/verify"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn workflow_output_is_persisted() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-workflow-output-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let value = serde_json::json!({"ok": true});
+        let path = save_workflow_output(&dir, "run123", "scan", &value).unwrap();
+        assert!(path.exists());
+        let body = std::fs::read_to_string(path).unwrap();
+        assert!(body.contains("\"ok\": true"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

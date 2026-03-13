@@ -6,6 +6,7 @@ pub mod diff;
 pub mod doctor;
 pub mod down;
 pub mod handoff;
+pub mod health;
 pub mod init;
 pub mod land;
 pub mod logs;
@@ -14,6 +15,7 @@ pub mod permissions;
 pub mod review;
 pub mod run;
 pub mod send;
+pub mod serve;
 pub mod snapshot;
 pub mod status;
 pub mod switch;
@@ -160,8 +162,20 @@ pub enum Commands {
         /// Agent name (or workspace/agent for cross-workspace)
         agent: String,
 
+        /// Wait for activity -> idle completion after sending
+        #[arg(long)]
+        wait: bool,
+
+        /// Maximum time to wait when --wait is enabled (seconds)
+        #[arg(long, default_value = "900")]
+        timeout_secs: u64,
+
+        /// Idle stability window required for --wait completion (seconds)
+        #[arg(long, default_value = "5")]
+        idle_stable_secs: u64,
+
         /// Prompt text to send
-        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         prompt: Vec<String>,
     },
 
@@ -187,6 +201,43 @@ pub enum Commands {
         /// Follow log output
         #[arg(short = 'f', long)]
         follow: bool,
+    },
+
+    /// Probe and display agent health from .tutti/state/health
+    Health {
+        /// Agent name (optional). With --all, matches across workspaces.
+        agent: Option<String>,
+
+        /// Target a specific workspace by name (default: current directory)
+        #[arg(short, long)]
+        workspace: Option<String>,
+
+        /// Probe all registered workspaces
+        #[arg(long)]
+        all: bool,
+
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run scheduler + health probes + local health HTTP endpoint
+    Serve {
+        /// Target a specific workspace by name (default: current directory)
+        #[arg(short, long)]
+        workspace: Option<String>,
+
+        /// Run for all registered workspaces
+        #[arg(long)]
+        all: bool,
+
+        /// Health HTTP port (default: global dashboard/default port)
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Probe/scheduler tick interval in seconds
+        #[arg(long, default_value = "15")]
+        probe_interval: u64,
     },
 
     /// Fuzzy picker for running agents; attach with Enter

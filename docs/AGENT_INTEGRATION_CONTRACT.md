@@ -24,7 +24,7 @@ Use these surfaces, in this order of preference:
 
 1. Tutti CLI commands for lifecycle actions.
 2. `.tutti/state/*.json` files for machine-readable per-agent runtime state.
-3. `.tutti/state/automation-runs.jsonl` and `.tutti/state/verify-last.json` for automation outcomes.
+3. `.tutti/state/health/*.json` plus automation state files for machine-oriented control loops.
 4. `.tutti/logs/*.log` (when enabled) for historical output analysis.
 5. `tt permissions check ... --json` when integrations want to preflight local command safety policy.
 6. `tt doctor --json` before long-running automation to validate workspace prerequisites.
@@ -71,6 +71,7 @@ Expected behavior:
   - `tt watch`
 - Machine-oriented state:
   - read `.tutti/state/{agent}.json`
+  - read `.tutti/state/health/{agent}.json` or call `tt health --json`
 
 Recommended machine pattern:
 - Read all state files from `.tutti/state/`.
@@ -82,6 +83,8 @@ Recommended machine pattern:
   - `tt peek <agent> --lines 100`
 - Interactive:
   - `tt attach <agent>`
+- One-off prompt with completion wait:
+  - `tt send <agent> --wait --timeout-secs 900 "..."` (optionally tune `--idle-stable-secs`)
 
 Use `peek` for automation. Use `attach` for operator handoff.
 
@@ -116,6 +119,10 @@ Use `peek` for automation. Use `attach` for operator handoff.
 - Run verification workflow:
   - `tt verify`
   - `tt verify --workflow <name>`
+- Daemon-backed scheduling + health endpoint:
+  - `tt serve --port 4040`
+  - `GET /v1/health`
+  - `GET /v1/health/{workspace}/{agent}`
 - Generate handoff packet:
   - `tt handoff generate <agent>`
 - Apply latest handoff packet:
@@ -123,6 +130,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
 
 Hook behavior in v1:
 - `agent_stop` hooks fire from explicit stop paths (`tt down`, `tt down --all`).
+- `workflow_complete` hooks fire for all workflow executions (`run`, `verify`, `hook_agent_stop`, `observe_cycle`) with source/name filters.
 - Hook defaults are fail-open unless configured fail-closed.
 
 ### 7) Command permission policy (optional)
@@ -166,8 +174,11 @@ Integration guidance:
 - Use timestamps to detect stale/crashed behavior heuristically.
 
 Automation state files:
+- `.tutti/state/health/{agent}.json`: latest probe-based health snapshot for each agent.
 - `.tutti/state/automation-runs.jsonl`: append-only execution records (workflow/hook runs).
 - `.tutti/state/verify-last.json`: last verification summary (`workflow_name`, `success`, `failed_steps`, `strict`, `agent_scope`).
+- `.tutti/state/scheduler-last-runs.json`: scheduler fire timestamps per workspace/workflow key.
+- `.tutti/state/workflow-outputs/<run-id>/<step-id>.json`: canonical structured step outputs.
 
 ## Failure Handling Contract
 
@@ -214,8 +225,11 @@ When building an OpenClaw skill/plugin:
   - `review_agent_changes` -> `tt review <agent>`
   - `run_workflow` -> `tt run <workflow> --json`
   - `verify_team` -> `tt verify --json`
-  - `team_status` -> `tt status`
+  - `team_status` -> `tt status` or `tt health --json`
   - `agent_output` -> `tt peek <agent> --lines N`
+  - `send_and_wait` -> `tt send <agent> --wait --timeout-secs <N> "..."`
+  - `serve_control_plane` -> `tt serve --port <N>`
+  - `health_http` -> `GET /v1/health`
   - `read_verify_status` -> `tt verify --last --json` (or read `.tutti/state/verify-last.json`)
   - `stop_agent` -> `tt down <agent>`
   - `stop_team` -> `tt down`

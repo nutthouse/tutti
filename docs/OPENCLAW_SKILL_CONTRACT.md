@@ -24,6 +24,9 @@ Wrapper compatibility note:
 - `tt run`
 - `tt verify`
 - `tt peek`
+- `tt send`
+- `tt health`
+- `tt serve`
 - `tt doctor`
 
 ## Intent Mapping
@@ -47,8 +50,13 @@ Wrapper compatibility note:
 - `team_status`
   - Command: `tt status`
   - Machine read should prefer `.tutti/state/*.json`.
+- `health_status`
+  - Command: `tt health --json`
+  - Optional endpoint: `GET /v1/health` while `tt serve` is running.
 - `agent_output`
   - Command: `tt peek <agent> --lines <n>`
+- `send_prompt`
+  - Command: `tt send <agent> [--wait --timeout-secs <n>] "<prompt>"`
 - `stop_agent`
   - Command: `tt down <agent>`
 - `stop_team`
@@ -77,6 +85,9 @@ For machine reads, prefer `tt doctor --json`.
 - Per-agent file: `.tutti/state/{agent}.json`
 - Verify summary: `.tutti/state/verify-last.json`
 - Automation history: `.tutti/state/automation-runs.jsonl`
+- Health snapshots: `.tutti/state/health/{agent}.json`
+- Scheduler ledger: `.tutti/state/scheduler-last-runs.json`
+- Structured outputs: `.tutti/state/workflow-outputs/<run-id>/<step-id>.json`
 
 ## Failure Handling
 

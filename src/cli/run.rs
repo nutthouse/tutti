@@ -1,6 +1,6 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, ExecutionResult, ResolvedStep, ResolvedWorkflow, StepStatus,
-    WorkflowExecutor, WorkflowResolver,
+    WorkflowResolver, execute_workflow_with_hooks,
 };
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
@@ -55,8 +55,7 @@ pub fn run(
         return Ok(());
     }
 
-    let executor = WorkflowExecutor::new(project_root);
-    let result = executor.execute(&resolved, &options, agent)?;
+    let result = execute_workflow_with_hooks(&config, project_root, &resolved, &options, agent)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -280,16 +279,23 @@ mod tests {
             description: Some("desc".to_string()),
             steps: vec![
                 ResolvedStep::Prompt {
+                    step_id: None,
                     agent: "backend".to_string(),
                     text: "check changes".to_string(),
+                    runtime: "claude-code".to_string(),
                     session_name: "sess".to_string(),
+                    output_json: None,
+                    wait_for_idle: false,
+                    wait_timeout_secs: 900,
                 },
                 ResolvedStep::Command {
+                    step_id: None,
                     run: "cargo test".to_string(),
                     cwd: PathBuf::from("/tmp/ws"),
                     agent: Some("backend".to_string()),
                     timeout_secs: 30,
                     fail_mode: WorkflowFailMode::Closed,
+                    output_json: None,
                 },
             ],
         };

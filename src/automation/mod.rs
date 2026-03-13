@@ -1,14 +1,18 @@
 use crate::config::{
-    HookConfig, HookEvent, TuttiConfig, WorkflowCommandCwd, WorkflowConfig, WorkflowFailMode,
-    WorkflowStepConfig,
+    HookConfig, HookEvent, HookWorkflowSource, TuttiConfig, WorkflowCommandCwd, WorkflowConfig,
+    WorkflowFailMode, WorkflowStepConfig,
 };
 use crate::error::{Result, TuttiError};
+use crate::health;
 use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, VerifyLastSummary, append_automation_run, save_verify_last_summary,
+    save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,6 +27,8 @@ pub enum ExecutionOrigin {
     Run,
     Verify,
     HookAgentStop,
+    ObserveCycle,
+    HookWorkflowComplete,
 }
 
 impl ExecutionOrigin {
@@ -31,6 +37,8 @@ impl ExecutionOrigin {
             ExecutionOrigin::Run => "run",
             ExecutionOrigin::Verify => "verify",
             ExecutionOrigin::HookAgentStop => "hook_agent_stop",
+            ExecutionOrigin::ObserveCycle => "observe_cycle",
+            ExecutionOrigin::HookWorkflowComplete => "hook_workflow_complete",
         }
     }
 }
@@ -52,6 +60,16 @@ pub struct HookEventPayload {
     pub runtime: String,
     pub session_name: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCompletePayload {
+    pub workspace_name: String,
+    pub project_root: PathBuf,
+    pub workflow_name: String,
+    pub workflow_source: String,
+    pub success: bool,
+    pub agent_scope: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,23 +118,45 @@ impl<'a> WorkflowResolver<'a> {
 
         for step in &workflow.steps {
             match step {
-                WorkflowStepConfig::Prompt { agent, text } => {
+                WorkflowStepConfig::Prompt {
+                    id,
+                    agent,
+                    text,
+                    output_json,
+                    wait_for_idle,
+                    wait_timeout_secs,
+                } => {
                     let effective_agent = agent_override.unwrap_or(agent.as_str());
                     self.ensure_agent_exists(effective_agent)?;
                     let session_name =
                         TmuxSession::session_name(&self.config.workspace.name, effective_agent);
+                    let runtime = self
+                        .config
+                        .agents
+                        .iter()
+                        .find(|a| a.name == effective_agent)
+                        .and_then(|a| a.resolved_runtime(&self.config.defaults))
+                        .unwrap_or_else(|| "unknown".to_string());
                     steps.push(ResolvedStep::Prompt {
+                        step_id: id.clone(),
                         agent: effective_agent.to_string(),
                         text: text.clone(),
+                        runtime,
                         session_name,
+                        output_json: self
+                            .resolve_prompt_output_path(effective_agent, output_json)?,
+                        wait_for_idle: wait_for_idle.unwrap_or(false),
+                        wait_timeout_secs: wait_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
                     });
                 }
                 WorkflowStepConfig::Command {
+                    id,
                     run,
                     cwd,
                     agent,
                     timeout_secs,
                     fail_mode,
+                    output_json,
                 } => {
                     let effective_agent = agent_override.or(agent.as_deref());
                     if let Some(agent_name) = effective_agent {
@@ -149,7 +189,9 @@ impl<'a> WorkflowResolver<'a> {
                         }
                     };
 
+                    let output_json = resolve_optional_path(&resolved_cwd, output_json.as_deref());
                     steps.push(ResolvedStep::Command {
+                        step_id: id.clone(),
                         run: run.clone(),
                         cwd: resolved_cwd,
                         agent: effective_agent.map(|s| s.to_string()),
@@ -159,6 +201,7 @@ impl<'a> WorkflowResolver<'a> {
                             options.strict,
                             options.force_open_commands,
                         ),
+                        output_json,
                     });
                 }
             }
@@ -180,6 +223,40 @@ impl<'a> WorkflowResolver<'a> {
                 agent_name
             )))
         }
+    }
+
+    fn resolve_prompt_output_path(
+        &self,
+        agent_name: &str,
+        output_json: &Option<String>,
+    ) -> Result<Option<PathBuf>> {
+        let Some(path) = output_json.as_deref() else {
+            return Ok(None);
+        };
+        let as_path = Path::new(path);
+        if as_path.is_absolute() {
+            return Ok(Some(as_path.to_path_buf()));
+        }
+
+        let worktree = self
+            .project_root
+            .join(".tutti")
+            .join("worktrees")
+            .join(agent_name);
+        if worktree.exists() {
+            return Ok(Some(worktree.join(as_path)));
+        }
+        Ok(Some(self.project_root.join(as_path)))
+    }
+}
+
+fn resolve_optional_path(cwd: &Path, maybe: Option<&str>) -> Option<PathBuf> {
+    let path = maybe?;
+    let as_path = Path::new(path);
+    if as_path.is_absolute() {
+        Some(as_path.to_path_buf())
+    } else {
+        Some(cwd.join(as_path))
     }
 }
 
@@ -207,16 +284,23 @@ pub struct ResolvedWorkflow {
 #[derive(Debug, Clone)]
 pub enum ResolvedStep {
     Prompt {
+        step_id: Option<String>,
         agent: String,
         text: String,
+        runtime: String,
         session_name: String,
+        output_json: Option<PathBuf>,
+        wait_for_idle: bool,
+        wait_timeout_secs: u64,
     },
     Command {
+        step_id: Option<String>,
         run: String,
         cwd: PathBuf,
         agent: Option<String>,
         timeout_secs: u64,
         fail_mode: WorkflowFailMode,
+        output_json: Option<PathBuf>,
     },
 }
 
@@ -243,6 +327,7 @@ pub struct StepResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionResult {
+    pub run_id: String,
     pub workflow_name: String,
     pub strict: bool,
     pub success: bool,
@@ -250,6 +335,7 @@ pub struct ExecutionResult {
     pub finished_at: chrono::DateTime<Utc>,
     pub failed_steps: Vec<usize>,
     pub step_results: Vec<StepResult>,
+    pub output_files: HashMap<String, String>,
 }
 
 impl ExecutionResult {
@@ -277,17 +363,47 @@ impl<'a> WorkflowExecutor<'a> {
         agent_scope: Option<&str>,
     ) -> Result<ExecutionResult> {
         let started_at = Utc::now();
+        let run_id = format!(
+            "{}-{}",
+            started_at.format("%Y%m%d%H%M%S"),
+            std::process::id()
+        );
         let mut success = true;
         let mut failed_steps = Vec::new();
         let mut step_results = Vec::with_capacity(workflow.steps.len());
+        let mut outputs = HashMap::<String, StepOutputValue>::new();
+        let mut output_files = HashMap::<String, String>::new();
 
         for (idx, step) in workflow.steps.iter().enumerate() {
             let step_index = idx + 1;
             match step {
                 ResolvedStep::Prompt {
-                    text, session_name, ..
+                    step_id,
+                    text,
+                    session_name,
+                    ..
                 } => {
                     let started = std::time::Instant::now();
+                    let rendered = match render_template(text, &outputs, false) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            failed_steps.push(step_index);
+                            success = false;
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "prompt".to_string(),
+                                status: StepStatus::Failed,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: None,
+                                timed_out: false,
+                                message: Some(e.to_string()),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            break;
+                        }
+                    };
+
                     if !TmuxSession::session_exists(session_name) {
                         failed_steps.push(step_index);
                         success = false;
@@ -308,7 +424,7 @@ impl<'a> WorkflowExecutor<'a> {
                         break;
                     }
 
-                    if let Err(e) = TmuxSession::send_text(session_name, text) {
+                    if let Err(e) = TmuxSession::send_text(session_name, &rendered) {
                         failed_steps.push(step_index);
                         success = false;
                         step_results.push(StepResult {
@@ -325,6 +441,68 @@ impl<'a> WorkflowExecutor<'a> {
                         break;
                     }
 
+                    if let ResolvedStep::Prompt {
+                        runtime,
+                        output_json,
+                        wait_for_idle,
+                        wait_timeout_secs,
+                        ..
+                    } = step
+                    {
+                        if *wait_for_idle {
+                            let wait = health::wait_for_agent_idle(
+                                runtime,
+                                session_name,
+                                Duration::from_secs((*wait_timeout_secs).max(1)),
+                                Duration::from_secs(5),
+                            )?;
+                            if wait.timed_out {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: true,
+                                    message: Some(format!(
+                                        "wait_for_idle timed out after {}s",
+                                        wait_timeout_secs
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        }
+                        if let (Some(id), Some(path)) = (step_id.as_deref(), output_json.as_ref()) {
+                            match load_and_store_output(self.project_root, &run_id, id, path) {
+                                Ok(saved) => {
+                                    output_files
+                                        .insert(id.to_string(), saved.path.display().to_string());
+                                    outputs.insert(id.to_string(), saved);
+                                }
+                                Err(e) => {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(e.to_string()),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     step_results.push(StepResult {
                         index: step_index,
                         step_type: "prompt".to_string(),
@@ -338,6 +516,7 @@ impl<'a> WorkflowExecutor<'a> {
                     });
                 }
                 ResolvedStep::Command {
+                    step_id,
                     run,
                     cwd,
                     timeout_secs,
@@ -345,19 +524,58 @@ impl<'a> WorkflowExecutor<'a> {
                     ..
                 } => {
                     let started = std::time::Instant::now();
-                    let cmd_result = run_shell_command(run, cwd, *timeout_secs);
+                    let rendered = match render_template(run, &outputs, true) {
+                        Ok(v) => v,
+                        Err(e) => match fail_mode {
+                            WorkflowFailMode::Open => {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "command".to_string(),
+                                    status: StepStatus::Warning,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                continue;
+                            }
+                            WorkflowFailMode::Closed => {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "command".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        },
+                    };
+
+                    let cmd_result = run_shell_command(&rendered, cwd, *timeout_secs);
 
                     match cmd_result {
                         Ok(outcome) => {
                             let failed = outcome.timed_out || outcome.exit_code.unwrap_or(1) != 0;
                             if failed {
                                 let message = if outcome.timed_out {
-                                    format!("command timed out after {}s: {}", timeout_secs, run)
+                                    format!(
+                                        "command timed out after {}s: {}",
+                                        timeout_secs, rendered
+                                    )
                                 } else {
                                     format!(
                                         "command failed (exit {}): {}",
                                         outcome.exit_code.unwrap_or(-1),
-                                        run
+                                        rendered
                                     )
                                 };
 
@@ -393,6 +611,59 @@ impl<'a> WorkflowExecutor<'a> {
                                     }
                                 }
                             } else {
+                                if let ResolvedStep::Command { output_json, .. } = step
+                                    && let (Some(id), Some(path)) =
+                                        (step_id.as_deref(), output_json.as_ref())
+                                {
+                                    match load_and_store_output(
+                                        self.project_root,
+                                        &run_id,
+                                        id,
+                                        path,
+                                    ) {
+                                        Ok(saved) => {
+                                            output_files.insert(
+                                                id.to_string(),
+                                                saved.path.display().to_string(),
+                                            );
+                                            outputs.insert(id.to_string(), saved);
+                                        }
+                                        Err(e) => match fail_mode {
+                                            WorkflowFailMode::Open => {
+                                                step_results.push(StepResult {
+                                                    index: step_index,
+                                                    step_type: "command".to_string(),
+                                                    status: StepStatus::Warning,
+                                                    duration_ms: started.elapsed().as_millis()
+                                                        as u64,
+                                                    exit_code: outcome.exit_code,
+                                                    timed_out: false,
+                                                    message: Some(e.to_string()),
+                                                    stdout: Some(outcome.stdout),
+                                                    stderr: Some(outcome.stderr),
+                                                });
+                                                continue;
+                                            }
+                                            WorkflowFailMode::Closed => {
+                                                failed_steps.push(step_index);
+                                                success = false;
+                                                step_results.push(StepResult {
+                                                    index: step_index,
+                                                    step_type: "command".to_string(),
+                                                    status: StepStatus::Failed,
+                                                    duration_ms: started.elapsed().as_millis()
+                                                        as u64,
+                                                    exit_code: outcome.exit_code,
+                                                    timed_out: false,
+                                                    message: Some(e.to_string()),
+                                                    stdout: Some(outcome.stdout),
+                                                    stderr: Some(outcome.stderr),
+                                                });
+                                                break;
+                                            }
+                                        },
+                                    }
+                                }
                                 step_results.push(StepResult {
                                     index: step_index,
                                     step_type: "command".to_string(),
@@ -443,6 +714,7 @@ impl<'a> WorkflowExecutor<'a> {
         }
 
         let result = ExecutionResult {
+            run_id,
             workflow_name: workflow.name.clone(),
             strict: options.strict,
             success,
@@ -450,6 +722,7 @@ impl<'a> WorkflowExecutor<'a> {
             finished_at: Utc::now(),
             failed_steps,
             step_results,
+            output_files,
         };
 
         append_automation_run(
@@ -478,6 +751,12 @@ struct CommandOutcome {
     stdout: String,
     stderr: String,
     timed_out: bool,
+}
+
+#[derive(Debug, Clone)]
+struct StepOutputValue {
+    path: PathBuf,
+    json: Value,
 }
 
 fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<CommandOutcome> {
@@ -519,6 +798,68 @@ fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<Com
     })
 }
 
+fn load_and_store_output(
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+    output_path: &Path,
+) -> Result<StepOutputValue> {
+    let body = std::fs::read_to_string(output_path).map_err(|e| {
+        TuttiError::ConfigValidation(format!(
+            "failed reading output_json for step '{}': {} ({e})",
+            step_id,
+            output_path.display()
+        ))
+    })?;
+    let parsed: Value = serde_json::from_str(&body).map_err(|e| {
+        TuttiError::ConfigValidation(format!(
+            "failed parsing output_json for step '{}': {} ({e})",
+            step_id,
+            output_path.display()
+        ))
+    })?;
+
+    let canonical_path = save_workflow_output(project_root, run_id, step_id, &parsed)?;
+    Ok(StepOutputValue {
+        path: canonical_path,
+        json: parsed,
+    })
+}
+
+fn render_template(
+    input: &str,
+    outputs: &HashMap<String, StepOutputValue>,
+    shell_escape_values: bool,
+) -> Result<String> {
+    let mut rendered = input.to_string();
+    for (step_id, value) in outputs {
+        let path_token = format!("{{{{output.{step_id}.path}}}}");
+        let json_token = format!("{{{{output.{step_id}.json}}}}");
+        let path_value = value.path.display().to_string();
+        let json_value = value.json.to_string();
+        if shell_escape_values {
+            rendered = rendered.replace(&path_token, &shell_escape(&path_value));
+            rendered = rendered.replace(&json_token, &shell_escape(&json_value));
+        } else {
+            rendered = rendered.replace(&path_token, &path_value);
+            rendered = rendered.replace(&json_token, &json_value);
+        }
+    }
+
+    if rendered.contains("{{output.") {
+        return Err(TuttiError::ConfigValidation(format!(
+            "unresolved workflow output template in step text: {}",
+            rendered
+        )));
+    }
+
+    Ok(rendered)
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub struct HookDispatcher;
 
 impl HookDispatcher {
@@ -537,7 +878,7 @@ impl HookDispatcher {
                 continue;
             }
 
-            let run_result = dispatch_single_hook(config, hook, payload);
+            let run_result = dispatch_agent_stop_hook(config, hook, payload);
             match run_result {
                 Ok(result) => results.push(result),
                 Err(e) => {
@@ -551,13 +892,41 @@ impl HookDispatcher {
 
         Ok(results)
     }
+
+    pub fn dispatch_workflow_complete(
+        config: &TuttiConfig,
+        payload: &WorkflowCompletePayload,
+    ) -> Result<Vec<ExecutionResult>> {
+        let mut results = Vec::new();
+        for hook in config
+            .hooks
+            .iter()
+            .filter(|h| h.event == HookEvent::WorkflowComplete)
+        {
+            if !hook_matches_workflow_complete(hook, payload) {
+                continue;
+            }
+
+            let run_result = dispatch_workflow_complete_hook(config, hook, payload);
+            match run_result {
+                Ok(result) => results.push(result),
+                Err(e) => {
+                    if hook.fail_mode.unwrap_or(WorkflowFailMode::Open) == WorkflowFailMode::Closed
+                    {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
 }
 
 fn hook_matches_agent(hook: &HookConfig, agent_name: &str) -> bool {
     hook.agent.as_deref().is_none_or(|a| a == agent_name)
 }
 
-fn dispatch_single_hook(
+fn dispatch_agent_stop_hook(
     config: &TuttiConfig,
     hook: &HookConfig,
     payload: &HookEventPayload,
@@ -570,24 +939,37 @@ fn dispatch_single_hook(
         hook_event: Some("agent_stop".to_string()),
         hook_agent: Some(payload.agent_name.clone()),
     };
-    let executor = WorkflowExecutor::new(&payload.project_root);
 
     let mut result = if let Some(workflow_name) = hook.workflow.as_deref() {
         let resolved = resolver.resolve(workflow_name, Some(&payload.agent_name), &options)?;
-        executor.execute(&resolved, &options, Some(&payload.agent_name))?
+        execute_workflow_with_hooks(
+            config,
+            &payload.project_root,
+            &resolved,
+            &options,
+            Some(&payload.agent_name),
+        )?
     } else if let Some(cmd) = hook.run.as_deref() {
         let resolved = ResolvedWorkflow {
             name: format!("hook:agent_stop:{}", payload.agent_name),
             description: Some("Generated hook command".to_string()),
             steps: vec![ResolvedStep::Command {
+                step_id: None,
                 run: cmd.to_string(),
                 cwd: payload.project_root.clone(),
                 agent: Some(payload.agent_name.clone()),
                 timeout_secs: hook.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
                 fail_mode: hook.fail_mode.unwrap_or(WorkflowFailMode::Open),
+                output_json: None,
             }],
         };
-        executor.execute(&resolved, &options, Some(&payload.agent_name))?
+        execute_workflow_with_hooks(
+            config,
+            &payload.project_root,
+            &resolved,
+            &options,
+            Some(&payload.agent_name),
+        )?
     } else {
         return Err(TuttiError::ConfigValidation(
             "hook must specify workflow or run".to_string(),
@@ -616,6 +998,131 @@ fn dispatch_single_hook(
     Ok(result)
 }
 
+fn dispatch_workflow_complete_hook(
+    config: &TuttiConfig,
+    hook: &HookConfig,
+    payload: &WorkflowCompletePayload,
+) -> Result<ExecutionResult> {
+    let resolver = WorkflowResolver::new(config, &payload.project_root);
+    let options = ExecuteOptions {
+        strict: false,
+        force_open_commands: false,
+        origin: ExecutionOrigin::HookWorkflowComplete,
+        hook_event: Some("workflow_complete".to_string()),
+        hook_agent: payload.agent_scope.clone(),
+    };
+
+    let mut result = if let Some(workflow_name) = hook.workflow.as_deref() {
+        let resolved = resolver.resolve(workflow_name, payload.agent_scope.as_deref(), &options)?;
+        execute_workflow_with_hooks(
+            config,
+            &payload.project_root,
+            &resolved,
+            &options,
+            payload.agent_scope.as_deref(),
+        )?
+    } else if let Some(cmd) = hook.run.as_deref() {
+        let resolved = ResolvedWorkflow {
+            name: format!("hook:workflow_complete:{}", payload.workflow_name),
+            description: Some("Generated hook command".to_string()),
+            steps: vec![ResolvedStep::Command {
+                step_id: None,
+                run: cmd.to_string(),
+                cwd: payload.project_root.clone(),
+                agent: payload.agent_scope.clone(),
+                timeout_secs: hook.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+                fail_mode: hook.fail_mode.unwrap_or(WorkflowFailMode::Open),
+                output_json: None,
+            }],
+        };
+        execute_workflow_with_hooks(
+            config,
+            &payload.project_root,
+            &resolved,
+            &options,
+            payload.agent_scope.as_deref(),
+        )?
+    } else {
+        return Err(TuttiError::ConfigValidation(
+            "hook must specify workflow or run".to_string(),
+        ));
+    };
+
+    if !result.success
+        && hook.fail_mode.unwrap_or(WorkflowFailMode::Open) == WorkflowFailMode::Closed
+    {
+        return Err(TuttiError::ConfigValidation(format!(
+            "workflow_complete hook failed for workflow '{}': {}",
+            payload.workflow_name, result.workflow_name
+        )));
+    }
+
+    if !result.success {
+        for step in &mut result.step_results {
+            if step.status == StepStatus::Failed {
+                step.status = StepStatus::Warning;
+            }
+        }
+        result.success = true;
+        result.failed_steps.clear();
+    }
+
+    Ok(result)
+}
+
+fn hook_matches_workflow_complete(hook: &HookConfig, payload: &WorkflowCompletePayload) -> bool {
+    if let Some(source) = hook.workflow_source {
+        let expected = match source {
+            HookWorkflowSource::Run => "run",
+            HookWorkflowSource::Verify => "verify",
+            HookWorkflowSource::HookAgentStop => "hook_agent_stop",
+            HookWorkflowSource::ObserveCycle => "observe_cycle",
+            HookWorkflowSource::HookWorkflowComplete => "hook_workflow_complete",
+        };
+        if payload.workflow_source != expected {
+            return false;
+        }
+    }
+    if let Some(name) = hook.workflow_name.as_deref()
+        && payload.workflow_name != name
+    {
+        return false;
+    }
+    if let Some(agent_filter) = hook.agent.as_deref() {
+        return payload
+            .agent_scope
+            .as_deref()
+            .is_some_and(|a| a == agent_filter);
+    }
+    true
+}
+
+pub fn execute_workflow_with_hooks(
+    config: &TuttiConfig,
+    project_root: &Path,
+    resolved: &ResolvedWorkflow,
+    options: &ExecuteOptions,
+    agent_scope: Option<&str>,
+) -> Result<ExecutionResult> {
+    let executor = WorkflowExecutor::new(project_root);
+    let result = executor.execute(resolved, options, agent_scope)?;
+
+    // Recursion guard: don't emit workflow_complete from workflow_complete hooks.
+    if options.origin != ExecutionOrigin::HookWorkflowComplete {
+        let payload = WorkflowCompletePayload {
+            workspace_name: config.workspace.name.clone(),
+            project_root: project_root.to_path_buf(),
+            workflow_name: result.workflow_name.clone(),
+            workflow_source: options.origin.as_str().to_string(),
+            success: result.success,
+            agent_scope: agent_scope.map(|s| s.to_string()),
+        };
+        HookDispatcher::dispatch_workflow_complete(config, &payload)?;
+    }
+
+    Ok(result)
+}
+
 pub fn save_verify_summary(
     project_root: &Path,
     workflow_name: &str,
@@ -639,6 +1146,7 @@ mod tests {
     use super::*;
     use crate::config::{AgentConfig, DefaultsConfig, WorkspaceConfig};
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     fn sample_config(workflow: WorkflowConfig, hooks: Vec<HookConfig>) -> TuttiConfig {
         TuttiConfig {
@@ -677,27 +1185,34 @@ mod tests {
         let workflow = WorkflowConfig {
             name: "verify".to_string(),
             description: None,
+            schedule: None,
             steps: vec![
                 WorkflowStepConfig::Command {
+                    id: None,
                     run: "echo one".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Open),
+                    output_json: None,
                 },
                 WorkflowStepConfig::Command {
+                    id: None,
                     run: "exit 7".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Open),
+                    output_json: None,
                 },
                 WorkflowStepConfig::Command {
+                    id: None,
                     run: "echo three".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Open),
+                    output_json: None,
                 },
             ],
         };
@@ -730,27 +1245,34 @@ mod tests {
         let workflow = WorkflowConfig {
             name: "verify".to_string(),
             description: None,
+            schedule: None,
             steps: vec![
                 WorkflowStepConfig::Command {
+                    id: None,
                     run: "echo one".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Closed),
+                    output_json: None,
                 },
                 WorkflowStepConfig::Command {
+                    id: None,
                     run: "exit 9".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Closed),
+                    output_json: None,
                 },
                 WorkflowStepConfig::Command {
+                    id: None,
                     run: "echo never".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Closed),
+                    output_json: None,
                 },
             ],
         };
@@ -783,12 +1305,15 @@ mod tests {
         let workflow = WorkflowConfig {
             name: "verify".to_string(),
             description: None,
+            schedule: None,
             steps: vec![WorkflowStepConfig::Command {
+                id: None,
                 run: "exit 4".to_string(),
                 cwd: Some(WorkflowCommandCwd::Workspace),
                 agent: None,
                 timeout_secs: Some(30),
                 fail_mode: Some(WorkflowFailMode::Open),
+                output_json: None,
             }],
         };
 
@@ -819,17 +1344,22 @@ mod tests {
         let workflow = WorkflowConfig {
             name: "verify".to_string(),
             description: None,
+            schedule: None,
             steps: vec![WorkflowStepConfig::Command {
+                id: None,
                 run: "echo hook".to_string(),
                 cwd: Some(WorkflowCommandCwd::Workspace),
                 agent: None,
                 timeout_secs: Some(30),
                 fail_mode: Some(WorkflowFailMode::Open),
+                output_json: None,
             }],
         };
         let hooks = vec![HookConfig {
             event: HookEvent::AgentStop,
             agent: Some("backend".to_string()),
+            workflow_source: None,
+            workflow_name: None,
             workflow: Some("verify".to_string()),
             run: None,
             timeout_secs: None,
@@ -854,5 +1384,54 @@ mod tests {
         assert!(results.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_template_replaces_known_outputs_and_rejects_unresolved() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "scan".to_string(),
+            StepOutputValue {
+                path: PathBuf::from("/tmp/scan.json"),
+                json: serde_json::json!({"issues": 2}),
+            },
+        );
+        let rendered = render_template(
+            "cat {{output.scan.path}} && echo {{output.scan.json}}",
+            &outputs,
+            false,
+        )
+        .unwrap();
+        assert!(rendered.contains("/tmp/scan.json"));
+        assert!(rendered.contains("{\"issues\":2}"));
+
+        let err = render_template("{{output.missing.path}}", &outputs, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unresolved workflow output template")
+        );
+    }
+
+    #[test]
+    fn workflow_complete_hook_filters_by_source() {
+        let hook = HookConfig {
+            event: HookEvent::WorkflowComplete,
+            agent: None,
+            workflow_source: Some(HookWorkflowSource::ObserveCycle),
+            workflow_name: Some("verify".to_string()),
+            workflow: Some("verify".to_string()),
+            run: None,
+            timeout_secs: None,
+            fail_mode: Some(WorkflowFailMode::Open),
+        };
+        let payload = WorkflowCompletePayload {
+            workspace_name: "ws".to_string(),
+            project_root: PathBuf::from("/tmp/ws"),
+            workflow_name: "verify".to_string(),
+            workflow_source: "observe_cycle".to_string(),
+            success: true,
+            agent_scope: None,
+        };
+        assert!(hook_matches_workflow_complete(&hook, &payload));
     }
 }

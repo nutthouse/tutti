@@ -125,6 +125,8 @@ pub struct WorkflowConfig {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub schedule: Option<String>,
     #[serde(default, rename = "step")]
     pub steps: Vec<WorkflowStepConfig>,
 }
@@ -133,10 +135,20 @@ pub struct WorkflowConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkflowStepConfig {
     Prompt {
+        #[serde(default)]
+        id: Option<String>,
         agent: String,
         text: String,
+        #[serde(default)]
+        output_json: Option<String>,
+        #[serde(default)]
+        wait_for_idle: Option<bool>,
+        #[serde(default)]
+        wait_timeout_secs: Option<u64>,
     },
     Command {
+        #[serde(default)]
+        id: Option<String>,
         run: String,
         #[serde(default)]
         cwd: Option<WorkflowCommandCwd>,
@@ -146,6 +158,8 @@ pub enum WorkflowStepConfig {
         timeout_secs: Option<u64>,
         #[serde(default)]
         fail_mode: Option<WorkflowFailMode>,
+        #[serde(default)]
+        output_json: Option<String>,
     },
 }
 
@@ -169,6 +183,10 @@ pub struct HookConfig {
     #[serde(default)]
     pub agent: Option<String>,
     #[serde(default)]
+    pub workflow_source: Option<HookWorkflowSource>,
+    #[serde(default)]
+    pub workflow_name: Option<String>,
+    #[serde(default)]
     pub workflow: Option<String>,
     #[serde(default)]
     pub run: Option<String>,
@@ -182,6 +200,17 @@ pub struct HookConfig {
 #[serde(rename_all = "snake_case")]
 pub enum HookEvent {
     AgentStop,
+    WorkflowComplete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HookWorkflowSource {
+    Run,
+    Verify,
+    HookAgentStop,
+    ObserveCycle,
+    HookWorkflowComplete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +331,58 @@ fn default_port() -> u16 {
     4040
 }
 
+fn validate_schedule_expression(expr: &str) -> std::result::Result<(), String> {
+    let fields = expr.split_whitespace().count();
+    if fields != 5 {
+        return Err("expected 5-field cron expression (minute hour dom month dow)".to_string());
+    }
+    crate::scheduler::parse_schedule(expr)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn validate_step_id_and_output(
+    workflow_name: &str,
+    step_index: usize,
+    step_id: Option<&str>,
+    output_json: Option<&str>,
+    seen_ids: &mut std::collections::HashSet<String>,
+) -> Result<()> {
+    if output_json.is_some() && step_id.is_none() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "workflow '{}', step {} uses output_json but is missing id",
+            workflow_name, step_index
+        )));
+    }
+
+    if let Some(id) = step_id {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err(TuttiError::ConfigValidation(format!(
+                "workflow '{}', step {} has empty id",
+                workflow_name, step_index
+            )));
+        }
+        if !seen_ids.insert(trimmed.to_string()) {
+            return Err(TuttiError::ConfigValidation(format!(
+                "workflow '{}' has duplicate step id '{}'",
+                workflow_name, trimmed
+            )));
+        }
+    }
+
+    if let Some(path) = output_json
+        && path.trim().is_empty()
+    {
+        return Err(TuttiError::ConfigValidation(format!(
+            "workflow '{}', step {} has empty output_json",
+            workflow_name, step_index
+        )));
+    }
+
+    Ok(())
+}
+
 impl AgentConfig {
     pub fn resolved_runtime(&self, defaults: &DefaultsConfig) -> Option<String> {
         self.runtime.clone().or_else(|| defaults.runtime.clone())
@@ -407,9 +488,32 @@ impl TuttiConfig {
                 )));
             }
 
+            if let Some(schedule) = workflow.schedule.as_deref() {
+                let trimmed = schedule.trim();
+                if trimmed.is_empty() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "workflow '{}' has empty schedule",
+                        workflow.name
+                    )));
+                }
+                validate_schedule_expression(trimmed).map_err(|e| {
+                    TuttiError::ConfigValidation(format!(
+                        "workflow '{}' has invalid schedule '{}': {e}",
+                        workflow.name, trimmed
+                    ))
+                })?;
+            }
+
+            let mut step_ids = std::collections::HashSet::new();
             for (idx, step) in workflow.steps.iter().enumerate() {
                 match step {
-                    WorkflowStepConfig::Prompt { agent, text } => {
+                    WorkflowStepConfig::Prompt {
+                        id,
+                        agent,
+                        text,
+                        output_json,
+                        ..
+                    } => {
                         if !agent_names.contains(agent.as_str()) {
                             return Err(TuttiError::ConfigValidation(format!(
                                 "workflow '{}', step {} references unknown agent '{}'",
@@ -425,8 +529,20 @@ impl TuttiConfig {
                                 idx + 1
                             )));
                         }
+                        validate_step_id_and_output(
+                            &workflow.name,
+                            idx + 1,
+                            id.as_deref(),
+                            output_json.as_deref(),
+                            &mut step_ids,
+                        )?;
                     }
-                    WorkflowStepConfig::Command { run, .. } => {
+                    WorkflowStepConfig::Command {
+                        id,
+                        run,
+                        output_json,
+                        ..
+                    } => {
                         if run.trim().is_empty() {
                             return Err(TuttiError::ConfigValidation(format!(
                                 "workflow '{}', step {} has empty command",
@@ -434,6 +550,13 @@ impl TuttiConfig {
                                 idx + 1
                             )));
                         }
+                        validate_step_id_and_output(
+                            &workflow.name,
+                            idx + 1,
+                            id.as_deref(),
+                            output_json.as_deref(),
+                            &mut step_ids,
+                        )?;
                     }
                 }
             }
@@ -469,6 +592,21 @@ impl TuttiConfig {
             {
                 return Err(TuttiError::ConfigValidation(
                     "hook run command cannot be empty".to_string(),
+                ));
+            }
+            if hook.event != HookEvent::WorkflowComplete
+                && (hook.workflow_source.is_some() || hook.workflow_name.is_some())
+            {
+                return Err(TuttiError::ConfigValidation(
+                    "hook workflow_source/workflow_name filters require event='workflow_complete'"
+                        .to_string(),
+                ));
+            }
+            if let Some(workflow_name) = hook.workflow_name.as_deref()
+                && workflow_name.trim().is_empty()
+            {
+                return Err(TuttiError::ConfigValidation(
+                    "hook workflow_name cannot be empty".to_string(),
                 ));
             }
         }
@@ -787,30 +925,89 @@ runtime = "claude-code"
 [[workflow]]
 name = "verify"
 description = "Run checks"
+schedule = "*/30 * * * *"
 
 [[workflow.step]]
 type = "prompt"
+id = "scan"
 agent = "backend"
 text = "Check recent changes."
+wait_for_idle = true
+wait_timeout_secs = 1200
+output_json = "tmp/scan.json"
 
 [[workflow.step]]
 type = "command"
+id = "tests"
 run = "cargo test --quiet"
 cwd = "workspace"
 fail_mode = "closed"
 timeout_secs = 1200
+output_json = "tmp/tests.json"
 
 [[hook]]
 event = "agent_stop"
 agent = "backend"
 workflow = "verify"
 fail_mode = "open"
+
+[[hook]]
+event = "workflow_complete"
+workflow_source = "run"
+workflow_name = "verify"
+run = "echo done"
 "#;
 
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.workflows.len(), 1);
-        assert_eq!(config.hooks.len(), 1);
+        assert_eq!(config.hooks.len(), 2);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_schedule_must_be_five_field_cron() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+schedule = "* * * *"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid schedule"));
+    }
+
+    #[test]
+    fn validate_output_json_requires_step_id() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+output_json = "out.json"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("missing id"));
     }
 
     #[test]
@@ -1060,6 +1257,33 @@ workflow = "missing"
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("unknown workflow"));
+    }
+
+    #[test]
+    fn validate_rejects_workflow_filters_on_non_workflow_event() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+
+[[hook]]
+event = "agent_stop"
+workflow = "verify"
+workflow_source = "run"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("workflow_source/workflow_name"));
     }
 
     #[test]

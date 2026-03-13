@@ -1,5 +1,6 @@
 use crate::automation::{
-    ExecuteOptions, ExecutionOrigin, WorkflowExecutor, WorkflowResolver, save_verify_summary,
+    ExecuteOptions, ExecutionOrigin, WorkflowResolver, execute_workflow_with_hooks,
+    save_verify_summary,
 };
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
@@ -40,8 +41,7 @@ pub fn run(
     let resolver = WorkflowResolver::new(&config, project_root);
     let resolved = resolver.resolve(workflow_name, agent, &options)?;
 
-    let executor = WorkflowExecutor::new(project_root);
-    let result = executor.execute(&resolved, &options, agent)?;
+    let result = execute_workflow_with_hooks(&config, project_root, &resolved, &options, agent)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);

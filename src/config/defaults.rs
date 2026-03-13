@@ -61,21 +61,28 @@ prompt = "You own the UI. Follow existing component patterns."
 # [[workflow]]
 # name = "verify-app"
 # description = "Run deterministic checks before merge."
+# schedule = "*/30 * * * *"       # optional 5-field local-time cron
 # [[workflow.step]]
+# id = "tests"
 # type = "command"
 # run = "cargo test --quiet"
 # cwd = "workspace"
 # fail_mode = "closed"
 # timeout_secs = 1200
+# output_json = ".tutti/state/verify.json"
 #
 # [[workflow]]
 # name = "code-simplifier"
 # [[workflow.step]]
 # type = "prompt"
+# id = "simplify"
 # agent = "backend"
 # text = "Simplify/refactor recent changes and keep behavior identical."
+# wait_for_idle = true
+# wait_timeout_secs = 900
 # [[workflow.step]]
 # type = "command"
+# id = "fmt"
 # run = "cargo fmt"
 # cwd = "workspace"
 # fail_mode = "open"
@@ -85,6 +92,12 @@ prompt = "You own the UI. Follow existing component patterns."
 # agent = "backend"
 # workflow = "verify-app"
 # fail_mode = "open"
+#
+# [[hook]]
+# event = "workflow_complete"
+# workflow_source = "observe_cycle"
+# workflow_name = "verify-app"
+# run = "echo workflow complete"
 #
 # Optional tool-pack prerequisites for `tt doctor` (Milestone 3)
 # [[tool_pack]]

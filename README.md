@@ -22,6 +22,10 @@ tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt send frontend "Analyze the review page UX issues"
                          # send ad-hoc prompt to a running session
+tt send frontend --wait --timeout-secs 900 "Analyze the review page UX issues"
+                         # wait for activity->idle completion
+tt health --json         # probe + print machine-readable health
+tt serve --port 4040     # scheduler + probes + local /v1/health
 tt handoff generate backend
                          # write a handoff packet to .tutti/handoffs
 tt handoff apply backend # send latest packet into running backend session
@@ -161,6 +165,24 @@ runtime = "codex"
 scope = "tests/**"
 prompt = "Write and maintain tests. Run the test suite after changes."
 depends_on = ["backend", "frontend"]
+
+[[workflow]]
+name = "verify-app"
+schedule = "*/30 * * * *"
+
+[[workflow.step]]
+id = "verify"
+type = "command"
+run = "cargo test --quiet"
+cwd = "workspace"
+fail_mode = "closed"
+output_json = ".tutti/state/verify.json"
+
+[[hook]]
+event = "workflow_complete"
+workflow_source = "observe_cycle"
+workflow_name = "verify-app"
+run = "echo scheduled verify completed"
 ```
 
 Profiles are configured globally in `~/.config/tutti/config.toml`:

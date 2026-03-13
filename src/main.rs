@@ -2,8 +2,10 @@ mod automation;
 mod cli;
 mod config;
 mod error;
+mod health;
 mod permissions;
 mod runtime;
+mod scheduler;
 mod session;
 mod state;
 mod usage;
@@ -55,14 +57,29 @@ fn main() {
         } => cli::review::run(agent, reviewer),
         Commands::Send {
             ref agent,
+            wait,
+            timeout_secs,
+            idle_stable_secs,
             ref prompt,
-        } => cli::send::run(agent, prompt),
+        } => cli::send::run(agent, prompt, wait, timeout_secs, idle_stable_secs),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
         Commands::Logs {
             ref agent,
             lines,
             follow,
         } => cli::logs::run(agent, lines, follow),
+        Commands::Health {
+            ref agent,
+            ref workspace,
+            all,
+            json,
+        } => cli::health::run(agent.as_deref(), workspace.as_deref(), all, json),
+        Commands::Serve {
+            ref workspace,
+            all,
+            port,
+            probe_interval,
+        } => cli::serve::run(workspace.as_deref(), all, port, probe_interval),
         Commands::Switch => cli::switch::run(),
         Commands::Handoff { command } => cli::handoff::run(command),
         Commands::Run {
