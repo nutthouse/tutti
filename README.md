@@ -101,13 +101,14 @@ source ~/.zshrc
 - Web dashboard and API/WebSocket UI
 - Provider-level failover/rate-limit rotation
 - Richer cost attribution and context-health telemetry
-- OpenClaw skill for agent-in-agent Tutti workflows
+- OpenClaw integration hardening (packaging templates + external registry examples)
 - Community phrase/arrangement registry
 
 ### Integration docs
 - External agent/orchestrator contract: `docs/AGENT_INTEGRATION_CONTRACT.md`
 - OpenClaw skill contract: `docs/OPENCLAW_SKILL_CONTRACT.md`
 - OpenClaw skill starter: `skills/openclaw/SKILL.md`
+- OpenClaw integration bundle: `integrations/openclaw/README.md`
 
 ## tutti.toml
 
@@ -304,7 +305,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [ ] Automatic handoff packet generation
 - [ ] Web dashboard
 - [ ] Cost tracking and attribution (provider-accurate)
-- [ ] OpenClaw skill for Tutti orchestration workflows
+- [x] OpenClaw skill for Tutti orchestration workflows
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
 - [ ] Agent-to-agent communication protocol

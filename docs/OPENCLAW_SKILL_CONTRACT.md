@@ -2,6 +2,14 @@
 
 This document defines a stable first-pass contract for building an OpenClaw skill that orchestrates Tutti workspaces.
 
+Reference implementation bundle:
+- `integrations/openclaw/README.md`
+- `integrations/openclaw/tutti_openclaw.py`
+- `integrations/openclaw/action-contract.json`
+
+Wrapper compatibility note:
+- pass `--tt-bin "cargo run --quiet --"` (or set `TUTTI_BIN`) when `tt` on PATH is not the expected version.
+
 ## Goals
 
 - Keep the skill simple and deterministic.

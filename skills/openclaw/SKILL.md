@@ -2,6 +2,13 @@
 
 Use this skill to orchestrate a Tutti workspace from another agent loop.
 
+Reference wrapper:
+- `integrations/openclaw/tutti_openclaw.py`
+- `integrations/openclaw/action-contract.json`
+
+If your `tt` binary is older than repo `main`, invoke the wrapper with:
+- `--tt-bin "cargo run --quiet --"`
+
 ## Trigger
 
 Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by Tutti.
@@ -29,16 +36,16 @@ Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by 
 ## Execution Pattern
 
 1. Preflight:
-   - `tt doctor --json`
+   - `python3 integrations/openclaw/tutti_openclaw.py doctor_check`
    - stop if non-zero and report failures.
 2. Launch:
-   - `tt up` or `tt up <agent>`.
+   - `... launch_team` or `... launch_agent <agent>`.
 3. Work:
-   - `tt run <workflow>` for deterministic pipelines.
+   - `... list_workflows`, then `... run_workflow <workflow>`.
 4. Verify:
-   - `tt verify --strict` for gate-style checks.
+   - `... verify_team --strict` for gate-style checks.
 5. Stop:
-   - `tt down` or `tt down <agent>`.
+   - `... stop_team` or `... stop_agent <agent>`.
 
 ## Failure Policy
 

@@ -176,6 +176,7 @@ External agents should apply this retry policy:
 When building an OpenClaw skill/plugin:
 
 - Canonical mapping reference: `docs/OPENCLAW_SKILL_CONTRACT.md`
+- Reference wrapper implementation: `integrations/openclaw/README.md`
 
 - Expose high-level intents mapped to Tutti commands:
   - `launch_team` -> `tt up`
