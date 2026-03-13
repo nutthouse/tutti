@@ -124,7 +124,7 @@ impl TmuxSession {
 
         for line in lines {
             let out = Command::new("tmux")
-                .args(["send-keys", "-t", session, "-l", line])
+                .args(["send-keys", "-t", session, "-l", "--", line])
                 .output()?;
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
