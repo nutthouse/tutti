@@ -67,12 +67,14 @@ fn main() {
         } => cli::send::run(
             agent,
             prompt,
-            auto_up,
-            wait,
-            timeout_secs,
-            idle_stable_secs,
-            output,
-            output_lines,
+            cli::send::SendOptions {
+                auto_up,
+                wait,
+                timeout_secs,
+                idle_stable_secs,
+                output,
+                output_lines,
+            },
         ),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
         Commands::Logs {

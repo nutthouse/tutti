@@ -8,12 +8,7 @@ use std::time::Duration;
 pub fn run(
     agent_ref: &str,
     prompt_parts: &[String],
-    auto_up: bool,
-    wait: bool,
-    timeout_secs: u64,
-    idle_stable_secs: u64,
-    output: bool,
-    output_lines: u32,
+    options: SendOptions,
 ) -> Result<()> {
     crate::session::tmux::check_tmux()?;
 
@@ -29,7 +24,7 @@ pub fn run(
     let session = TmuxSession::session_name(&workspace_name, &agent_name);
 
     if !TmuxSession::session_exists(&session) {
-        if !auto_up {
+        if !options.auto_up {
             return Err(TuttiError::AgentNotRunning(agent_name.to_string()));
         }
         super::up::run(
@@ -44,26 +39,26 @@ pub fn run(
         }
     }
 
-    let capture_lines = output_lines.max(20);
-    let before_output = if output {
+    let capture_lines = options.output_lines.max(20);
+    let before_output = if options.output {
         Some(TmuxSession::capture_pane(&session, capture_lines).unwrap_or_default())
     } else {
         None
     };
 
     TmuxSession::send_text(&session, &prompt)?;
-    if wait {
+    if options.wait {
         let outcome = health::wait_for_agent_idle(
             &runtime_name,
             &session,
-            Duration::from_secs(timeout_secs.max(1)),
-            Duration::from_secs(idle_stable_secs.max(1)),
+            Duration::from_secs(options.timeout_secs.max(1)),
+            Duration::from_secs(options.idle_stable_secs.max(1)),
         )?;
         if outcome.timed_out {
             return Err(TuttiError::ConfigValidation(format!(
                 "timed out waiting for '{}' to go idle after {}s",
                 agent_name,
-                timeout_secs.max(1)
+                options.timeout_secs.max(1)
             )));
         }
         if let Ok((config, _)) = TuttiConfig::load(&target.project_root) {
@@ -74,7 +69,7 @@ pub fn run(
         println!("sent prompt to {agent_name} ({workspace_name})");
     }
 
-    if output {
+    if options.output {
         let after_output = TmuxSession::capture_pane(&session, capture_lines).unwrap_or_default();
         let delta = pane_delta(before_output.as_deref().unwrap_or(""), &after_output);
         if delta.trim().is_empty() {
@@ -85,6 +80,16 @@ pub fn run(
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SendOptions {
+    pub auto_up: bool,
+    pub wait: bool,
+    pub timeout_secs: u64,
+    pub idle_stable_secs: u64,
+    pub output: bool,
+    pub output_lines: u32,
 }
 
 fn assemble_prompt(parts: &[String]) -> Option<String> {

@@ -64,7 +64,18 @@ pub fn run(agent_ref: &str, reviewer: &str) -> Result<()> {
         packet_path.display()
     );
 
-    super::send::run(reviewer, &[prompt], false, false, 900, 5, false, 200)?;
+    super::send::run(
+        reviewer,
+        &[prompt],
+        super::send::SendOptions {
+            auto_up: false,
+            wait: false,
+            timeout_secs: 900,
+            idle_stable_secs: 5,
+            output: false,
+            output_lines: 200,
+        },
+    )?;
     println!(
         "Queued review request with {reviewer} for {}.",
         resolved.agent_name
