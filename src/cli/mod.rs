@@ -1,13 +1,17 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+pub mod agent_ref;
 pub mod attach;
+pub mod diff;
 pub mod doctor;
 pub mod down;
 pub mod handoff;
 pub mod init;
+pub mod land;
 pub mod logs;
 pub mod peek;
 pub mod permissions;
+pub mod review;
 pub mod run;
 pub mod send;
 pub mod snapshot;
@@ -107,6 +111,44 @@ pub enum Commands {
     Attach {
         /// Agent name (or workspace/agent for cross-workspace)
         agent: String,
+    },
+
+    /// Show git changes for an agent worktree
+    Diff {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Show staged diff only
+        #[arg(long)]
+        staged: bool,
+
+        /// Show names only
+        #[arg(long, conflicts_with = "stat")]
+        name_only: bool,
+
+        /// Show diff stat summary
+        #[arg(long)]
+        stat: bool,
+    },
+
+    /// Land an agent branch back into current branch
+    Land {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Push agent branch and open a PR instead of local cherry-pick
+        #[arg(long)]
+        pr: bool,
+    },
+
+    /// Send an agent's diff packet to a reviewer agent
+    Review {
+        /// Source agent name (or workspace/agent)
+        agent: String,
+
+        /// Reviewer agent target (default: reviewer)
+        #[arg(long, default_value = "reviewer")]
+        reviewer: String,
     },
 
     /// Send a one-off prompt to a running agent session

@@ -12,6 +12,10 @@ tt up --mode safe        # keep interactive permission prompts
 tt up --mode unattended --policy bypass
                          # max autonomy (highest risk)
 tt status                # see what every agent is doing right now
+tt diff frontend         # inspect agent branch + worktree changes
+tt land frontend         # cherry-pick agent commits into current branch
+tt land frontend --pr    # push agent branch + open PR via gh
+tt review frontend       # send review packet to reviewer agent
 tt usage --by-workspace  # inspect API-profile token usage + plan %
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
@@ -95,7 +99,7 @@ source ~/.zshrc
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -205,6 +209,10 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Git worktree isolation per agent (configurable)
 - Session persistence across restarts
 - Start and terminate individual agents (`tt up` / `tt down`)
+- Inspect worktree + branch changes (`tt diff <agent>`)
+- Land agent commits into current branch (`tt land <agent>`)
+- Push/open PRs from agent branches (`tt land <agent> --pr`)
+- Dispatch review packets to reviewer agent (`tt review <agent>`)
 
 ### Observability (Built)
 - Real-time status for all running agents
@@ -315,7 +323,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt send`, `tt handoff`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt diff`, `tt land`, `tt review`, `tt send`, `tt handoff`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter

@@ -38,6 +38,17 @@ fn main() {
         } => cli::watch::run(interval, restart_persistent),
         Commands::Doctor { json } => cli::doctor::run(json),
         Commands::Attach { ref agent } => cli::attach::run(agent),
+        Commands::Diff {
+            ref agent,
+            staged,
+            name_only,
+            stat,
+        } => cli::diff::run(agent, staged, name_only, stat),
+        Commands::Land { ref agent, pr } => cli::land::run(agent, pr),
+        Commands::Review {
+            ref agent,
+            ref reviewer,
+        } => cli::review::run(agent, reviewer),
         Commands::Send {
             ref agent,
             ref prompt,

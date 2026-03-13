@@ -85,6 +85,17 @@ Recommended machine pattern:
 
 Use `peek` for automation. Use `attach` for operator handoff.
 
+### 4.5) Inspect and land code changes
+
+- Inspect worktree + branch changes:
+  - `tt diff <agent>`
+- Land agent commits into current branch:
+  - `tt land <agent>`
+- Push and open PR from agent branch:
+  - `tt land <agent> --pr`
+- Send review packet to reviewer agent:
+  - `tt review <agent> [--reviewer <agent>]`
+
 ### 5) Stop
 
 - Stop one:
@@ -194,6 +205,10 @@ When building an OpenClaw skill/plugin:
 - Expose high-level intents mapped to Tutti commands:
   - `launch_team` -> `tt up`
   - `launch_agent` -> `tt up <agent>`
+  - `inspect_agent_diff` -> `tt diff <agent>`
+  - `land_agent_changes` -> `tt land <agent>`
+  - `open_agent_pr` -> `tt land <agent> --pr`
+  - `review_agent_changes` -> `tt review <agent>`
   - `run_workflow` -> `tt run <workflow> --json`
   - `verify_team` -> `tt verify --json`
   - `team_status` -> `tt status`
