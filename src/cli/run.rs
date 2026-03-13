@@ -226,6 +226,7 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                 agent_override,
                 strict,
                 fail_mode,
+                ..
             } => table.add_row(vec![
                 (idx + 1).to_string(),
                 "workflow".to_string(),
@@ -239,6 +240,7 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                 pr,
                 force,
                 fail_mode,
+                ..
             } => table.add_row(vec![
                 (idx + 1).to_string(),
                 "land".to_string(),
@@ -255,6 +257,7 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                 agent,
                 reviewer,
                 fail_mode,
+                ..
             } => table.add_row(vec![
                 (idx + 1).to_string(),
                 "review".to_string(),
@@ -360,6 +363,7 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 agent_override,
                 strict,
                 fail_mode,
+                ..
             } => steps.push(DryRunStep::Workflow {
                 index: idx + 1,
                 workflow: workflow.clone(),
@@ -372,6 +376,7 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 pr,
                 force,
                 fail_mode,
+                ..
             } => steps.push(DryRunStep::Land {
                 index: idx + 1,
                 agent: agent.clone(),
@@ -383,6 +388,7 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 agent,
                 reviewer,
                 fail_mode,
+                ..
             } => steps.push(DryRunStep::Review {
                 index: idx + 1,
                 agent: agent.clone(),
@@ -464,6 +470,7 @@ mod tests {
             steps: vec![
                 ResolvedStep::Prompt {
                     step_id: None,
+                    depends_on: vec![],
                     agent: "backend".to_string(),
                     text: "check changes".to_string(),
                     runtime: "claude-code".to_string(),
@@ -475,6 +482,7 @@ mod tests {
                 },
                 ResolvedStep::Command {
                     step_id: None,
+                    depends_on: vec![],
                     run: "cargo test".to_string(),
                     cwd: PathBuf::from("/tmp/ws"),
                     agent: Some("backend".to_string()),

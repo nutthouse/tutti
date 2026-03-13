@@ -213,11 +213,13 @@ fail_mode = "closed"
 type = "review"
 agent = "backend"
 reviewer = "reviewer"
+depends_on = [4]
 
 [[workflow.step]]
 type = "land"
 agent = "backend"
 force = true
+depends_on = [5]
 
 [[hook]]
 event = "workflow_complete"
@@ -244,6 +246,7 @@ weekly_hours = 45.0
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
 For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
 For command steps that should run under a workspace subpath, use `subdir = "relative/path"` instead of shell `cd ... &&`.
+Use `depends_on = [<step-number>, ...]` on workflow steps to unlock dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
 Budget guardrails are API-only: when `[budget]` is configured and the workspace profile has `plan = "api"`, Tutti checks budget caps before `up/send/run/verify`, emits `budget.threshold` / `budget.blocked` control events, and either warns or blocks based on `budget.mode`.
 
 Optional tool packs can be declared per workspace and validated with `tt doctor`:

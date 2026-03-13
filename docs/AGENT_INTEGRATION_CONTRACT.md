@@ -148,6 +148,7 @@ Hook behavior in v1:
 - Workflow step types:
   - `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
   - `command` supports `cwd` plus optional `subdir` (workspace-relative) for deterministic per-service execution paths.
+  - `depends_on = [<step-number>, ...]` enables dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
   - `review`/`land` steps auto-start required sessions when missing.
   - `prompt` supports `inject_files` to copy workspace-relative files into the target agent worktree before send.
 - Workflow auto-reclaim:

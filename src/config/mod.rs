@@ -139,6 +139,8 @@ pub enum WorkflowStepConfig {
     Prompt {
         #[serde(default)]
         id: Option<String>,
+        #[serde(default)]
+        depends_on: Vec<usize>,
         agent: String,
         text: String,
         #[serde(default)]
@@ -153,6 +155,8 @@ pub enum WorkflowStepConfig {
     Command {
         #[serde(default)]
         id: Option<String>,
+        #[serde(default)]
+        depends_on: Vec<usize>,
         run: String,
         #[serde(default)]
         cwd: Option<WorkflowCommandCwd>,
@@ -168,11 +172,15 @@ pub enum WorkflowStepConfig {
         output_json: Option<String>,
     },
     EnsureRunning {
+        #[serde(default)]
+        depends_on: Vec<usize>,
         agent: String,
         #[serde(default)]
         fail_mode: Option<WorkflowFailMode>,
     },
     Workflow {
+        #[serde(default)]
+        depends_on: Vec<usize>,
         workflow: String,
         #[serde(default)]
         agent: Option<String>,
@@ -182,6 +190,8 @@ pub enum WorkflowStepConfig {
         fail_mode: Option<WorkflowFailMode>,
     },
     Land {
+        #[serde(default)]
+        depends_on: Vec<usize>,
         agent: String,
         #[serde(default)]
         pr: Option<bool>,
@@ -191,6 +201,8 @@ pub enum WorkflowStepConfig {
         fail_mode: Option<WorkflowFailMode>,
     },
     Review {
+        #[serde(default)]
+        depends_on: Vec<usize>,
         agent: String,
         #[serde(default)]
         reviewer: Option<String>,
@@ -444,6 +456,26 @@ fn validate_step_id_and_output(
     }
 
     Ok(())
+}
+
+fn step_depends_on(step: &WorkflowStepConfig) -> &[usize] {
+    match step {
+        WorkflowStepConfig::Prompt { depends_on, .. } => depends_on,
+        WorkflowStepConfig::Command { depends_on, .. } => depends_on,
+        WorkflowStepConfig::EnsureRunning { depends_on, .. } => depends_on,
+        WorkflowStepConfig::Workflow { depends_on, .. } => depends_on,
+        WorkflowStepConfig::Land { depends_on, .. } => depends_on,
+        WorkflowStepConfig::Review { depends_on, .. } => depends_on,
+    }
+}
+
+fn step_is_control(step: &WorkflowStepConfig) -> bool {
+    matches!(
+        step,
+        WorkflowStepConfig::EnsureRunning { .. }
+            | WorkflowStepConfig::Review { .. }
+            | WorkflowStepConfig::Land { .. }
+    )
 }
 
 impl AgentConfig {
@@ -736,6 +768,75 @@ impl TuttiConfig {
                             )));
                         }
                     }
+                }
+            }
+
+            let step_count = workflow.steps.len();
+            let explicit_dep_mode = workflow
+                .steps
+                .iter()
+                .any(|step| !step_depends_on(step).is_empty());
+            if explicit_dep_mode {
+                if workflow.steps.iter().any(|step| !step_is_control(step)) {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "workflow '{}' uses depends_on, but only ensure_running/review/land steps currently support depends_on execution",
+                        workflow.name
+                    )));
+                }
+                let mut adjacency: Vec<Vec<usize>> = vec![vec![]; step_count];
+                let mut in_degree = vec![0usize; step_count];
+                for (idx, step) in workflow.steps.iter().enumerate() {
+                    let normalized_deps = if step_depends_on(step).is_empty() && idx > 0 {
+                        vec![idx]
+                    } else {
+                        step_depends_on(step).to_vec()
+                    };
+                    let mut seen = std::collections::HashSet::new();
+                    for dep in normalized_deps {
+                        if dep == 0 || dep > step_count {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} depends_on references invalid step {}",
+                                workflow.name,
+                                idx + 1,
+                                dep
+                            )));
+                        }
+                        if dep == idx + 1 {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} cannot depend on itself",
+                                workflow.name,
+                                idx + 1
+                            )));
+                        }
+                        if !seen.insert(dep) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} has duplicate depends_on step {}",
+                                workflow.name,
+                                idx + 1,
+                                dep
+                            )));
+                        }
+                        adjacency[dep - 1].push(idx);
+                        in_degree[idx] += 1;
+                    }
+                }
+                let mut queue: Vec<usize> =
+                    (0..step_count).filter(|&i| in_degree[i] == 0).collect();
+                let mut visited = 0usize;
+                while let Some(node) = queue.pop() {
+                    visited += 1;
+                    for &next in &adjacency[node] {
+                        in_degree[next] -= 1;
+                        if in_degree[next] == 0 {
+                            queue.push(next);
+                        }
+                    }
+                }
+                if visited != step_count {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "workflow '{}' has cyclic depends_on graph",
+                        workflow.name
+                    )));
                 }
             }
         }
@@ -1381,6 +1482,62 @@ subdir = "   "
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("empty subdir"));
+    }
+
+    #[test]
+    fn validate_depends_on_rejects_non_control_steps() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+depends_on = [1]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("only ensure_running/review/land"));
+    }
+
+    #[test]
+    fn validate_depends_on_detects_cycles_for_control_steps() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[agent]]
+name = "reviewer"
+runtime = "claude-code"
+
+[[workflow]]
+name = "autofix"
+
+[[workflow.step]]
+type = "ensure_running"
+agent = "backend"
+depends_on = [2]
+
+[[workflow.step]]
+type = "review"
+agent = "backend"
+reviewer = "reviewer"
+depends_on = [1]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("cyclic depends_on"));
     }
 
     #[test]

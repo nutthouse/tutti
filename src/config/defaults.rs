@@ -119,11 +119,13 @@ prompt = "You own the UI. Follow existing component patterns."
 # type = "review"
 # agent = "backend"
 # reviewer = "reviewer"
+# depends_on = [2]              # optional 1-based step dependencies
 # fail_mode = "open"
 # [[workflow.step]]
 # type = "land"
 # agent = "backend"
 # force = true
+# depends_on = [3]
 # fail_mode = "closed"
 #
 # [[hook]]
