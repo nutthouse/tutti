@@ -29,14 +29,9 @@ pub enum TuttiError {
     #[error("agent '{0}' not found in config")]
     AgentNotFound(String),
 
-    #[allow(dead_code)]
-    #[error("agent '{0}' is already running")]
-    AgentAlreadyRunning(String),
-
     #[error("agent '{0}' is not running")]
     AgentNotRunning(String),
 
-    #[allow(dead_code)]
     #[error("git error: {0}")]
     Git(String),
 
@@ -45,10 +40,6 @@ pub enum TuttiError {
 
     #[error("state error: {0}")]
     State(String),
-
-    #[allow(dead_code)]
-    #[error("auth failure detected for agent '{0}': {1}")]
-    AuthFailure(String, String),
 
     #[error("usage data error: {0}")]
     UsageData(String),

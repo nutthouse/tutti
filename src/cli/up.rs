@@ -635,22 +635,6 @@ fn is_api_usage_plan(plan: Option<&str>) -> bool {
     plan.is_some_and(|p| p.trim().eq_ignore_ascii_case("api"))
 }
 
-/// Check that git is available (needed for worktrees).
-#[allow(dead_code)]
-pub fn check_git(project_root: &Path) -> Result<()> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--git-dir"])
-        .current_dir(project_root)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(TuttiError::Git(
-            "not a git repository (worktrees require git)".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// Load config for a named workspace from the global registry.
 pub fn load_workspace_by_name(ws_name: &str) -> Result<(TuttiConfig, std::path::PathBuf)> {
     let global = crate::config::GlobalConfig::load()?;

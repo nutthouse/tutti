@@ -147,26 +147,6 @@ impl TmuxSession {
         Ok(())
     }
 
-    /// List all tutti-prefixed tmux sessions.
-    #[allow(dead_code)]
-    pub fn list_tutti_sessions() -> Result<Vec<String>> {
-        let output = Command::new("tmux")
-            .args(["list-sessions", "-F", "#{session_name}"])
-            .output()?;
-
-        if !output.status.success() {
-            // No server running = no sessions, not an error
-            return Ok(vec![]);
-        }
-
-        let sessions = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|s| s.starts_with("tutti-"))
-            .map(|s| s.to_string())
-            .collect();
-        Ok(sessions)
-    }
-
     /// Set a sticky status bar on a session (bottom line).
     pub fn set_status_bar(session: &str, text: &str) -> Result<()> {
         // Enable status bar for this session
@@ -203,21 +183,6 @@ impl TmuxSession {
         if !status.success() {
             return Err(TuttiError::TmuxError(format!(
                 "failed to attach to session '{session}'"
-            )));
-        }
-        Ok(())
-    }
-
-    /// Attach read-only to a tmux session.
-    #[allow(dead_code)]
-    pub fn attach_readonly(session: &str) -> Result<()> {
-        let status = Command::new("tmux")
-            .args(["attach-session", "-t", session, "-r"])
-            .status()?;
-
-        if !status.success() {
-            return Err(TuttiError::TmuxError(format!(
-                "failed to attach (readonly) to session '{session}'"
             )));
         }
         Ok(())

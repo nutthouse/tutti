@@ -17,7 +17,7 @@ tt land frontend         # cherry-pick agent commits into current branch
 tt land frontend --force # ignore local tracked-dirty check
 tt land frontend --pr    # push agent branch + open PR via gh
 tt review frontend       # send review packet to reviewer agent
-tt usage --by-workspace  # inspect API-profile token usage + plan %
+tt usage --by-workspace  # inspect API-profile token usage + plan % (Claude/Codex logs)
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt send frontend "Analyze the review page UX issues"

@@ -9,16 +9,10 @@ pub enum AgentStatus {
     Working,
     /// Agent is idle / waiting for input.
     Idle,
-    /// Agent encountered an error.
-    #[allow(dead_code)]
-    Errored,
     /// Agent's auth token has expired or is invalid.
     AuthFailed(String),
     /// Session exists but status is unknown.
     Unknown,
-    /// Session is not running.
-    #[allow(dead_code)]
-    Stopped,
 }
 
 impl std::fmt::Display for AgentStatus {
@@ -26,10 +20,8 @@ impl std::fmt::Display for AgentStatus {
         match self {
             AgentStatus::Working => write!(f, "Working"),
             AgentStatus::Idle => write!(f, "Idle"),
-            AgentStatus::Errored => write!(f, "Errored"),
             AgentStatus::AuthFailed(msg) => write!(f, "Auth Failed: {msg}"),
             AgentStatus::Unknown => write!(f, "Unknown"),
-            AgentStatus::Stopped => write!(f, "Stopped"),
         }
     }
 }
@@ -62,6 +54,11 @@ struct RuntimeConfig {
     default_command: &'static str,
     /// Flag before the prompt (e.g. "--message"). Empty string means positional arg.
     prompt_flag: &'static str,
+    /// Heuristic terminal-output patterns.
+    ///
+    /// These are intentionally simple string matches against recent pane output
+    /// (spinner glyphs, prompt text, auth phrases). Upstream CLI output can change,
+    /// so update these lists when status detection drifts after provider upgrades.
     auth_patterns: &'static [&'static str],
     working_patterns: &'static [&'static str],
     idle_patterns: &'static [&'static str],

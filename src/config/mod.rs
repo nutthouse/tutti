@@ -196,10 +196,13 @@ pub struct HandoffConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObserveConfig {
+    /// Reserved for future web dashboard plumbing; currently parsed but not acted on.
     #[serde(default)]
     pub dashboard: bool,
+    /// Reserved for future web dashboard server binding.
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Reserved for future dashboard cost overlays.
     #[serde(default)]
     pub track_cost: bool,
 }

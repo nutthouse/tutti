@@ -99,7 +99,7 @@ prompt = "You own the UI. Follow existing component patterns."
 # threshold = 0.2
 # include = ["active_task", "file_changes", "decisions", "blockers"]
 
-# Dashboard settings (Phase 3)
+# Dashboard settings (reserved for future web UI; currently ignored by CLI runtime paths)
 # [observe]
 # dashboard = true
 # port = 4040

@@ -231,10 +231,8 @@ fn format_status(status: &AgentStatus) -> String {
     match status {
         AgentStatus::Working => "Working".green().to_string(),
         AgentStatus::Idle => "Idle".yellow().to_string(),
-        AgentStatus::Errored => "Errored".red().to_string(),
         AgentStatus::AuthFailed(msg) => format!("{} ({})", "Auth Failed".red().bold(), msg),
         AgentStatus::Unknown => "Unknown".dimmed().to_string(),
-        AgentStatus::Stopped => "Stopped".dimmed().to_string(),
     }
 }
 

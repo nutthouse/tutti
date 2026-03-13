@@ -111,7 +111,6 @@ pub fn save_verify_last_summary(project_root: &Path, summary: &VerifyLastSummary
 }
 
 /// Load latest verification summary.
-#[allow(dead_code)]
 pub fn load_verify_last_summary(project_root: &Path) -> Result<Option<VerifyLastSummary>> {
     let path = project_root
         .join(".tutti")
@@ -127,7 +126,7 @@ pub fn load_verify_last_summary(project_root: &Path) -> Result<Option<VerifyLast
 }
 
 /// Load all agent states from .tutti/state/.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn load_all_states(project_root: &Path) -> Result<Vec<AgentState>> {
     let state_dir = project_root.join(".tutti").join("state");
     if !state_dir.exists() {
