@@ -135,6 +135,7 @@ Hook behavior in v1:
 - Hook defaults are fail-open unless configured fail-closed.
 - Workflow step types:
   - `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+  - `prompt` supports `inject_files` to copy workspace-relative files into the target agent worktree before send.
 - Workflow auto-reclaim:
   - Agents with `persistent = false` that were not running at workflow start are auto-stopped at workflow end.
 

@@ -137,14 +137,26 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
 
     for (idx, step) in workflow.steps.iter().enumerate() {
         match step {
-            crate::automation::ResolvedStep::Prompt { agent, text, .. } => table.add_row(vec![
-                (idx + 1).to_string(),
-                "prompt".to_string(),
-                agent.clone(),
-                "session".to_string(),
-                "closed".to_string(),
-                truncate(text, 80),
-            ]),
+            crate::automation::ResolvedStep::Prompt {
+                agent,
+                text,
+                inject_files,
+                ..
+            } => {
+                let summary = if inject_files.is_empty() {
+                    text.clone()
+                } else {
+                    format!("{text} [inject:{}]", inject_files.len())
+                };
+                table.add_row(vec![
+                    (idx + 1).to_string(),
+                    "prompt".to_string(),
+                    agent.clone(),
+                    "session".to_string(),
+                    "closed".to_string(),
+                    truncate(&summary, 80),
+                ])
+            }
             crate::automation::ResolvedStep::Command {
                 run,
                 cwd,
@@ -232,6 +244,7 @@ enum DryRunStep {
         index: usize,
         agent: String,
         summary: String,
+        inject_files: usize,
     },
     Command {
         index: usize,
@@ -271,10 +284,16 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
     let mut steps = Vec::with_capacity(workflow.steps.len());
     for (idx, step) in workflow.steps.iter().enumerate() {
         match step {
-            ResolvedStep::Prompt { agent, text, .. } => steps.push(DryRunStep::Prompt {
+            ResolvedStep::Prompt {
+                agent,
+                text,
+                inject_files,
+                ..
+            } => steps.push(DryRunStep::Prompt {
                 index: idx + 1,
                 agent: agent.clone(),
                 summary: text.clone(),
+                inject_files: inject_files.len(),
             }),
             ResolvedStep::Command {
                 run,
@@ -402,6 +421,7 @@ mod tests {
                     text: "check changes".to_string(),
                     runtime: "claude-code".to_string(),
                     session_name: "sess".to_string(),
+                    inject_files: vec![],
                     output_json: None,
                     wait_for_idle: false,
                     wait_timeout_secs: 900,
@@ -427,11 +447,12 @@ mod tests {
                 agent,
                 summary,
                 index,
-                ..
+                inject_files,
             } => {
                 assert_eq!(*index, 1);
                 assert_eq!(agent, "backend");
                 assert_eq!(summary, "check changes");
+                assert_eq!(*inject_files, 0);
             }
             _ => panic!("expected prompt"),
         }

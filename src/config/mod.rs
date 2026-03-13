@@ -140,6 +140,8 @@ pub enum WorkflowStepConfig {
         agent: String,
         text: String,
         #[serde(default)]
+        inject_files: Vec<String>,
+        #[serde(default)]
         output_json: Option<String>,
         #[serde(default)]
         wait_for_idle: Option<bool>,
@@ -544,6 +546,7 @@ impl TuttiConfig {
                         id,
                         agent,
                         text,
+                        inject_files,
                         output_json,
                         ..
                     } => {
@@ -561,6 +564,24 @@ impl TuttiConfig {
                                 workflow.name,
                                 idx + 1
                             )));
+                        }
+                        for path in inject_files {
+                            let trimmed = path.trim();
+                            if trimmed.is_empty() {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} has empty inject_files entry",
+                                    workflow.name,
+                                    idx + 1
+                                )));
+                            }
+                            if std::path::Path::new(trimmed).is_absolute() {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} inject_files must be workspace-relative: '{}'",
+                                    workflow.name,
+                                    idx + 1,
+                                    trimmed
+                                )));
+                            }
                         }
                         validate_step_id_and_output(
                             &workflow.name,
@@ -1038,6 +1059,7 @@ type = "prompt"
 id = "scan"
 agent = "backend"
 text = "Check recent changes."
+inject_files = [".tutti/state/snapshot.json"]
 wait_for_idle = true
 wait_timeout_secs = 1200
 output_json = "tmp/scan.json"
@@ -1184,6 +1206,30 @@ workflow = "missing"
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("unknown workflow"));
+    }
+
+    #[test]
+    fn validate_prompt_inject_files_must_be_relative() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "prompt"
+agent = "backend"
+text = "check"
+inject_files = ["/tmp/snapshot.json"]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("workspace-relative"));
     }
 
     #[test]

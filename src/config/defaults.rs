@@ -82,6 +82,7 @@ prompt = "You own the UI. Follow existing component patterns."
 # id = "simplify"
 # agent = "backend"
 # text = "Simplify/refactor recent changes and keep behavior identical."
+# inject_files = [".tutti/state/snapshot.json"]  # copy workspace file into agent worktree before prompt
 # wait_for_idle = true
 # wait_timeout_secs = 900
 # [[workflow.step]]

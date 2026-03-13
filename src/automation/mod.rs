@@ -122,6 +122,7 @@ impl<'a> WorkflowResolver<'a> {
                     id,
                     agent,
                     text,
+                    inject_files,
                     output_json,
                     wait_for_idle,
                     wait_timeout_secs,
@@ -143,6 +144,8 @@ impl<'a> WorkflowResolver<'a> {
                         text: text.clone(),
                         runtime,
                         session_name,
+                        inject_files: self
+                            .resolve_prompt_injected_files(effective_agent, inject_files),
                         output_json: self
                             .resolve_prompt_output_path(effective_agent, output_json)?,
                         wait_for_idle: wait_for_idle.unwrap_or(false),
@@ -305,6 +308,38 @@ impl<'a> WorkflowResolver<'a> {
         }
         Ok(Some(self.project_root.join(as_path)))
     }
+
+    fn resolve_prompt_injected_files(
+        &self,
+        agent_name: &str,
+        inject_files: &[String],
+    ) -> Vec<PromptInjectedFile> {
+        let agent_uses_worktree = self
+            .config
+            .agents
+            .iter()
+            .find(|a| a.name == agent_name)
+            .is_some_and(|a| a.resolved_worktree(&self.config.defaults));
+        let destination_root = if agent_uses_worktree {
+            self.project_root
+                .join(".tutti")
+                .join("worktrees")
+                .join(agent_name)
+        } else {
+            self.project_root.to_path_buf()
+        };
+
+        inject_files
+            .iter()
+            .map(|relative| {
+                let rel = Path::new(relative);
+                PromptInjectedFile {
+                    source: self.project_root.join(rel),
+                    destination: destination_root.join(rel),
+                }
+            })
+            .collect()
+    }
 }
 
 fn resolve_optional_path(cwd: &Path, maybe: Option<&str>) -> Option<PathBuf> {
@@ -357,6 +392,7 @@ pub enum ResolvedStep {
         text: String,
         runtime: String,
         session_name: String,
+        inject_files: Vec<PromptInjectedFile>,
         output_json: Option<PathBuf>,
         wait_for_idle: bool,
         wait_timeout_secs: u64,
@@ -392,6 +428,12 @@ pub enum ResolvedStep {
         reviewer: String,
         fail_mode: WorkflowFailMode,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct PromptInjectedFile {
+    source: PathBuf,
+    destination: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -474,6 +516,7 @@ impl<'a> WorkflowExecutor<'a> {
                 ResolvedStep::Prompt {
                     step_id,
                     text,
+                    inject_files,
                     session_name,
                     ..
                 } => {
@@ -497,6 +540,23 @@ impl<'a> WorkflowExecutor<'a> {
                             break;
                         }
                     };
+
+                    if let Err(e) = inject_prompt_files(inject_files) {
+                        failed_steps.push(step_index);
+                        success = false;
+                        step_results.push(StepResult {
+                            index: step_index,
+                            step_type: "prompt".to_string(),
+                            status: StepStatus::Failed,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            exit_code: None,
+                            timed_out: false,
+                            message: Some(e.to_string()),
+                            stdout: None,
+                            stderr: None,
+                        });
+                        break;
+                    }
 
                     if !TmuxSession::session_exists(session_name) {
                         failed_steps.push(step_index);
@@ -1137,6 +1197,24 @@ struct CommandOutcome {
 struct StepOutputValue {
     path: PathBuf,
     json: Value,
+}
+
+fn inject_prompt_files(files: &[PromptInjectedFile]) -> Result<()> {
+    for file in files {
+        if !file.source.exists() {
+            return Err(TuttiError::ConfigValidation(format!(
+                "inject_files source does not exist: {}",
+                file.source.display()
+            )));
+        }
+        if let Some(parent) = file.destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if file.source != file.destination {
+            std::fs::copy(&file.source, &file.destination)?;
+        }
+    }
+    Ok(())
 }
 
 fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<CommandOutcome> {
@@ -1858,6 +1936,30 @@ mod tests {
             agent_scope: None,
         };
         assert!(hook_matches_workflow_complete(&hook, &payload));
+    }
+
+    #[test]
+    fn inject_prompt_files_copies_workspace_state() {
+        let dir = std::env::temp_dir().join("tutti-test-inject-files");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let source = dir.join(".tutti/state/snapshot.json");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "{\"ok\":true}\n").unwrap();
+
+        let destination = dir.join(".tutti/worktrees/conductor/.tutti/state/snapshot.json");
+        let files = vec![PromptInjectedFile {
+            source: source.clone(),
+            destination: destination.clone(),
+        }];
+        inject_prompt_files(&files).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(destination).unwrap(),
+            "{\"ok\":true}\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

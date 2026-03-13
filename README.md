@@ -185,6 +185,12 @@ type = "ensure_running"
 agent = "backend"
 
 [[workflow.step]]
+type = "prompt"
+agent = "conductor"
+text = "Summarize anomalies from latest snapshot and propose dispatch actions."
+inject_files = [".tutti/state/snapshot.json"]
+
+[[workflow.step]]
 type = "workflow"
 workflow = "verify-app"
 strict = true
@@ -223,6 +229,7 @@ weekly_hours = 45.0
 `tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
+For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
 
 Optional tool packs can be declared per workspace and validated with `tt doctor`:
 

@@ -5,11 +5,7 @@ use crate::session::TmuxSession;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub fn run(
-    agent_ref: &str,
-    prompt_parts: &[String],
-    options: SendOptions,
-) -> Result<()> {
+pub fn run(agent_ref: &str, prompt_parts: &[String], options: SendOptions) -> Result<()> {
     crate::session::tmux::check_tmux()?;
 
     let prompt = assemble_prompt(prompt_parts)
