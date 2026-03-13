@@ -167,7 +167,7 @@ Policy notes:
 - Policy entries can include shell command prefixes and Claude tool names (`Read`, `Edit`, `Write`, etc.).
 - `tt up` launch integration:
   - Claude constrained mode: auto-generates a runtime settings file and launches with `--permission-mode dontAsk`.
-  - Codex/OpenClaw constrained mode: best-effort policy guidance (Codex also uses `-a never -s workspace-write`).
+  - Codex/OpenClaw/Aider constrained mode: best-effort policy guidance (Codex also uses `-a never -s workspace-write`).
 
 ## Machine-Readable State Contract
 

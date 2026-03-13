@@ -1,19 +1,20 @@
 use crate::config::{
-    HookConfig, HookEvent, HookWorkflowSource, TuttiConfig, WorkflowCommandCwd, WorkflowConfig,
-    WorkflowFailMode, WorkflowStepConfig,
+    HookConfig, HookEvent, HookWorkflowSource, PermissionsConfig, TuttiConfig, WorkflowCommandCwd,
+    WorkflowConfig, WorkflowFailMode, WorkflowStepConfig,
 };
 use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::health::WaitFailureReason;
+use crate::permissions::evaluate_command_policy;
 use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, ControlEvent, VerifyLastSummary, append_automation_run,
-    append_control_event, load_workflow_checkpoint, save_verify_last_summary,
-    save_workflow_checkpoint, save_workflow_output,
+    append_control_event, append_policy_decision, load_workflow_checkpoint,
+    save_verify_last_summary, save_workflow_checkpoint, save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,7 @@ impl ExecutionOrigin {
 pub struct ExecuteOptions {
     pub strict: bool,
     pub force_open_commands: bool,
+    pub command_policy: Option<PermissionsConfig>,
     pub origin: ExecutionOrigin,
     pub hook_event: Option<String>,
     pub hook_agent: Option<String>,
@@ -849,6 +851,7 @@ impl<'a> WorkflowExecutor<'a> {
                         step_id,
                         run,
                         cwd,
+                        agent,
                         timeout_secs,
                         fail_mode,
                         ..
@@ -889,6 +892,56 @@ impl<'a> WorkflowExecutor<'a> {
                                 }
                             },
                         };
+
+                        let policy_ctx = WorkflowCommandPolicyContext {
+                            project_root: self.project_root,
+                            workspace: &self.config.workspace.name,
+                            workflow_name: &workflow.name,
+                            run_id: &run_id,
+                            step_index,
+                            agent: agent.as_deref(),
+                            policy: options.command_policy.as_ref(),
+                        };
+                        let policy_decision =
+                            evaluate_workflow_command_policy(policy_ctx, &rendered);
+                        if !policy_decision.allowed {
+                            let message = format!(
+                                "command blocked by permissions policy: '{}'",
+                                policy_decision.command
+                            );
+                            match fail_mode {
+                                WorkflowFailMode::Open => {
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "command".to_string(),
+                                        status: StepStatus::Warning,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(message),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    continue;
+                                }
+                                WorkflowFailMode::Closed => {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "command".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(message),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
+                            }
+                        }
 
                         let cmd_result = run_shell_command(&rendered, cwd, *timeout_secs);
 
@@ -1123,6 +1176,7 @@ impl<'a> WorkflowExecutor<'a> {
                         let nested_options = ExecuteOptions {
                             strict: *strict,
                             force_open_commands: options.force_open_commands,
+                            command_policy: options.command_policy.clone(),
                             origin: options.origin,
                             hook_event: options.hook_event.clone(),
                             hook_agent: options.hook_agent.clone(),
@@ -1535,6 +1589,60 @@ fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<Com
         stderr: stderr_buf,
         timed_out,
     })
+}
+
+struct WorkflowCommandPolicyContext<'a> {
+    project_root: &'a Path,
+    workspace: &'a str,
+    workflow_name: &'a str,
+    run_id: &'a str,
+    step_index: usize,
+    agent: Option<&'a str>,
+    policy: Option<&'a PermissionsConfig>,
+}
+
+fn evaluate_workflow_command_policy(
+    ctx: WorkflowCommandPolicyContext<'_>,
+    command: &str,
+) -> crate::permissions::CommandPolicyDecision {
+    let decision = evaluate_command_policy(ctx.policy, command);
+
+    let _ = append_policy_decision(
+        ctx.project_root,
+        &crate::state::PolicyDecisionRecord {
+            timestamp: Utc::now(),
+            workspace: ctx.workspace.to_string(),
+            agent: ctx.agent.map(ToString::to_string),
+            runtime: None,
+            action: "workflow_command".to_string(),
+            mode: "workflow".to_string(),
+            policy: if decision.policy_configured {
+                "configured".to_string()
+            } else {
+                "unset".to_string()
+            },
+            enforcement: if decision.policy_configured {
+                "hard".to_string()
+            } else {
+                "none".to_string()
+            },
+            decision: if decision.allowed {
+                "allow".to_string()
+            } else {
+                "block".to_string()
+            },
+            reason: decision.reason.clone(),
+            data: Some(json!({
+                "workflow": ctx.workflow_name,
+                "run_id": ctx.run_id,
+                "step_index": ctx.step_index,
+                "command": decision.command,
+                "matched_rule": decision.matched_rule,
+            })),
+        },
+    );
+
+    decision
 }
 
 fn load_and_store_output(
@@ -2096,6 +2204,7 @@ fn dispatch_agent_stop_hook(
     let options = ExecuteOptions {
         strict: false,
         force_open_commands: false,
+        command_policy: load_command_policy(),
         origin: ExecutionOrigin::HookAgentStop,
         hook_event: Some("agent_stop".to_string()),
         hook_agent: Some(payload.agent_name.clone()),
@@ -2171,6 +2280,7 @@ fn dispatch_workflow_complete_hook(
     let options = ExecuteOptions {
         strict: false,
         force_open_commands: false,
+        command_policy: load_command_policy(),
         origin: ExecutionOrigin::HookWorkflowComplete,
         hook_event: Some("workflow_complete".to_string()),
         hook_agent: payload.agent_scope.clone(),
@@ -2262,6 +2372,12 @@ fn hook_matches_workflow_complete(hook: &HookConfig, payload: &WorkflowCompleteP
             .is_some_and(|a| a == agent_filter);
     }
     true
+}
+
+fn load_command_policy() -> Option<PermissionsConfig> {
+    crate::config::GlobalConfig::load()
+        .ok()
+        .and_then(|global| global.permissions)
 }
 
 pub fn execute_workflow_with_hooks(
@@ -2397,7 +2513,7 @@ pub fn save_verify_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, DefaultsConfig, WorkspaceConfig};
+    use crate::config::{AgentConfig, DefaultsConfig, PermissionsConfig, WorkspaceConfig};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -2486,6 +2602,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            command_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2554,6 +2671,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            command_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2598,6 +2716,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: true,
             force_open_commands: false,
+            command_policy: None,
             origin: ExecutionOrigin::Verify,
             hook_event: None,
             hook_agent: None,
@@ -2610,6 +2729,136 @@ mod tests {
 
         assert!(!result.success);
         assert_eq!(result.failed_steps, vec![1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn command_policy_block_closed_fails_step() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                depends_on: vec![],
+                run: "echo blocked".to_string(),
+                cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: None,
+                agent: Some("backend".to_string()),
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-command-policy-block-closed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: Some(PermissionsConfig {
+                allow: vec!["git status".to_string()],
+            }),
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap();
+        let result = WorkflowExecutor::new(&config, &dir)
+            .execute(&resolved, &opts, None, None, None)
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.failed_steps, vec![1]);
+        assert!(
+            result.step_results[0]
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("blocked by permissions policy"))
+        );
+
+        let decisions = crate::state::load_policy_decisions(&dir).unwrap();
+        assert!(decisions.iter().any(|d| {
+            d.action == "workflow_command"
+                && d.decision == "block"
+                && d.agent.as_deref() == Some("backend")
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn command_policy_block_open_warns_and_continues() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![
+                WorkflowStepConfig::Command {
+                    id: None,
+                    depends_on: vec![],
+                    run: "echo blocked".to_string(),
+                    cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
+                    agent: Some("backend".to_string()),
+                    timeout_secs: Some(30),
+                    fail_mode: Some(WorkflowFailMode::Open),
+                    output_json: None,
+                },
+                WorkflowStepConfig::Command {
+                    id: None,
+                    depends_on: vec![],
+                    run: "echo ok".to_string(),
+                    cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
+                    agent: Some("backend".to_string()),
+                    timeout_secs: Some(30),
+                    fail_mode: Some(WorkflowFailMode::Open),
+                    output_json: None,
+                },
+            ],
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-command-policy-block-open");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: Some(PermissionsConfig {
+                allow: vec!["git status".to_string()],
+            }),
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap();
+        let result = WorkflowExecutor::new(&config, &dir)
+            .execute(&resolved, &opts, None, None, None)
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.warning_count(), 2);
+        assert_eq!(result.step_results.len(), 2);
+
+        let decisions = crate::state::load_policy_decisions(&dir).unwrap();
+        assert_eq!(
+            decisions
+                .iter()
+                .filter(|d| d.action == "workflow_command" && d.decision == "block")
+                .count(),
+            2
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2641,6 +2890,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            command_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2892,6 +3142,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            command_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -3040,6 +3291,7 @@ mod tests {
         let options = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            command_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,

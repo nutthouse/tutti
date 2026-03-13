@@ -1,7 +1,7 @@
 use crate::cli::PermissionsSubcommand;
 use crate::config::{GlobalConfig, PermissionsConfig, TuttiConfig, global_config_path};
 use crate::error::{Result, TuttiError};
-use crate::permissions::{normalize, render_claude_settings};
+use crate::permissions::{evaluate_command_policy, normalize, render_claude_settings};
 use crate::state::{PolicyDecisionRecord, append_policy_decision};
 use chrono::Utc;
 use serde::Serialize;
@@ -36,81 +36,48 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
 
     let global = GlobalConfig::load()?;
     let workspace_ctx = resolve_workspace_context();
-    let Some(policy) = global.permissions.as_ref() else {
-        persist_permission_check_decision(
-            workspace_ctx.as_ref(),
-            &command_line,
-            true,
-            false,
-            None,
-            Some("policy not configured"),
-        );
-        if as_json {
-            let report = PermissionCheckReport {
-                command: command_line,
-                allowed: true,
-                policy_configured: false,
-                matched_rule: None,
-                reason: Some("policy not configured".to_string()),
-            };
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            println!(
-                "Permissions policy is not configured in {}; allowing command.",
-                global_config_path().display()
-            );
-            println!("allowed: {command_line}");
-        }
-        return Ok(());
-    };
-
-    if let Some(matched) = matching_allow_rule(policy, &command_line) {
-        persist_permission_check_decision(
-            workspace_ctx.as_ref(),
-            &command_line,
-            true,
-            true,
-            Some(matched),
-            None,
-        );
-        if as_json {
-            let report = PermissionCheckReport {
-                command: command_line,
-                allowed: true,
-                policy_configured: true,
-                matched_rule: Some(matched.to_string()),
-                reason: None,
-            };
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            println!("allowed: {command_line}");
-            println!("matched rule: {matched}");
-        }
-        return Ok(());
-    }
-
+    let decision = evaluate_command_policy(global.permissions.as_ref(), &command_line);
     persist_permission_check_decision(
         workspace_ctx.as_ref(),
-        &command_line,
-        false,
-        true,
-        None,
-        Some("blocked by permissions policy"),
+        &decision.command,
+        decision.allowed,
+        decision.policy_configured,
+        decision.matched_rule.as_deref(),
+        decision.reason.as_deref(),
     );
+
     if as_json {
         let report = PermissionCheckReport {
-            command: command_line.clone(),
-            allowed: false,
-            policy_configured: true,
-            matched_rule: None,
-            reason: Some("blocked by permissions policy".to_string()),
+            command: decision.command.clone(),
+            allowed: decision.allowed,
+            policy_configured: decision.policy_configured,
+            matched_rule: decision.matched_rule.clone(),
+            reason: decision.reason.clone(),
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if !decision.policy_configured {
+        println!(
+            "Permissions policy is not configured in {}; allowing command.",
+            global_config_path().display()
+        );
+        println!("allowed: {}", decision.command);
+    } else if decision.allowed {
+        println!("allowed: {}", decision.command);
+        if let Some(rule) = decision.matched_rule.as_deref() {
+            println!("matched rule: {rule}");
+        }
+    } else if let Some(reason) = decision.reason.as_deref() {
+        eprintln!("{reason}: '{}'", decision.command);
     }
 
-    Err(TuttiError::ConfigValidation(format!(
-        "command blocked by permissions policy: '{command_line}'"
-    )))
+    if decision.allowed {
+        Ok(())
+    } else {
+        Err(TuttiError::ConfigValidation(format!(
+            "command blocked by permissions policy: '{}'",
+            decision.command
+        )))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -199,38 +166,6 @@ fn render_export(runtime: &str, policy: &PermissionsConfig) -> Result<String> {
     }
 }
 
-fn matching_allow_rule<'a>(policy: &'a PermissionsConfig, command_line: &str) -> Option<&'a str> {
-    for raw_rule in &policy.allow {
-        let trimmed = raw_rule.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Some(prefix) = trimmed.strip_suffix('*') {
-            let prefix = normalize(prefix);
-            if !prefix.is_empty() && command_line.starts_with(&prefix) {
-                return Some(trimmed);
-            }
-            continue;
-        }
-
-        let normalized_rule = normalize(trimmed);
-        if normalized_rule.is_empty() {
-            continue;
-        }
-        if command_line == normalized_rule {
-            return Some(trimmed);
-        }
-        let mut bounded = normalized_rule;
-        bounded.push(' ');
-        if command_line.starts_with(&bounded) {
-            return Some(trimmed);
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,14 +178,17 @@ mod tests {
         };
 
         assert_eq!(
-            matching_allow_rule(&policy, "git status"),
+            crate::permissions::matching_allow_rule(&policy, "git status"),
             Some("git status")
         );
         assert_eq!(
-            matching_allow_rule(&policy, "cargo test --quiet"),
+            crate::permissions::matching_allow_rule(&policy, "cargo test --quiet"),
             Some("cargo test")
         );
-        assert_eq!(matching_allow_rule(&policy, "git stash"), None);
+        assert_eq!(
+            crate::permissions::matching_allow_rule(&policy, "git stash"),
+            None
+        );
     }
 
     #[test]
@@ -260,10 +198,13 @@ mod tests {
         };
 
         assert_eq!(
-            matching_allow_rule(&policy, "npm run build"),
+            crate::permissions::matching_allow_rule(&policy, "npm run build"),
             Some("npm run *")
         );
-        assert_eq!(matching_allow_rule(&policy, "npm test"), None);
+        assert_eq!(
+            crate::permissions::matching_allow_rule(&policy, "npm test"),
+            None
+        );
     }
 
     #[test]

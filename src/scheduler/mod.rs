@@ -1,7 +1,7 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, WorkflowResolver, execute_workflow_with_hooks,
 };
-use crate::config::TuttiConfig;
+use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::Result;
 use crate::state;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -54,9 +54,13 @@ pub fn run_due_workflows_for_workspace(
         }
 
         in_flight.insert(key.clone());
+        let command_policy = GlobalConfig::load()
+            .ok()
+            .and_then(|global| global.permissions);
         let options = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            command_policy,
             origin: ExecutionOrigin::ObserveCycle,
             hook_event: None,
             hook_agent: None,

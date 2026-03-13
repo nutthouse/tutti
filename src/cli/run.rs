@@ -2,7 +2,7 @@ use crate::automation::{
     ExecuteOptions, ExecutionOrigin, ExecutionResult, ResolvedStep, ResolvedWorkflow, StepStatus,
     WorkflowResolver, execute_workflow_with_hooks, load_resume_context,
 };
-use crate::config::TuttiConfig;
+use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
 use crate::{budget, budget::BudgetGuardOutcome};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
@@ -55,10 +55,14 @@ pub fn run(
     print_budget_warnings(&budget_outcome);
 
     let effective_strict = strict || resume_context.as_ref().is_some_and(|r| r.strict);
+    let command_policy = GlobalConfig::load()
+        .ok()
+        .and_then(|global| global.permissions);
 
     let options = ExecuteOptions {
         strict: effective_strict,
         force_open_commands: false,
+        command_policy,
         origin: ExecutionOrigin::Run,
         hook_event: None,
         hook_agent: None,

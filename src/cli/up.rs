@@ -399,7 +399,7 @@ fn resolve_launch_permissions<'a>(
 }
 
 fn runtime_supports_policy_constrained_no_prompt(runtime_name: &str) -> bool {
-    matches!(runtime_name, "claude-code" | "codex" | "openclaw")
+    matches!(runtime_name, "claude-code" | "codex" | "openclaw" | "aider")
 }
 
 fn build_launch_command(
@@ -437,7 +437,7 @@ fn build_launch_command(
             LaunchCommandWarnings {
                 constrained_best_effort: false,
                 unsupported_constrained_runtime: false,
-                bypass_mode: !pre_args.is_empty(),
+                bypass_mode: true,
             },
         ));
     }
@@ -472,7 +472,7 @@ fn build_launch_command(
                     "codex constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let policy_appendix = codex_policy_appendix(policy);
+            let policy_appendix = best_effort_policy_appendix("Codex", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let pre_args = vec![
                 "-a".to_string(),
@@ -496,7 +496,24 @@ fn build_launch_command(
                         .to_string(),
                 )
             })?;
-            let policy_appendix = codex_policy_appendix(policy);
+            let policy_appendix = best_effort_policy_appendix("OpenClaw", policy);
+            let prompt = append_policy_prompt(base_prompt, &policy_appendix);
+            Ok((
+                adapter.build_spawn_command(prompt.as_deref()),
+                LaunchCommandWarnings {
+                    constrained_best_effort: true,
+                    unsupported_constrained_runtime: false,
+                    bypass_mode: false,
+                },
+            ))
+        }
+        "aider" => {
+            let policy = permissions_policy.ok_or_else(|| {
+                TuttiError::ConfigValidation(
+                    "aider constrained launch requires configured [permissions] policy".to_string(),
+                )
+            })?;
+            let policy_appendix = best_effort_policy_appendix("Aider", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             Ok((
                 adapter.build_spawn_command(prompt.as_deref()),
@@ -534,7 +551,7 @@ fn write_claude_settings_file(
     Ok(settings_path)
 }
 
-fn codex_policy_appendix(policy: &PermissionsConfig) -> String {
+fn best_effort_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) -> String {
     let rules: Vec<String> = policy
         .allow
         .iter()
@@ -542,9 +559,9 @@ fn codex_policy_appendix(policy: &PermissionsConfig) -> String {
         .filter(|entry| !entry.is_empty())
         .collect();
 
-    let mut out = String::from(
-        "Tutti policy constraints (best-effort for Codex):\n\
-         Only execute Bash commands matching one of these allow rules:\n",
+    let mut out = format!(
+        "Tutti policy constraints (best-effort for {runtime_label}):\n\
+         Only execute Bash commands matching one of these allow rules:\n"
     );
     for rule in &rules {
         out.push_str("- ");
@@ -1500,6 +1517,65 @@ mod tests {
         assert!(cmd.contains("Tutti policy constraints"));
         assert!(warnings.constrained_best_effort);
         assert!(!warnings.unsupported_constrained_runtime);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_launch_command_aider_constrained_adds_policy_prompt() {
+        let adapter = runtime::get_adapter("aider", None).expect("aider adapter");
+        let dir = std::env::temp_dir().join(format!("tutti-test-up-aider-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let policy = PermissionsConfig {
+            allow: vec!["git status".to_string(), "cargo test".to_string()],
+        };
+
+        let (cmd, warnings) = build_launch_command(
+            adapter.as_ref(),
+            "aider",
+            LaunchSettings {
+                mode: LaunchMode::Auto,
+                policy: LaunchPolicyMode::Constrained,
+            },
+            Some(&policy),
+            &dir,
+            "backend",
+            Some("You own tests."),
+        )
+        .expect("command should build");
+
+        assert!(cmd.contains("--message"));
+        assert!(cmd.contains("Tutti policy constraints"));
+        assert!(warnings.constrained_best_effort);
+        assert!(!warnings.unsupported_constrained_runtime);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_launch_command_bypass_warns_even_without_runtime_specific_flags() {
+        let adapter = runtime::get_adapter("openclaw", None).expect("openclaw adapter");
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-up-bypass-openclaw-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let (_cmd, warnings) = build_launch_command(
+            adapter.as_ref(),
+            "openclaw",
+            LaunchSettings {
+                mode: LaunchMode::Unattended,
+                policy: LaunchPolicyMode::Bypass,
+            },
+            None,
+            &dir,
+            "backend",
+            Some("You own tests."),
+        )
+        .expect("command should build");
+
+        assert!(warnings.bypass_mode);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
