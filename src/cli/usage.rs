@@ -336,6 +336,7 @@ mod tests {
             ],
             dashboard: None,
             resilience: None,
+            permissions: None,
         };
         let map = HashMap::from([("a".to_string(), "personal".to_string())]);
 
@@ -362,6 +363,7 @@ mod tests {
             ],
             dashboard: None,
             resilience: None,
+            permissions: None,
         };
         let map = HashMap::from([("a".to_string(), "work".to_string())]);
 

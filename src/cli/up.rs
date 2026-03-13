@@ -681,6 +681,7 @@ mod tests {
             registered_workspaces: vec![],
             dashboard: None,
             resilience: None,
+            permissions: None,
         };
 
         let limit = resolve_profile_limit(&config, &global).unwrap();
@@ -725,6 +726,7 @@ mod tests {
             registered_workspaces: vec![],
             dashboard: None,
             resilience: None,
+            permissions: None,
         };
 
         assert!(resolve_profile_limit(&config, &global).is_none());

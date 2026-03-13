@@ -26,6 +26,7 @@ Use these surfaces, in this order of preference:
 2. `.tutti/state/*.json` files for machine-readable per-agent runtime state.
 3. `.tutti/state/automation-runs.jsonl` and `.tutti/state/verify-last.json` for automation outcomes.
 4. `.tutti/logs/*.log` (when enabled) for historical output analysis.
+5. `tt permissions check ...` when integrations want to preflight local command safety policy.
 
 Avoid:
 - Parsing pretty tables from `tt status` as your primary machine interface.
@@ -100,6 +101,17 @@ Use `peek` for automation. Use `attach` for operator handoff.
 Hook behavior in v1:
 - `agent_stop` hooks fire from explicit stop paths (`tt down`, `tt down --all`).
 - Hook defaults are fail-open unless configured fail-closed.
+
+### 7) Command permission policy (optional)
+
+- Check if a command is currently allowed by global policy:
+  - `tt permissions check <command...>`
+- Export Claude-compatible settings scaffold from policy:
+  - `tt permissions export --runtime claude`
+
+Policy notes:
+- Policy is opt-in via `[permissions]` in `~/.config/tutti/config.toml`.
+- When policy is absent, Tutti allows commands and reports that policy is not configured.
 
 ## Machine-Readable State Contract
 

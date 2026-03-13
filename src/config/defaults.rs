@@ -123,4 +123,13 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 # [resilience]
 # provider_down_strategy = "pause"
 # save_state_on_failure = true
+#
+# Team-shared command allowlist policy (opt-in)
+# [permissions]
+# allow = [
+#   "git status",
+#   "git diff",
+#   "git log",
+#   "cargo test",
+# ]
 "#;

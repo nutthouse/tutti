@@ -56,6 +56,7 @@ fn main() {
             ref profile,
             by_workspace,
         } => cli::usage::run(profile.as_deref(), by_workspace),
+        Commands::Permissions { command } => cli::permissions::run(command),
         Commands::Workspaces { ref command } => match command {
             Some(WorkspacesSubcommand::Status) => cli::workspaces::status(),
             None => cli::workspaces::list(),

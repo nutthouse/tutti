@@ -14,6 +14,8 @@ tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt run verify-app        # run reusable workflow steps (prompt + commands)
 tt verify                # run verification workflow + persist summary
+tt permissions check git status
+                         # evaluate team command policy
 tt logs backend -f       # follow captured output for an agent
 ```
 
@@ -73,7 +75,7 @@ source ~/.zshrc
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `permissions`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -142,6 +144,7 @@ weekly_hours = 45.0
 ```
 
 `tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
+`tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 
 ## Core Concepts
 
@@ -195,6 +198,11 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Per-profile capacity settings (`plan`, `reset_day`, `weekly_hours`)
 - Per-profile concurrency limits (`max_concurrent`) enforced by `tt up`
 - Automatic profile rotation and `tt profiles` command (planned)
+
+### Permissions Policy (Built, Opt-in)
+- Team-shared command allowlist in `~/.config/tutti/config.toml` under `[permissions]`
+- `tt permissions check <command...>` evaluates command prefixes against policy
+- `tt permissions export --runtime claude` emits a Claude settings scaffold
 
 ### Community (Planned)
 - Share and discover arrangements (team configs)
@@ -259,7 +267,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt permissions`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter

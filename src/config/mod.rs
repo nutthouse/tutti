@@ -180,6 +180,8 @@ pub struct GlobalConfig {
     pub dashboard: Option<DashboardConfig>,
     #[serde(default)]
     pub resilience: Option<ResilienceConfig>,
+    #[serde(default)]
+    pub permissions: Option<PermissionsConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +233,12 @@ pub struct ResilienceConfig {
     pub save_state_on_failure: bool,
     #[serde(default)]
     pub rate_limit_strategy: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PermissionsConfig {
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 fn default_true() -> bool {

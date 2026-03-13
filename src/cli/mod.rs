@@ -5,6 +5,7 @@ pub mod down;
 pub mod init;
 pub mod logs;
 pub mod peek;
+pub mod permissions;
 pub mod run;
 pub mod snapshot;
 pub mod status;
@@ -161,6 +162,12 @@ pub enum Commands {
         by_workspace: bool,
     },
 
+    /// Evaluate/export command permission policy
+    Permissions {
+        #[command(subcommand)]
+        command: PermissionsSubcommand,
+    },
+
     /// List all registered workspaces
     Workspaces {
         #[command(subcommand)]
@@ -172,4 +179,24 @@ pub enum Commands {
 pub enum WorkspacesSubcommand {
     /// Show status overview of all workspaces
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum PermissionsSubcommand {
+    /// Check whether a command is allowed by global policy
+    Check {
+        /// Command to evaluate against allowed prefixes
+        #[arg(required = true)]
+        command: Vec<String>,
+    },
+    /// Export runtime scaffolding from policy
+    Export {
+        /// Target runtime settings format
+        #[arg(long, default_value = "claude")]
+        runtime: String,
+
+        /// Write output to a file path instead of stdout
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
 }

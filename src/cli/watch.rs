@@ -592,6 +592,7 @@ mod tests {
             registered_workspaces: vec![],
             dashboard: None,
             resilience: None,
+            permissions: None,
         };
         assert_eq!(resolve_workspace_plan_label(&config, &global), "API");
     }
@@ -626,6 +627,7 @@ mod tests {
             registered_workspaces: vec![],
             dashboard: None,
             resilience: None,
+            permissions: None,
         };
 
         let cache = build_plan_cache_with_global(&config, Some(&global));
