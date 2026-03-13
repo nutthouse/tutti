@@ -26,7 +26,7 @@ Use these surfaces, in this order of preference:
 2. `.tutti/state/*.json` files for machine-readable per-agent runtime state.
 3. `.tutti/state/automation-runs.jsonl` and `.tutti/state/verify-last.json` for automation outcomes.
 4. `.tutti/logs/*.log` (when enabled) for historical output analysis.
-5. `tt permissions check ...` when integrations want to preflight local command safety policy.
+5. `tt permissions check ... --json` when integrations want to preflight local command safety policy.
 6. `tt doctor --json` before long-running automation to validate workspace prerequisites.
 
 Avoid:
@@ -106,7 +106,7 @@ Hook behavior in v1:
 ### 7) Command permission policy (optional)
 
 - Check if a command is currently allowed by global policy:
-  - `tt permissions check <command...>`
+  - `tt permissions check <command...> --json`
 - Export Claude-compatible settings scaffold from policy:
   - `tt permissions export --runtime claude`
 

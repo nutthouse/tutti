@@ -1,19 +1,29 @@
 use crate::cli::PermissionsSubcommand;
 use crate::config::{GlobalConfig, PermissionsConfig, global_config_path};
 use crate::error::{Result, TuttiError};
+use serde::Serialize;
 use serde_json::json;
 use std::path::Path;
 
 pub fn run(command: PermissionsSubcommand) -> Result<()> {
     match command {
-        PermissionsSubcommand::Check { command } => run_check(&command),
+        PermissionsSubcommand::Check { command, json } => run_check(&command, json),
         PermissionsSubcommand::Export { runtime, output } => {
             run_export(&runtime, output.as_deref())
         }
     }
 }
 
-fn run_check(parts: &[String]) -> Result<()> {
+#[derive(Debug, Serialize)]
+struct PermissionCheckReport {
+    command: String,
+    allowed: bool,
+    policy_configured: bool,
+    matched_rule: Option<String>,
+    reason: Option<String>,
+}
+
+fn run_check(parts: &[String], as_json: bool) -> Result<()> {
     let command_line = normalize(parts.join(" "));
     if command_line.is_empty() {
         return Err(TuttiError::ConfigValidation(
@@ -23,18 +33,51 @@ fn run_check(parts: &[String]) -> Result<()> {
 
     let global = GlobalConfig::load()?;
     let Some(policy) = global.permissions.as_ref() else {
-        println!(
-            "Permissions policy is not configured in {}; allowing command.",
-            global_config_path().display()
-        );
-        println!("allowed: {command_line}");
+        if as_json {
+            let report = PermissionCheckReport {
+                command: command_line,
+                allowed: true,
+                policy_configured: false,
+                matched_rule: None,
+                reason: Some("policy not configured".to_string()),
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!(
+                "Permissions policy is not configured in {}; allowing command.",
+                global_config_path().display()
+            );
+            println!("allowed: {command_line}");
+        }
         return Ok(());
     };
 
     if let Some(matched) = matching_allow_rule(policy, &command_line) {
-        println!("allowed: {command_line}");
-        println!("matched rule: {matched}");
+        if as_json {
+            let report = PermissionCheckReport {
+                command: command_line,
+                allowed: true,
+                policy_configured: true,
+                matched_rule: Some(matched.to_string()),
+                reason: None,
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            println!("allowed: {command_line}");
+            println!("matched rule: {matched}");
+        }
         return Ok(());
+    }
+
+    if as_json {
+        let report = PermissionCheckReport {
+            command: command_line.clone(),
+            allowed: false,
+            policy_configured: true,
+            matched_rule: None,
+            reason: Some("blocked by permissions policy".to_string()),
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
     }
 
     Err(TuttiError::ConfigValidation(format!(

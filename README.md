@@ -24,6 +24,8 @@ tt doctor                # preflight runtime/profile/tool-pack prerequisites
 tt doctor --json         # machine-readable preflight report
 tt permissions check git status
                          # evaluate team command policy
+tt permissions check git status --json
+                         # machine-readable policy decision
 tt logs backend -f       # follow captured output for an agent
 ```
 

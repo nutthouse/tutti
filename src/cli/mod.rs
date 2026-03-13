@@ -213,6 +213,10 @@ pub enum PermissionsSubcommand {
         /// Command to evaluate against allowed prefixes
         #[arg(required = true)]
         command: Vec<String>,
+
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Export runtime scaffolding from policy
     Export {
