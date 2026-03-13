@@ -27,4 +27,5 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "Running",
     ],
     idle_patterns: &[">", "What would you like", "How can I"],
+    completion_patterns: &["What would you like", "How can I"],
 };

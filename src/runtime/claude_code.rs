@@ -39,4 +39,5 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "> ",
         "Claude Code",
     ],
+    completion_patterns: &["What would you like to do?", "How can I help"],
 };

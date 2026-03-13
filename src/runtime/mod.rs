@@ -16,6 +16,11 @@ pub enum AgentStatus {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionSignal {
+    Explicit(String),
+}
+
 impl std::fmt::Display for AgentStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -48,6 +53,9 @@ pub trait RuntimeAdapter {
 
     /// Check if terminal output indicates an auth failure.
     fn detect_auth_failure(&self, terminal_output: &str) -> Option<String>;
+
+    /// Detect explicit runtime completion markers (preferred over heuristic idle detection).
+    fn detect_completion_signal(&self, terminal_output: &str) -> Option<CompletionSignal>;
 }
 
 /// Shared configuration that drives the default RuntimeAdapter implementation.
@@ -63,6 +71,7 @@ struct RuntimeConfig {
     auth_patterns: &'static [&'static str],
     working_patterns: &'static [&'static str],
     idle_patterns: &'static [&'static str],
+    completion_patterns: &'static [&'static str],
 }
 
 /// Common adapter that holds an optional command override and runtime-specific config.
@@ -143,6 +152,24 @@ impl RuntimeAdapter for CommonAdapter {
         for pattern in self.config.auth_patterns {
             if lower.contains(&pattern.to_lowercase()) {
                 return Some(pattern.to_string());
+            }
+        }
+        None
+    }
+
+    fn detect_completion_signal(&self, terminal_output: &str) -> Option<CompletionSignal> {
+        let recent: String = terminal_output
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        for pattern in self.config.completion_patterns {
+            if recent.contains(pattern) {
+                return Some(CompletionSignal::Explicit((*pattern).to_string()));
             }
         }
         None
@@ -231,6 +258,15 @@ mod tests {
     }
 
     #[test]
+    fn claude_detect_completion_signal() {
+        let a = adapter("claude-code");
+        assert!(
+            a.detect_completion_signal("Done.\n\nWhat would you like to do?")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn claude_detect_auth_failure() {
         let a = adapter("claude-code");
         assert!(matches!(
@@ -291,6 +327,15 @@ mod tests {
     }
 
     #[test]
+    fn codex_detect_completion_signal() {
+        let a = adapter("codex");
+        assert!(
+            a.detect_completion_signal("Done.\n\nWhat would you like to do?")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn codex_detect_auth_failure() {
         let a = adapter("codex");
         assert!(matches!(
@@ -337,6 +382,12 @@ mod tests {
     fn aider_detect_idle() {
         let a = adapter("aider");
         assert_eq!(a.detect_status("Done.\n\naider> "), AgentStatus::Idle);
+    }
+
+    #[test]
+    fn aider_detect_completion_signal() {
+        let a = adapter("aider");
+        assert!(a.detect_completion_signal("Done.\n\naider> ").is_some());
     }
 
     #[test]
@@ -388,6 +439,15 @@ mod tests {
         assert_eq!(
             a.detect_status("Done.\n\nWhat would you like to do?"),
             AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn openclaw_detect_completion_signal() {
+        let a = adapter("openclaw");
+        assert!(
+            a.detect_completion_signal("Done.\n\nWhat would you like to do?")
+                .is_some()
         );
     }
 

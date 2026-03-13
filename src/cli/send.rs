@@ -1,6 +1,7 @@
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use crate::health;
+use crate::health::{WaitCompletionSource, WaitFailureReason};
 use crate::session::TmuxSession;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -50,17 +51,33 @@ pub fn run(agent_ref: &str, prompt_parts: &[String], options: SendOptions) -> Re
             Duration::from_secs(options.timeout_secs.max(1)),
             Duration::from_secs(options.idle_stable_secs.max(1)),
         )?;
-        if outcome.timed_out {
-            return Err(TuttiError::ConfigValidation(format!(
-                "timed out waiting for '{}' to go idle after {}s",
-                agent_name,
-                options.timeout_secs.max(1)
-            )));
+        if !outcome.is_completed() {
+            return Err(match outcome.failure_reason {
+                Some(WaitFailureReason::IdleTimeout) => TuttiError::ConfigValidation(format!(
+                    "send_wait_failed: idle_timeout (agent='{}', timeout_secs={})",
+                    agent_name,
+                    options.timeout_secs.max(1)
+                )),
+                Some(WaitFailureReason::AuthFailed) => TuttiError::ConfigValidation(format!(
+                    "send_wait_failed: auth_failed (agent='{}', detail='{}')",
+                    agent_name,
+                    outcome.detail.as_deref().unwrap_or("unknown")
+                )),
+                Some(WaitFailureReason::SessionExited) => {
+                    TuttiError::AgentNotRunning(agent_name.to_string())
+                }
+                None => TuttiError::ConfigValidation("send_wait_failed: unknown".to_string()),
+            });
         }
         if let Ok((config, _)) = TuttiConfig::load(&target.project_root) {
             let _ = health::probe_workspace(&config, &target.project_root, 200);
         }
-        println!("sent prompt to {agent_name} ({workspace_name}) and wait completed");
+        let source = match outcome.completion_source {
+            Some(WaitCompletionSource::RuntimeSignal) => "runtime_signal",
+            Some(WaitCompletionSource::HeuristicIdleStable) => "heuristic_idle_stable",
+            None => "unknown",
+        };
+        println!("sent prompt to {agent_name} ({workspace_name}) and wait completed ({source})");
     } else {
         println!("sent prompt to {agent_name} ({workspace_name})");
     }

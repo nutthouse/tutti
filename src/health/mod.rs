@@ -1,5 +1,5 @@
 use crate::config::TuttiConfig;
-use crate::error::{Result, TuttiError};
+use crate::error::Result;
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
 use crate::state::{self, ActivityState, AgentHealth, AuthState};
@@ -12,8 +12,45 @@ use std::time::{Duration, Instant};
 const DEFAULT_CAPTURE_LINES: u32 = 200;
 
 #[derive(Debug, Clone, Copy)]
+pub enum WaitCompletionSource {
+    RuntimeSignal,
+    HeuristicIdleStable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitFailureReason {
+    IdleTimeout,
+    AuthFailed,
+    SessionExited,
+}
+
+#[derive(Debug, Clone)]
 pub struct WaitForIdleResult {
-    pub timed_out: bool,
+    pub completion_source: Option<WaitCompletionSource>,
+    pub failure_reason: Option<WaitFailureReason>,
+    pub detail: Option<String>,
+}
+
+impl WaitForIdleResult {
+    pub fn completed(source: WaitCompletionSource) -> Self {
+        Self {
+            completion_source: Some(source),
+            failure_reason: None,
+            detail: None,
+        }
+    }
+
+    pub fn failed(reason: WaitFailureReason, detail: Option<String>) -> Self {
+        Self {
+            completion_source: None,
+            failure_reason: Some(reason),
+            detail,
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.completion_source.is_some()
+    }
 }
 
 pub fn probe_workspace(
@@ -109,7 +146,10 @@ pub fn wait_for_agent_idle(
 
     while start.elapsed() < timeout {
         if !TmuxSession::session_exists(session_name) {
-            return Err(TuttiError::AgentNotRunning(session_name.to_string()));
+            return Ok(WaitForIdleResult::failed(
+                WaitFailureReason::SessionExited,
+                Some("session exited".to_string()),
+            ));
         }
 
         let output = TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES)?;
@@ -120,9 +160,19 @@ pub fn wait_for_agent_idle(
         if let Some(adapter) = &adapter
             && let Some(reason) = adapter.detect_auth_failure(&output)
         {
-            return Err(TuttiError::ConfigValidation(format!(
-                "auth failure while waiting for idle: {reason}"
-            )));
+            return Ok(WaitForIdleResult::failed(
+                WaitFailureReason::AuthFailed,
+                Some(reason),
+            ));
+        }
+
+        if let Some(adapter) = &adapter
+            && adapter.detect_completion_signal(&output).is_some()
+            && saw_activity
+        {
+            return Ok(WaitForIdleResult::completed(
+                WaitCompletionSource::RuntimeSignal,
+            ));
         }
 
         if changed
@@ -135,7 +185,9 @@ pub fn wait_for_agent_idle(
         } else if saw_activity {
             if let Some(since) = idle_since {
                 if since.elapsed() >= idle_stability {
-                    return Ok(WaitForIdleResult { timed_out: false });
+                    return Ok(WaitForIdleResult::completed(
+                        WaitCompletionSource::HeuristicIdleStable,
+                    ));
                 }
             } else {
                 idle_since = Some(Instant::now());
@@ -146,7 +198,10 @@ pub fn wait_for_agent_idle(
         std::thread::sleep(Duration::from_secs(1));
     }
 
-    Ok(WaitForIdleResult { timed_out: true })
+    Ok(WaitForIdleResult::failed(
+        WaitFailureReason::IdleTimeout,
+        Some("idle wait timed out".to_string()),
+    ))
 }
 
 fn hash_output(output: &str) -> u64 {

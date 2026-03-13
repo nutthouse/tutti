@@ -34,4 +34,5 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "openclaw>",
         "> ",
     ],
+    completion_patterns: &["What would you like to do?", "How can I help", "openclaw>"],
 };

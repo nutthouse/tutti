@@ -4,6 +4,7 @@ use crate::config::{
 };
 use crate::error::{Result, TuttiError};
 use crate::health;
+use crate::health::WaitFailureReason;
 use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, VerifyLastSummary, append_automation_run, save_verify_last_summary,
@@ -610,7 +611,28 @@ impl<'a> WorkflowExecutor<'a> {
                                 Duration::from_secs((*wait_timeout_secs).max(1)),
                                 Duration::from_secs(5),
                             )?;
-                            if wait.timed_out {
+                            if !wait.is_completed() {
+                                let (timed_out, message) = match wait.failure_reason {
+                                    Some(WaitFailureReason::IdleTimeout) => (
+                                        true,
+                                        format!(
+                                            "wait_for_idle timed out after {}s",
+                                            wait_timeout_secs
+                                        ),
+                                    ),
+                                    Some(WaitFailureReason::AuthFailed) => (
+                                        false,
+                                        format!(
+                                            "wait_for_idle auth_failed: {}",
+                                            wait.detail.as_deref().unwrap_or("unknown")
+                                        ),
+                                    ),
+                                    Some(WaitFailureReason::SessionExited) => (
+                                        false,
+                                        "wait_for_idle failed: target session exited".to_string(),
+                                    ),
+                                    None => (false, "wait_for_idle failed: unknown".to_string()),
+                                };
                                 failed_steps.push(step_index);
                                 success = false;
                                 step_results.push(StepResult {
@@ -619,11 +641,8 @@ impl<'a> WorkflowExecutor<'a> {
                                     status: StepStatus::Failed,
                                     duration_ms: started.elapsed().as_millis() as u64,
                                     exit_code: None,
-                                    timed_out: true,
-                                    message: Some(format!(
-                                        "wait_for_idle timed out after {}s",
-                                        wait_timeout_secs
-                                    )),
+                                    timed_out,
+                                    message: Some(message),
                                     stdout: None,
                                     stderr: None,
                                 });

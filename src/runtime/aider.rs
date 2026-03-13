@@ -26,4 +26,5 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "Committing",
     ],
     idle_patterns: &["aider>", "> ", "/help"],
+    completion_patterns: &["aider>"],
 };
