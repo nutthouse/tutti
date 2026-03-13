@@ -2,6 +2,8 @@ use crate::error::{Result, TuttiError};
 use std::collections::HashMap;
 use std::process::Command;
 
+const BLOCKED_INHERITED_ENV_VARS: &[&str] = &["CLAUDECODE"];
+
 /// Check that tmux is installed and on PATH.
 pub fn check_tmux() -> Result<()> {
     which::which("tmux").map_err(|_| TuttiError::TmuxNotInstalled)?;
@@ -46,18 +48,22 @@ impl TmuxSession {
             )));
         }
 
+        // Avoid nested Claude Code detection when Tutti is launched from inside Claude Code.
+        for key in BLOCKED_INHERITED_ENV_VARS {
+            Self::send_text(session, &format!("unset {key}"))?;
+        }
+
         // Export env vars into the shell
         for (key, value) in env_vars {
+            if should_strip_inherited_env_var(key) {
+                continue;
+            }
             let export_cmd = format!("export {}={}", key, shell_escape_value(value));
-            let _ = Command::new("tmux")
-                .args(["send-keys", "-t", session, &export_cmd, "Enter"])
-                .output();
+            Self::send_text(session, &export_cmd)?;
         }
 
         // Send the actual command
-        let _ = Command::new("tmux")
-            .args(["send-keys", "-t", session, shell_cmd, "Enter"])
-            .output();
+        Self::send_text(session, shell_cmd)?;
 
         Ok(())
     }
@@ -221,4 +227,26 @@ impl TmuxSession {
 /// Shell-escape a value for use in `env KEY=VALUE` commands.
 fn shell_escape_value(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn should_strip_inherited_env_var(key: &str) -> bool {
+    BLOCKED_INHERITED_ENV_VARS
+        .iter()
+        .any(|blocked| key.eq_ignore_ascii_case(blocked))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_strip_inherited_env_var;
+
+    #[test]
+    fn strips_claudecode_env_var_case_insensitive() {
+        assert!(should_strip_inherited_env_var("CLAUDECODE"));
+        assert!(should_strip_inherited_env_var("claudecode"));
+    }
+
+    #[test]
+    fn does_not_strip_unrelated_env_var() {
+        assert!(!should_strip_inherited_env_var("OPENAI_API_KEY"));
+    }
 }
