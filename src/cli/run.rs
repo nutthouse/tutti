@@ -159,6 +159,58 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                 format!("{:?}", fail_mode).to_lowercase(),
                 truncate(run, 80),
             ]),
+            crate::automation::ResolvedStep::EnsureRunning {
+                agent, fail_mode, ..
+            } => table.add_row(vec![
+                (idx + 1).to_string(),
+                "ensure_running".to_string(),
+                agent.clone(),
+                "session".to_string(),
+                format!("{:?}", fail_mode).to_lowercase(),
+                "ensure target session is running".to_string(),
+            ]),
+            crate::automation::ResolvedStep::Workflow {
+                workflow,
+                agent_override,
+                strict,
+                fail_mode,
+            } => table.add_row(vec![
+                (idx + 1).to_string(),
+                "workflow".to_string(),
+                agent_override.clone().unwrap_or_else(|| "--".to_string()),
+                "workflow".to_string(),
+                format!("{:?}", fail_mode).to_lowercase(),
+                format!("{}{}", workflow, if *strict { " (strict)" } else { "" }),
+            ]),
+            crate::automation::ResolvedStep::Land {
+                agent,
+                pr,
+                force,
+                fail_mode,
+            } => table.add_row(vec![
+                (idx + 1).to_string(),
+                "land".to_string(),
+                agent.clone(),
+                "workspace".to_string(),
+                format!("{:?}", fail_mode).to_lowercase(),
+                format!(
+                    "land changes{}{}",
+                    if *pr { " with PR" } else { "" },
+                    if *force { " (force)" } else { "" }
+                ),
+            ]),
+            crate::automation::ResolvedStep::Review {
+                agent,
+                reviewer,
+                fail_mode,
+            } => table.add_row(vec![
+                (idx + 1).to_string(),
+                "review".to_string(),
+                agent.clone(),
+                "workspace".to_string(),
+                format!("{:?}", fail_mode).to_lowercase(),
+                format!("send to reviewer '{}'", reviewer),
+            ]),
         };
     }
 
@@ -188,6 +240,31 @@ enum DryRunStep {
         fail_mode: String,
         summary: String,
     },
+    EnsureRunning {
+        index: usize,
+        agent: String,
+        fail_mode: String,
+    },
+    Workflow {
+        index: usize,
+        workflow: String,
+        agent: Option<String>,
+        strict: bool,
+        fail_mode: String,
+    },
+    Land {
+        index: usize,
+        agent: String,
+        pr: bool,
+        force: bool,
+        fail_mode: String,
+    },
+    Review {
+        index: usize,
+        agent: String,
+        reviewer: String,
+        fail_mode: String,
+    },
 }
 
 fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
@@ -211,6 +288,47 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 cwd: cwd.display().to_string(),
                 fail_mode: format!("{:?}", fail_mode).to_lowercase(),
                 summary: run.clone(),
+            }),
+            ResolvedStep::EnsureRunning {
+                agent, fail_mode, ..
+            } => steps.push(DryRunStep::EnsureRunning {
+                index: idx + 1,
+                agent: agent.clone(),
+                fail_mode: format!("{:?}", fail_mode).to_lowercase(),
+            }),
+            ResolvedStep::Workflow {
+                workflow,
+                agent_override,
+                strict,
+                fail_mode,
+            } => steps.push(DryRunStep::Workflow {
+                index: idx + 1,
+                workflow: workflow.clone(),
+                agent: agent_override.clone(),
+                strict: *strict,
+                fail_mode: format!("{:?}", fail_mode).to_lowercase(),
+            }),
+            ResolvedStep::Land {
+                agent,
+                pr,
+                force,
+                fail_mode,
+            } => steps.push(DryRunStep::Land {
+                index: idx + 1,
+                agent: agent.clone(),
+                pr: *pr,
+                force: *force,
+                fail_mode: format!("{:?}", fail_mode).to_lowercase(),
+            }),
+            ResolvedStep::Review {
+                agent,
+                reviewer,
+                fail_mode,
+            } => steps.push(DryRunStep::Review {
+                index: idx + 1,
+                agent: agent.clone(),
+                reviewer: reviewer.clone(),
+                fail_mode: format!("{:?}", fail_mode).to_lowercase(),
             }),
         }
     }

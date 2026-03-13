@@ -161,6 +161,36 @@ pub enum WorkflowStepConfig {
         #[serde(default)]
         output_json: Option<String>,
     },
+    EnsureRunning {
+        agent: String,
+        #[serde(default)]
+        fail_mode: Option<WorkflowFailMode>,
+    },
+    Workflow {
+        workflow: String,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        strict: Option<bool>,
+        #[serde(default)]
+        fail_mode: Option<WorkflowFailMode>,
+    },
+    Land {
+        agent: String,
+        #[serde(default)]
+        pr: Option<bool>,
+        #[serde(default)]
+        force: Option<bool>,
+        #[serde(default)]
+        fail_mode: Option<WorkflowFailMode>,
+    },
+    Review {
+        agent: String,
+        #[serde(default)]
+        reviewer: Option<String>,
+        #[serde(default)]
+        fail_mode: Option<WorkflowFailMode>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -481,6 +511,9 @@ impl TuttiConfig {
                     workflow.name
                 )));
             }
+        }
+
+        for workflow in &self.workflows {
             if workflow.steps.is_empty() {
                 return Err(TuttiError::ConfigValidation(format!(
                     "workflow '{}' must have at least one step",
@@ -557,6 +590,79 @@ impl TuttiConfig {
                             output_json.as_deref(),
                             &mut step_ids,
                         )?;
+                    }
+                    WorkflowStepConfig::EnsureRunning { agent, .. } => {
+                        if !agent_names.contains(agent.as_str()) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown agent '{}'",
+                                workflow.name,
+                                idx + 1,
+                                agent
+                            )));
+                        }
+                    }
+                    WorkflowStepConfig::Workflow {
+                        workflow: nested,
+                        agent,
+                        ..
+                    } => {
+                        if nested.trim().is_empty() {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} has empty nested workflow name",
+                                workflow.name,
+                                idx + 1
+                            )));
+                        }
+                        if !workflow_names.contains(nested.as_str()) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown workflow '{}'",
+                                workflow.name,
+                                idx + 1,
+                                nested
+                            )));
+                        }
+                        if let Some(agent_name) = agent.as_deref()
+                            && !agent_names.contains(agent_name)
+                        {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown agent '{}'",
+                                workflow.name,
+                                idx + 1,
+                                agent_name
+                            )));
+                        }
+                    }
+                    WorkflowStepConfig::Land { agent, .. } => {
+                        if !agent_names.contains(agent.as_str()) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown agent '{}'",
+                                workflow.name,
+                                idx + 1,
+                                agent
+                            )));
+                        }
+                    }
+                    WorkflowStepConfig::Review {
+                        agent, reviewer, ..
+                    } => {
+                        if !agent_names.contains(agent.as_str()) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown agent '{}'",
+                                workflow.name,
+                                idx + 1,
+                                agent
+                            )));
+                        }
+                        if let Some(reviewer_name) = reviewer.as_deref()
+                            && !agent_names.contains(reviewer_name)
+                        {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown reviewer agent '{}'",
+                                workflow.name,
+                                idx + 1,
+                                reviewer_name
+                            )));
+                        }
                     }
                 }
             }
@@ -965,6 +1071,54 @@ run = "echo done"
     }
 
     #[test]
+    fn parse_workflow_control_steps() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[agent]]
+name = "reviewer"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+
+[[workflow]]
+name = "autofix"
+
+[[workflow.step]]
+type = "ensure_running"
+agent = "backend"
+
+[[workflow.step]]
+type = "workflow"
+workflow = "verify"
+agent = "backend"
+strict = true
+
+[[workflow.step]]
+type = "review"
+agent = "backend"
+reviewer = "reviewer"
+
+[[workflow.step]]
+type = "land"
+agent = "backend"
+force = true
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn validate_schedule_must_be_five_field_cron() {
         let toml_str = r#"
 [workspace]
@@ -1008,6 +1162,28 @@ output_json = "out.json"
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("missing id"));
+    }
+
+    #[test]
+    fn validate_nested_workflow_reference_must_exist() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "autofix"
+
+[[workflow.step]]
+type = "workflow"
+workflow = "missing"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown workflow"));
     }
 
     #[test]

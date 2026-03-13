@@ -204,6 +204,63 @@ impl<'a> WorkflowResolver<'a> {
                         output_json,
                     });
                 }
+                WorkflowStepConfig::EnsureRunning { agent, fail_mode } => {
+                    let effective_agent = agent_override.unwrap_or(agent.as_str());
+                    self.ensure_agent_exists(effective_agent)?;
+                    let session_name =
+                        TmuxSession::session_name(&self.config.workspace.name, effective_agent);
+                    steps.push(ResolvedStep::EnsureRunning {
+                        agent: effective_agent.to_string(),
+                        session_name,
+                        fail_mode: effective_control_fail_mode(*fail_mode, options.strict),
+                    });
+                }
+                WorkflowStepConfig::Workflow {
+                    workflow,
+                    agent,
+                    strict,
+                    fail_mode,
+                } => {
+                    if let Some(agent_name) = agent_override.or(agent.as_deref()) {
+                        self.ensure_agent_exists(agent_name)?;
+                    }
+                    steps.push(ResolvedStep::Workflow {
+                        workflow: workflow.clone(),
+                        agent_override: agent_override.or(agent.as_deref()).map(|s| s.to_string()),
+                        strict: strict.unwrap_or(options.strict),
+                        fail_mode: effective_control_fail_mode(*fail_mode, options.strict),
+                    });
+                }
+                WorkflowStepConfig::Land {
+                    agent,
+                    pr,
+                    force,
+                    fail_mode,
+                } => {
+                    let effective_agent = agent_override.unwrap_or(agent.as_str());
+                    self.ensure_agent_exists(effective_agent)?;
+                    steps.push(ResolvedStep::Land {
+                        agent: effective_agent.to_string(),
+                        pr: pr.unwrap_or(false),
+                        force: force.unwrap_or(false),
+                        fail_mode: effective_control_fail_mode(*fail_mode, options.strict),
+                    });
+                }
+                WorkflowStepConfig::Review {
+                    agent,
+                    reviewer,
+                    fail_mode,
+                } => {
+                    let effective_agent = agent_override.unwrap_or(agent.as_str());
+                    self.ensure_agent_exists(effective_agent)?;
+                    let resolved_reviewer = reviewer.clone().unwrap_or_else(|| "reviewer".into());
+                    self.ensure_agent_exists(&resolved_reviewer)?;
+                    steps.push(ResolvedStep::Review {
+                        agent: effective_agent.to_string(),
+                        reviewer: resolved_reviewer,
+                        fail_mode: effective_control_fail_mode(*fail_mode, options.strict),
+                    });
+                }
             }
         }
 
@@ -274,6 +331,17 @@ fn effective_fail_mode(
     configured.unwrap_or(WorkflowFailMode::Open)
 }
 
+fn effective_control_fail_mode(
+    configured: Option<WorkflowFailMode>,
+    strict: bool,
+) -> WorkflowFailMode {
+    if strict {
+        WorkflowFailMode::Closed
+    } else {
+        configured.unwrap_or(WorkflowFailMode::Closed)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedWorkflow {
     pub name: String,
@@ -301,6 +369,28 @@ pub enum ResolvedStep {
         timeout_secs: u64,
         fail_mode: WorkflowFailMode,
         output_json: Option<PathBuf>,
+    },
+    EnsureRunning {
+        agent: String,
+        session_name: String,
+        fail_mode: WorkflowFailMode,
+    },
+    Workflow {
+        workflow: String,
+        agent_override: Option<String>,
+        strict: bool,
+        fail_mode: WorkflowFailMode,
+    },
+    Land {
+        agent: String,
+        pr: bool,
+        force: bool,
+        fail_mode: WorkflowFailMode,
+    },
+    Review {
+        agent: String,
+        reviewer: String,
+        fail_mode: WorkflowFailMode,
     },
 }
 
@@ -348,12 +438,16 @@ impl ExecutionResult {
 }
 
 pub struct WorkflowExecutor<'a> {
+    config: &'a TuttiConfig,
     project_root: &'a Path,
 }
 
 impl<'a> WorkflowExecutor<'a> {
-    pub fn new(project_root: &'a Path) -> Self {
-        Self { project_root }
+    pub fn new(config: &'a TuttiConfig, project_root: &'a Path) -> Self {
+        Self {
+            config,
+            project_root,
+        }
     }
 
     pub fn execute(
@@ -710,6 +804,292 @@ impl<'a> WorkflowExecutor<'a> {
                         },
                     }
                 }
+                ResolvedStep::EnsureRunning {
+                    agent,
+                    session_name,
+                    fail_mode,
+                    ..
+                } => {
+                    let started = std::time::Instant::now();
+                    if TmuxSession::session_exists(session_name) {
+                        step_results.push(StepResult {
+                            index: step_index,
+                            step_type: "ensure_running".to_string(),
+                            status: StepStatus::Success,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            exit_code: Some(0),
+                            timed_out: false,
+                            message: Some(format!("agent '{}' already running", agent)),
+                            stdout: None,
+                            stderr: None,
+                        });
+                        continue;
+                    }
+
+                    match with_project_root(self.project_root, || {
+                        crate::cli::up::run(Some(agent), None, false, None, None)
+                    }) {
+                        Ok(()) => {
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "ensure_running".to_string(),
+                                status: StepStatus::Success,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(0),
+                                timed_out: false,
+                                message: Some(format!("started agent '{}'", agent)),
+                                stdout: None,
+                                stderr: None,
+                            });
+                        }
+                        Err(e) => {
+                            let message = format!("failed to start '{}': {e}", agent);
+                            if *fail_mode == WorkflowFailMode::Open {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "ensure_running".to_string(),
+                                    status: StepStatus::Warning,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(message),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                            } else {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "ensure_running".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(message),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+                ResolvedStep::Workflow {
+                    workflow: nested_workflow,
+                    agent_override,
+                    strict,
+                    fail_mode,
+                } => {
+                    let started = std::time::Instant::now();
+                    let nested_options = ExecuteOptions {
+                        strict: *strict,
+                        force_open_commands: options.force_open_commands,
+                        origin: options.origin,
+                        hook_event: options.hook_event.clone(),
+                        hook_agent: options.hook_agent.clone(),
+                    };
+                    let nested_result = WorkflowResolver::new(self.config, self.project_root)
+                        .resolve(nested_workflow, agent_override.as_deref(), &nested_options)
+                        .and_then(|resolved_nested| {
+                            execute_workflow_with_hooks(
+                                self.config,
+                                self.project_root,
+                                &resolved_nested,
+                                &nested_options,
+                                agent_override.as_deref(),
+                            )
+                        });
+
+                    match nested_result {
+                        Ok(nested) => {
+                            if nested.success {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "workflow".to_string(),
+                                    status: StepStatus::Success,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(0),
+                                    timed_out: false,
+                                    message: Some(format!(
+                                        "nested workflow '{}' succeeded",
+                                        nested.workflow_name
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                            } else if *fail_mode == WorkflowFailMode::Open {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "workflow".to_string(),
+                                    status: StepStatus::Warning,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(format!(
+                                        "nested workflow '{}' failed",
+                                        nested.workflow_name
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                            } else {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "workflow".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(format!(
+                                        "nested workflow '{}' failed",
+                                        nested.workflow_name
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if *fail_mode == WorkflowFailMode::Open {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "workflow".to_string(),
+                                    status: StepStatus::Warning,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                            } else {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "workflow".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+                ResolvedStep::Land {
+                    agent,
+                    pr,
+                    force,
+                    fail_mode,
+                } => {
+                    let started = std::time::Instant::now();
+                    match with_project_root(self.project_root, || {
+                        crate::cli::land::run(agent, *pr, *force)
+                    }) {
+                        Ok(()) => step_results.push(StepResult {
+                            index: step_index,
+                            step_type: "land".to_string(),
+                            status: StepStatus::Success,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            exit_code: Some(0),
+                            timed_out: false,
+                            message: Some(format!("landed '{}'", agent)),
+                            stdout: None,
+                            stderr: None,
+                        }),
+                        Err(e) => {
+                            if *fail_mode == WorkflowFailMode::Open {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "land".to_string(),
+                                    status: StepStatus::Warning,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                            } else {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "land".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+                ResolvedStep::Review {
+                    agent,
+                    reviewer,
+                    fail_mode,
+                } => {
+                    let started = std::time::Instant::now();
+                    match with_project_root(self.project_root, || {
+                        crate::cli::review::run(agent, reviewer)
+                    }) {
+                        Ok(()) => step_results.push(StepResult {
+                            index: step_index,
+                            step_type: "review".to_string(),
+                            status: StepStatus::Success,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            exit_code: Some(0),
+                            timed_out: false,
+                            message: Some(format!("sent '{}' for review", agent)),
+                            stdout: None,
+                            stderr: None,
+                        }),
+                        Err(e) => {
+                            if *fail_mode == WorkflowFailMode::Open {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "review".to_string(),
+                                    status: StepStatus::Warning,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                            } else {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "review".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(1),
+                                    timed_out: false,
+                                    message: Some(e.to_string()),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -858,6 +1238,22 @@ fn render_template(
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn with_project_root<T, F>(project_root: &Path, operation: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    let original = std::env::current_dir()?;
+    std::env::set_current_dir(project_root)?;
+    let result = operation();
+    let restore_result = std::env::set_current_dir(&original);
+    match (result, restore_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(e), Ok(())) => Err(e),
+        (Ok(_), Err(e)) => Err(TuttiError::Io(e)),
+        (Err(e), Err(_)) => Err(e),
+    }
 }
 
 pub struct HookDispatcher;
@@ -1104,8 +1500,10 @@ pub fn execute_workflow_with_hooks(
     options: &ExecuteOptions,
     agent_scope: Option<&str>,
 ) -> Result<ExecutionResult> {
-    let executor = WorkflowExecutor::new(project_root);
+    let running_before = running_sessions(config);
+    let executor = WorkflowExecutor::new(config, project_root);
     let result = executor.execute(resolved, options, agent_scope)?;
+    reclaim_non_persistent_sessions(config, project_root, &running_before)?;
 
     // Recursion guard: don't emit workflow_complete from workflow_complete hooks.
     if options.origin != ExecutionOrigin::HookWorkflowComplete {
@@ -1121,6 +1519,33 @@ pub fn execute_workflow_with_hooks(
     }
 
     Ok(result)
+}
+
+fn running_sessions(config: &TuttiConfig) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for agent in &config.agents {
+        let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
+        if TmuxSession::session_exists(&session) {
+            out.insert(session);
+        }
+    }
+    out
+}
+
+fn reclaim_non_persistent_sessions(
+    config: &TuttiConfig,
+    project_root: &Path,
+    running_before: &std::collections::HashSet<String>,
+) -> Result<()> {
+    for agent in config.agents.iter().filter(|a| !a.persistent) {
+        let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
+        if running_before.contains(&session) || !TmuxSession::session_exists(&session) {
+            continue;
+        }
+        TmuxSession::kill_session(&session)?;
+        let _ = crate::state::update_status_if_exists(project_root, &agent.name, "Stopped");
+    }
+    Ok(())
 }
 
 pub fn save_verify_summary(
@@ -1231,7 +1656,7 @@ mod tests {
             hook_agent: None,
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
-        let executor = WorkflowExecutor::new(&dir);
+        let executor = WorkflowExecutor::new(&config, &dir);
         let result = executor.execute(&resolved, &opts, None).unwrap();
 
         assert!(result.success);
@@ -1291,7 +1716,7 @@ mod tests {
             hook_agent: None,
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
-        let executor = WorkflowExecutor::new(&dir);
+        let executor = WorkflowExecutor::new(&config, &dir);
         let result = executor.execute(&resolved, &opts, None).unwrap();
 
         assert!(!result.success);
@@ -1331,7 +1756,7 @@ mod tests {
             hook_agent: None,
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
-        let executor = WorkflowExecutor::new(&dir);
+        let executor = WorkflowExecutor::new(&config, &dir);
         let result = executor.execute(&resolved, &opts, None).unwrap();
 
         assert!(!result.success);
@@ -1433,5 +1858,117 @@ mod tests {
             agent_scope: None,
         };
         assert!(hook_matches_workflow_complete(&hook, &payload));
+    }
+
+    #[test]
+    fn resolver_supports_control_steps() {
+        let config = TuttiConfig {
+            workspace: WorkspaceConfig {
+                name: "ws".to_string(),
+                description: None,
+                env: None,
+                auth: None,
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("claude-code".to_string()),
+            },
+            launch: None,
+            agents: vec![
+                AgentConfig {
+                    name: "backend".to_string(),
+                    runtime: Some("claude-code".to_string()),
+                    scope: None,
+                    prompt: None,
+                    depends_on: vec![],
+                    worktree: None,
+                    branch: None,
+                    persistent: false,
+                    env: HashMap::new(),
+                },
+                AgentConfig {
+                    name: "reviewer".to_string(),
+                    runtime: Some("claude-code".to_string()),
+                    scope: None,
+                    prompt: None,
+                    depends_on: vec![],
+                    worktree: None,
+                    branch: None,
+                    persistent: false,
+                    env: HashMap::new(),
+                },
+            ],
+            tool_packs: vec![],
+            workflows: vec![
+                WorkflowConfig {
+                    name: "verify".to_string(),
+                    description: None,
+                    schedule: None,
+                    steps: vec![WorkflowStepConfig::Command {
+                        id: None,
+                        run: "echo ok".to_string(),
+                        cwd: Some(WorkflowCommandCwd::Workspace),
+                        agent: None,
+                        timeout_secs: None,
+                        fail_mode: None,
+                        output_json: None,
+                    }],
+                },
+                WorkflowConfig {
+                    name: "autofix".to_string(),
+                    description: None,
+                    schedule: None,
+                    steps: vec![
+                        WorkflowStepConfig::EnsureRunning {
+                            agent: "backend".to_string(),
+                            fail_mode: None,
+                        },
+                        WorkflowStepConfig::Workflow {
+                            workflow: "verify".to_string(),
+                            agent: Some("backend".to_string()),
+                            strict: Some(true),
+                            fail_mode: Some(WorkflowFailMode::Closed),
+                        },
+                        WorkflowStepConfig::Review {
+                            agent: "backend".to_string(),
+                            reviewer: Some("reviewer".to_string()),
+                            fail_mode: Some(WorkflowFailMode::Open),
+                        },
+                        WorkflowStepConfig::Land {
+                            agent: "backend".to_string(),
+                            pr: Some(false),
+                            force: Some(true),
+                            fail_mode: Some(WorkflowFailMode::Closed),
+                        },
+                    ],
+                },
+            ],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-resolver-control-steps");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolver = WorkflowResolver::new(&config, &dir);
+        let options = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+
+        let resolved = resolver.resolve("autofix", None, &options).unwrap();
+        assert_eq!(resolved.steps.len(), 4);
+        assert!(matches!(
+            resolved.steps[0],
+            ResolvedStep::EnsureRunning { .. }
+        ));
+        assert!(matches!(resolved.steps[1], ResolvedStep::Workflow { .. }));
+        assert!(matches!(resolved.steps[2], ResolvedStep::Review { .. }));
+        assert!(matches!(resolved.steps[3], ResolvedStep::Land { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

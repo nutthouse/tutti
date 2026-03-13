@@ -85,6 +85,7 @@ Recommended machine pattern:
   - `tt attach <agent>`
 - One-off prompt with completion wait:
   - `tt send <agent> --wait --timeout-secs 900 "..."` (optionally tune `--idle-stable-secs`)
+  - `tt send <agent> --auto_up --wait --output "..."` for auto-start + captured pane delta
 
 Use `peek` for automation. Use `attach` for operator handoff.
 
@@ -132,6 +133,10 @@ Hook behavior in v1:
 - `agent_stop` hooks fire from explicit stop paths (`tt down`, `tt down --all`).
 - `workflow_complete` hooks fire for all workflow executions (`run`, `verify`, `hook_agent_stop`, `observe_cycle`) with source/name filters.
 - Hook defaults are fail-open unless configured fail-closed.
+- Workflow step types:
+  - `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+- Workflow auto-reclaim:
+  - Agents with `persistent = false` that were not running at workflow start are auto-stopped at workflow end.
 
 ### 7) Command permission policy (optional)
 

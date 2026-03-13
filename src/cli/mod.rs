@@ -162,6 +162,10 @@ pub enum Commands {
         /// Agent name (or workspace/agent for cross-workspace)
         agent: String,
 
+        /// Start the agent if it is not already running
+        #[arg(long)]
+        auto_up: bool,
+
         /// Wait for activity -> idle completion after sending
         #[arg(long)]
         wait: bool,
@@ -173,6 +177,14 @@ pub enum Commands {
         /// Idle stability window required for --wait completion (seconds)
         #[arg(long, default_value = "5")]
         idle_stable_secs: u64,
+
+        /// Print captured response text after send (best-effort pane delta)
+        #[arg(long)]
+        output: bool,
+
+        /// Number of pane lines to consider when --output is enabled
+        #[arg(long, default_value = "200")]
+        output_lines: u32,
 
         /// Prompt text to send
         #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]

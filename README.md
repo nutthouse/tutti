@@ -24,6 +24,8 @@ tt send frontend "Analyze the review page UX issues"
                          # send ad-hoc prompt to a running session
 tt send frontend --wait --timeout-secs 900 "Analyze the review page UX issues"
                          # wait for activity->idle completion
+tt send frontend --auto_up --wait --output "Analyze the review page UX issues"
+                         # auto-start if needed and print captured pane delta
 tt health --json         # probe + print machine-readable health
 tt serve --port 4040     # scheduler + probes + local /v1/health
 tt handoff generate backend
@@ -178,6 +180,26 @@ cwd = "workspace"
 fail_mode = "closed"
 output_json = ".tutti/state/verify.json"
 
+[[workflow.step]]
+type = "ensure_running"
+agent = "backend"
+
+[[workflow.step]]
+type = "workflow"
+workflow = "verify-app"
+strict = true
+fail_mode = "closed"
+
+[[workflow.step]]
+type = "review"
+agent = "backend"
+reviewer = "reviewer"
+
+[[workflow.step]]
+type = "land"
+agent = "backend"
+force = true
+
 [[hook]]
 event = "workflow_complete"
 workflow_source = "observe_cycle"
@@ -237,6 +259,13 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Override local cleanliness guard when needed (`tt land <agent> --force`)
 - Push/open PRs from agent branches (`tt land <agent> --pr`)
 - Dispatch review packets to reviewer agent (`tt review <agent>`)
+- Ad-hoc prompt dispatch with optional auto-start + wait + captured output (`tt send --auto_up --wait --output`)
+
+### Automation (Built)
+- `tt run` / `tt verify` reusable workflow execution with persisted run records
+- Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+- `workflow_complete` hooks for deterministic chaining
+- Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 
 ### Observability (Built)
 - Real-time status for all running agents

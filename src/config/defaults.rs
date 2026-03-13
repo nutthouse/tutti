@@ -74,6 +74,10 @@ prompt = "You own the UI. Follow existing component patterns."
 # [[workflow]]
 # name = "code-simplifier"
 # [[workflow.step]]
+# type = "ensure_running"
+# agent = "backend"
+# fail_mode = "closed"
+# [[workflow.step]]
 # type = "prompt"
 # id = "simplify"
 # agent = "backend"
@@ -86,6 +90,24 @@ prompt = "You own the UI. Follow existing component patterns."
 # run = "cargo fmt"
 # cwd = "workspace"
 # fail_mode = "open"
+#
+# [[workflow]]
+# name = "autofix-loop"
+# [[workflow.step]]
+# type = "workflow"
+# workflow = "verify-app"
+# strict = true
+# fail_mode = "closed"
+# [[workflow.step]]
+# type = "review"
+# agent = "backend"
+# reviewer = "reviewer"
+# fail_mode = "open"
+# [[workflow.step]]
+# type = "land"
+# agent = "backend"
+# force = true
+# fail_mode = "closed"
 #
 # [[hook]]
 # event = "agent_stop"

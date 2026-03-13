@@ -56,7 +56,7 @@ Wrapper compatibility note:
 - `agent_output`
   - Command: `tt peek <agent> --lines <n>`
 - `send_prompt`
-  - Command: `tt send <agent> [--wait --timeout-secs <n>] "<prompt>"`
+  - Command: `tt send <agent> [--auto_up] [--wait --timeout-secs <n>] [--output] "<prompt>"`
 - `stop_agent`
   - Command: `tt down <agent>`
 - `stop_team`
