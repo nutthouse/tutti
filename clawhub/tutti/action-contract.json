@@ -1,0 +1,102 @@
+{
+  "name": "tutti-openclaw",
+  "version": "1.0.0",
+  "description": "Action contract for using Tutti from OpenClaw via integrations/openclaw/tutti_openclaw.py",
+  "entrypoint": "integrations/openclaw/tutti_openclaw.py",
+  "global_args": {
+    "--tt-bin": "Override the Tutti CLI command/prefix (defaults to `tt`, or TUTTI_BIN env var)"
+  },
+  "output_envelope": {
+    "ok": "boolean",
+    "action": "string",
+    "command": "array<string>|null",
+    "exit_code": "number",
+    "data": "any",
+    "stdout": "string",
+    "stderr": "string",
+    "parse_error": "string|null",
+    "note": "string|null"
+  },
+  "actions": [
+    {
+      "name": "doctor_check",
+      "args": [],
+      "description": "Run tt doctor --json"
+    },
+    {
+      "name": "permissions_check",
+      "args": ["<command...>"],
+      "description": "Run tt permissions check <command...> --json"
+    },
+    {
+      "name": "launch_team",
+      "args": [],
+      "description": "Run tt up"
+    },
+    {
+      "name": "launch_agent",
+      "args": ["<agent>"],
+      "description": "Run tt up <agent>"
+    },
+    {
+      "name": "list_workflows",
+      "args": [],
+      "description": "Run tt run --list --json"
+    },
+    {
+      "name": "plan_workflow",
+      "args": ["<workflow>", "[--agent <agent>]", "[--strict]"],
+      "description": "Run tt run <workflow> --dry-run --json"
+    },
+    {
+      "name": "run_workflow",
+      "args": ["<workflow>", "[--agent <agent>]", "[--strict]"],
+      "description": "Run tt run <workflow> --json"
+    },
+    {
+      "name": "verify_team",
+      "args": ["[--workflow <name>]", "[--agent <agent>]", "[--strict]"],
+      "description": "Run tt verify --json"
+    },
+    {
+      "name": "read_verify_status",
+      "args": [],
+      "description": "Run tt verify --last --json"
+    },
+    {
+      "name": "generate_handoff",
+      "args": ["<agent>", "[--reason <reason>]", "[--ctx <pct>]"],
+      "description": "Run tt handoff generate <agent> --json"
+    },
+    {
+      "name": "apply_handoff",
+      "args": ["<agent>", "[--packet <path>]"],
+      "description": "Run tt handoff apply <agent>"
+    },
+    {
+      "name": "list_handoffs",
+      "args": ["[--agent <agent>]", "[--limit <n>]"],
+      "description": "Run tt handoff list --json"
+    },
+    {
+      "name": "team_status",
+      "args": [],
+      "description": "Read .tutti/state/*.json and return agent status payload"
+    },
+    {
+      "name": "agent_output",
+      "args": ["<agent>", "[--lines <n>]"],
+      "description": "Run tt peek <agent> --lines <n>"
+    },
+    {
+      "name": "stop_agent",
+      "args": ["<agent>"],
+      "description": "Run tt down <agent>"
+    },
+    {
+      "name": "stop_team",
+      "args": [],
+      "description": "Run tt down"
+    }
+  ]
+}
