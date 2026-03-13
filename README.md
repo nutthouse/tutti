@@ -330,6 +330,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ### Tool Packs (Built, Opt-in)
 - Declarative `[[tool_pack]]` blocks in `tutti.toml` (`required_commands`, `required_env`)
 - `tt doctor` reports pass/warn/fail for tmux, profile wiring, runtime binaries, and tool-pack prerequisites
+- `tt doctor` also probes running agents for auth health (`auth/<agent>` checks)
 
 ### Community (Planned)
 - Share and discover arrangements (team configs)

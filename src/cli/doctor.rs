@@ -1,7 +1,9 @@
 use crate::config::{GlobalConfig, LaunchMode, LaunchPolicyMode, ToolPackConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
+use crate::health;
 use crate::permissions::has_configured_policy;
 use crate::runtime;
+use crate::state::{AgentHealth, AuthState};
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
@@ -46,16 +48,22 @@ struct DoctorReport {
 
 pub fn run(json: bool, strict: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let (config, _) = TuttiConfig::load(&cwd)?;
+    let (config, config_path) = TuttiConfig::load(&cwd)?;
     config.validate()?;
     let global = GlobalConfig::load()?;
+    let project_root = config_path.parent().ok_or_else(|| {
+        TuttiError::ConfigValidation("could not determine workspace root".to_string())
+    })?;
 
-    let checks = evaluate_checks(
+    let mut checks = evaluate_checks(
         &config,
         &global,
         &|command| which::which(command).is_ok(),
         &|key| std::env::var_os(key).is_some(),
     );
+    if let Ok(records) = health::probe_workspace(&config, project_root, 200) {
+        checks.extend(auth_health_checks(&records));
+    }
 
     let report = build_report(checks);
     if json {
@@ -319,6 +327,33 @@ fn check_tool_packs(
     checks
 }
 
+fn auth_health_checks(records: &[AgentHealth]) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    for record in records.iter().filter(|r| r.running) {
+        let (status, detail) = match record.auth_state {
+            AuthState::Ok => (DoctorStatus::Pass, "auth healthy".to_string()),
+            AuthState::Failed => (
+                DoctorStatus::Fail,
+                format!(
+                    "auth failed{}",
+                    record
+                        .reason
+                        .as_deref()
+                        .map(|r| format!(": {r}"))
+                        .unwrap_or_default()
+                ),
+            ),
+            AuthState::Unknown => (DoctorStatus::Warn, "auth state unknown".to_string()),
+        };
+        checks.push(DoctorCheck {
+            check: format!("auth/{}", record.agent),
+            status,
+            detail,
+        });
+    }
+    checks
+}
+
 fn build_report(checks: Vec<DoctorCheck>) -> DoctorReport {
     let fail = checks
         .iter()
@@ -379,6 +414,12 @@ fn suggestion_for_check(check: &DoctorCheck) -> Option<&'static str> {
         "launch/best_effort" => {
             Some("Use claude-code for hard allowlist enforcement in constrained mode")
         }
+        check_name if check_name.starts_with("auth/") && check.status == DoctorStatus::Fail => {
+            Some("Re-authenticate runtime account and re-run doctor")
+        }
+        check_name if check_name.starts_with("auth/") && check.status == DoctorStatus::Warn => {
+            Some("Inspect session output (tt peek) and verify runtime auth state")
+        }
         check_name if check_name.starts_with("runtime/") && check.status == DoctorStatus::Fail => {
             Some("Install runtime CLI or adjust runtime/profile command mapping")
         }
@@ -418,6 +459,8 @@ mod tests {
     use crate::config::{
         AgentConfig, DefaultsConfig, ProfileConfig, WorkspaceAuth, WorkspaceConfig,
     };
+    use crate::state::ActivityState;
+    use chrono::Utc;
     use std::collections::HashMap;
 
     fn sample_config(default_profile: Option<&str>) -> TuttiConfig {
@@ -659,5 +702,49 @@ mod tests {
         };
         let suggestion = suggestion_for_check(&check).unwrap();
         assert!(suggestion.contains("[permissions]"));
+    }
+
+    #[test]
+    fn auth_health_checks_map_auth_states() {
+        let records = vec![
+            AgentHealth {
+                workspace: "ws".to_string(),
+                agent: "backend".to_string(),
+                runtime: "claude-code".to_string(),
+                session_name: "tutti-ws-backend".to_string(),
+                running: true,
+                activity_state: ActivityState::Working,
+                auth_state: AuthState::Ok,
+                last_output_change_at: None,
+                last_probe_at: Utc::now(),
+                reason: None,
+                pane_hash: None,
+            },
+            AgentHealth {
+                workspace: "ws".to_string(),
+                agent: "frontend".to_string(),
+                runtime: "codex".to_string(),
+                session_name: "tutti-ws-frontend".to_string(),
+                running: true,
+                activity_state: ActivityState::Idle,
+                auth_state: AuthState::Failed,
+                last_output_change_at: None,
+                last_probe_at: Utc::now(),
+                reason: Some("token expired".to_string()),
+                pane_hash: None,
+            },
+        ];
+
+        let checks = auth_health_checks(&records);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.check == "auth/backend" && c.status == DoctorStatus::Pass)
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.check == "auth/frontend" && c.status == DoctorStatus::Fail)
+        );
     }
 }
