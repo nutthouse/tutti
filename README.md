@@ -42,6 +42,7 @@ tt verify --json         # machine-readable verify execution result
 tt verify --last         # show latest persisted verification summary
 tt verify --last --json  # machine-readable verify status
 tt doctor                # preflight runtime/profile/tool-pack prerequisites
+tt doctor --strict       # CI gate (warnings become failures)
 tt doctor --json         # machine-readable preflight report
 tt permissions check git status
                          # evaluate team command policy

@@ -27,7 +27,7 @@ Use these surfaces, in this order of preference:
 3. `.tutti/state/health/*.json` plus automation state files for machine-oriented control loops.
 4. `.tutti/logs/*.log` (when enabled) for historical output analysis.
 5. `tt permissions check ... --json` when integrations want to preflight local command safety policy.
-6. `tt doctor --json` before long-running automation to validate workspace prerequisites.
+6. `tt doctor --json` (or `tt doctor --strict` for CI gates) before long-running automation to validate workspace prerequisites.
 
 Avoid:
 - Parsing pretty tables from `tt status` as your primary machine interface.

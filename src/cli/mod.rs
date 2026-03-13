@@ -107,6 +107,10 @@ pub enum Commands {
         /// Emit machine-readable JSON
         #[arg(long)]
         json: bool,
+
+        /// Treat warnings as failures (CI-friendly)
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Attach to an agent's terminal session

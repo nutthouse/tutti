@@ -44,7 +44,7 @@ struct DoctorReport {
     summary: DoctorSummary,
 }
 
-pub fn run(json: bool) -> Result<()> {
+pub fn run(json: bool, strict: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (config, _) = TuttiConfig::load(&cwd)?;
     config.validate()?;
@@ -64,14 +64,7 @@ pub fn run(json: bool) -> Result<()> {
         print_report(&report);
     }
 
-    let failures = report.summary.fail;
-    if failures > 0 {
-        return Err(TuttiError::ConfigValidation(format!(
-            "doctor found {failures} failing checks"
-        )));
-    }
-
-    Ok(())
+    doctor_exit_status(&report.summary, strict)
 }
 
 fn evaluate_checks(
@@ -363,6 +356,22 @@ fn print_report(report: &DoctorReport) {
     );
 }
 
+fn doctor_exit_status(summary: &DoctorSummary, strict: bool) -> Result<()> {
+    if summary.fail > 0 {
+        return Err(TuttiError::ConfigValidation(format!(
+            "doctor found {} failing checks",
+            summary.fail
+        )));
+    }
+    if strict && summary.warn > 0 {
+        return Err(TuttiError::ConfigValidation(format!(
+            "doctor strict mode failed with {} warning checks",
+            summary.warn
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,5 +588,25 @@ mod tests {
                 && c.status == DoctorStatus::Warn
                 && c.detail.contains("bypass")
         }));
+    }
+
+    #[test]
+    fn doctor_exit_status_fails_on_warnings_in_strict_mode() {
+        let summary = DoctorSummary {
+            pass: 3,
+            warn: 1,
+            fail: 0,
+        };
+        assert!(doctor_exit_status(&summary, true).is_err());
+    }
+
+    #[test]
+    fn doctor_exit_status_allows_warnings_when_not_strict() {
+        let summary = DoctorSummary {
+            pass: 3,
+            warn: 1,
+            fail: 0,
+        };
+        assert!(doctor_exit_status(&summary, false).is_ok());
     }
 }

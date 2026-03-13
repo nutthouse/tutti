@@ -38,7 +38,7 @@ fn main() {
             interval,
             restart_persistent,
         } => cli::watch::run(interval, restart_persistent),
-        Commands::Doctor { json } => cli::doctor::run(json),
+        Commands::Doctor { json, strict } => cli::doctor::run(json, strict),
         Commands::Attach { ref agent } => cli::attach::run(agent),
         Commands::Diff {
             ref agent,
