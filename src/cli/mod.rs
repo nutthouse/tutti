@@ -139,6 +139,10 @@ pub enum Commands {
         /// Push agent branch and open a PR instead of local cherry-pick
         #[arg(long)]
         pr: bool,
+
+        /// Skip local branch cleanliness checks before landing
+        #[arg(long)]
+        force: bool,
     },
 
     /// Send an agent's diff packet to a reviewer agent

@@ -2,7 +2,7 @@ use crate::error::{Result, TuttiError};
 use std::path::Path;
 use std::process::Command;
 
-pub fn run(agent_ref: &str, pr: bool) -> Result<()> {
+pub fn run(agent_ref: &str, pr: bool, force: bool) -> Result<()> {
     let resolved = super::agent_ref::resolve(agent_ref)?;
     let agent = resolved.agent_config()?;
     let branch = agent.resolved_branch();
@@ -20,7 +20,9 @@ pub fn run(agent_ref: &str, pr: bool) -> Result<()> {
         )));
     }
 
-    ensure_git_clean(&resolved.project_root)?;
+    if !force {
+        ensure_git_clean(&resolved.project_root)?;
+    }
     ensure_branch_exists(&resolved.project_root, &branch)?;
     let wip_committed = commit_wip_if_needed(&worktree_path, &resolved.agent_name)?;
 
@@ -123,12 +125,18 @@ fn push_and_open_pr(project_root: &Path, branch: &str) -> Result<()> {
 }
 
 fn ensure_git_clean(cwd: &Path) -> Result<()> {
-    let status = git_output(&["status", "--porcelain"], cwd)?;
-    if status.trim().is_empty() {
+    let has_unstaged = !git_success(&["diff", "--quiet", "--ignore-submodules=dirty"], cwd, true)?;
+    let has_staged = !git_success(
+        &["diff", "--cached", "--quiet", "--ignore-submodules=dirty"],
+        cwd,
+        true,
+    )?;
+
+    if !has_unstaged && !has_staged {
         return Ok(());
     }
     Err(TuttiError::Git(
-        "working tree is not clean. Commit/stash changes before running `tt land`.".to_string(),
+        "working tree has tracked changes. Commit/stash changes, or use `tt land <agent> --force` to override.".to_string(),
     ))
 }
 
@@ -185,4 +193,22 @@ fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
             stderr.trim()
         )))
     }
+}
+
+fn git_success(args: &[&str], cwd: &Path, exit_one_is_false: bool) -> Result<bool> {
+    let output = Command::new("git").args(args).current_dir(cwd).output()?;
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    if exit_one_is_false && output.status.code() == Some(1) {
+        return Ok(false);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(TuttiError::Git(format!(
+        "git {} failed: {}",
+        args.join(" "),
+        stderr.trim()
+    )))
 }

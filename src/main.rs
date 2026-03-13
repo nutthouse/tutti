@@ -44,7 +44,11 @@ fn main() {
             name_only,
             stat,
         } => cli::diff::run(agent, staged, name_only, stat),
-        Commands::Land { ref agent, pr } => cli::land::run(agent, pr),
+        Commands::Land {
+            ref agent,
+            pr,
+            force,
+        } => cli::land::run(agent, pr, force),
         Commands::Review {
             ref agent,
             ref reviewer,

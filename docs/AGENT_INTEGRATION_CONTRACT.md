@@ -91,6 +91,8 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - `tt diff <agent>`
 - Land agent commits into current branch:
   - `tt land <agent>`
+- Force land even when local branch has tracked changes:
+  - `tt land <agent> --force`
 - Push and open PR from agent branch:
   - `tt land <agent> --pr`
 - Send review packet to reviewer agent:
@@ -207,6 +209,7 @@ When building an OpenClaw skill/plugin:
   - `launch_agent` -> `tt up <agent>`
   - `inspect_agent_diff` -> `tt diff <agent>`
   - `land_agent_changes` -> `tt land <agent>`
+  - `force_land_agent_changes` -> `tt land <agent> --force`
   - `open_agent_pr` -> `tt land <agent> --pr`
   - `review_agent_changes` -> `tt review <agent>`
   - `run_workflow` -> `tt run <workflow> --json`

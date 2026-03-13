@@ -14,6 +14,7 @@ tt up --mode unattended --policy bypass
 tt status                # see what every agent is doing right now
 tt diff frontend         # inspect agent branch + worktree changes
 tt land frontend         # cherry-pick agent commits into current branch
+tt land frontend --force # ignore local tracked-dirty check
 tt land frontend --pr    # push agent branch + open PR via gh
 tt review frontend       # send review packet to reviewer agent
 tt usage --by-workspace  # inspect API-profile token usage + plan %
@@ -211,6 +212,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Start and terminate individual agents (`tt up` / `tt down`)
 - Inspect worktree + branch changes (`tt diff <agent>`)
 - Land agent commits into current branch (`tt land <agent>`)
+- Override local cleanliness guard when needed (`tt land <agent> --force`)
 - Push/open PRs from agent branches (`tt land <agent> --pr`)
 - Dispatch review packets to reviewer agent (`tt review <agent>`)
 
