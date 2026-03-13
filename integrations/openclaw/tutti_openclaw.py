@@ -187,6 +187,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--strict", action="store_true")
 
     sub.add_parser("read_verify_status", help="Run tt verify --last --json")
+    p_gen_handoff = sub.add_parser("generate_handoff", help="Run tt handoff generate <agent> --json")
+    p_gen_handoff.add_argument("agent")
+    p_gen_handoff.add_argument("--reason")
+    p_gen_handoff.add_argument("--ctx", type=int)
+    p_apply_handoff = sub.add_parser("apply_handoff", help="Run tt handoff apply <agent>")
+    p_apply_handoff.add_argument("agent")
+    p_apply_handoff.add_argument("--packet")
+    p_list_handoffs = sub.add_parser("list_handoffs", help="Run tt handoff list --json")
+    p_list_handoffs.add_argument("--agent")
+    p_list_handoffs.add_argument("--limit", type=int, default=20)
     sub.add_parser("team_status", help="Read .tutti/state/*.json")
 
     p_output = sub.add_parser("agent_output", help="Run tt peek <agent> --lines N")
@@ -273,6 +283,23 @@ def main() -> None:
         _print_and_exit(
             _run_tt(action, tt_bin, ["verify", "--last", "--json"], expect_json=True)
         )
+    if action == "generate_handoff":
+        cmd = ["handoff", "generate", args.agent, "--json"]
+        if args.reason:
+            cmd.extend(["--reason", args.reason])
+        if args.ctx is not None:
+            cmd.extend(["--ctx", str(args.ctx)])
+        _print_and_exit(_run_tt(action, tt_bin, cmd, expect_json=True))
+    if action == "apply_handoff":
+        cmd = ["handoff", "apply", args.agent]
+        if args.packet:
+            cmd.extend(["--packet", args.packet])
+        _print_and_exit(_run_tt(action, tt_bin, cmd, expect_json=False))
+    if action == "list_handoffs":
+        cmd = ["handoff", "list", "--json", "--limit", str(args.limit)]
+        if args.agent:
+            cmd.extend(["--agent", args.agent])
+        _print_and_exit(_run_tt(action, tt_bin, cmd, expect_json=True))
     if action == "team_status":
         _print_and_exit(_team_status(action))
     if action == "agent_output":

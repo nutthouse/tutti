@@ -34,6 +34,11 @@ python3 integrations/openclaw/tutti_openclaw.py plan_workflow verify --strict
 python3 integrations/openclaw/tutti_openclaw.py run_workflow verify --strict
 python3 integrations/openclaw/tutti_openclaw.py verify_team --strict
 
+# Generate/apply handoff packets
+python3 integrations/openclaw/tutti_openclaw.py generate_handoff backend --reason manual
+python3 integrations/openclaw/tutti_openclaw.py list_handoffs --agent backend
+python3 integrations/openclaw/tutti_openclaw.py apply_handoff backend
+
 # Read latest verify summary and agent states
 python3 integrations/openclaw/tutti_openclaw.py read_verify_status
 python3 integrations/openclaw/tutti_openclaw.py team_status

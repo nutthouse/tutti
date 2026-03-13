@@ -184,6 +184,9 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
 
     // Best-effort capacity warning
     capacity_warning(&config, project_root, global.as_ref());
+    if let Some(event) = super::handoff::auto_handoff_post_launch(&config, project_root)? {
+        eprintln!("  {} {}", "info".cyan(), event);
+    }
 
     println!(
         "Use {} to see status, {} to connect.",

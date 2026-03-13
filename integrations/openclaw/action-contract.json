@@ -64,6 +64,21 @@
       "description": "Run tt verify --last --json"
     },
     {
+      "name": "generate_handoff",
+      "args": ["<agent>", "[--reason <reason>]", "[--ctx <pct>]"],
+      "description": "Run tt handoff generate <agent> --json"
+    },
+    {
+      "name": "apply_handoff",
+      "args": ["<agent>", "[--packet <path>]"],
+      "description": "Run tt handoff apply <agent>"
+    },
+    {
+      "name": "list_handoffs",
+      "args": ["[--agent <agent>]", "[--limit <n>]"],
+      "description": "Run tt handoff list --json"
+    },
+    {
       "name": "team_status",
       "args": [],
       "description": "Read .tutti/state/*.json and return agent status payload"

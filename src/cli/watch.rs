@@ -54,7 +54,9 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
     let mut previous_running = HashMap::<String, bool>::new();
     let mut last_restart_attempt = HashMap::<String, Instant>::new();
     let mut last_logged_snapshot = HashMap::<String, String>::new();
+    let mut last_handoff_generated = HashMap::<String, Instant>::new();
     let mut last_event: Option<String> = None;
+    let handoff_cooldown = Duration::from_secs(300);
 
     loop {
         let selected_name = &agent_names[selected];
@@ -92,6 +94,15 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
             log_capture_lines,
         ) {
             last_event = Some(format!("log capture warning: {e}"));
+        }
+        if let Some(event) = super::handoff::auto_handoff_watch_tick(
+            &config,
+            project_root,
+            &snapshots,
+            handoff_cooldown,
+            &mut last_handoff_generated,
+        )? {
+            last_event = Some(event);
         }
         if let Some(event) = detect_and_handle_crashes(
             &config,

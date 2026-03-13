@@ -98,6 +98,10 @@ Use `peek` for automation. Use `attach` for operator handoff.
 - Run verification workflow:
   - `tt verify`
   - `tt verify --workflow <name>`
+- Generate handoff packet:
+  - `tt handoff generate <agent>`
+- Apply latest handoff packet:
+  - `tt handoff apply <agent>`
 
 Hook behavior in v1:
 - `agent_stop` hooks fire from explicit stop paths (`tt down`, `tt down --all`).

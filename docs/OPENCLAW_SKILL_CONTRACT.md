@@ -56,6 +56,10 @@ Wrapper compatibility note:
 - `read_verify_status`
   - Command: `tt verify --last --json`
   - Fallback file read: `.tutti/state/verify-last.json`
+- `generate_handoff`
+  - Command: `tt handoff generate <agent> --json`
+- `apply_handoff`
+  - Command: `tt handoff apply <agent> [--packet <path>]`
 
 ## Preflight Flow (Recommended)
 

@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 pub mod attach;
 pub mod doctor;
 pub mod down;
+pub mod handoff;
 pub mod init;
 pub mod logs;
 pub mod peek;
@@ -126,6 +127,12 @@ pub enum Commands {
     /// Fuzzy picker for running agents; attach with Enter
     Switch,
 
+    /// Generate/apply handoff packets for agent session transfer
+    Handoff {
+        #[command(subcommand)]
+        command: HandoffSubcommand,
+    },
+
     /// Run a reusable workflow (prompt + command steps)
     Run {
         /// Workflow name
@@ -227,5 +234,49 @@ pub enum PermissionsSubcommand {
         /// Write output to a file path instead of stdout
         #[arg(long)]
         output: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HandoffSubcommand {
+    /// Generate a handoff packet for an agent
+    Generate {
+        /// Agent name
+        agent: String,
+
+        /// Trigger reason label (default: manual)
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Explicit CTX percentage to include in packet
+        #[arg(long)]
+        ctx: Option<u8>,
+
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply a handoff packet by sending it into the agent session
+    Apply {
+        /// Agent name
+        agent: String,
+
+        /// Packet path (default: latest packet for the agent)
+        #[arg(long)]
+        packet: Option<std::path::PathBuf>,
+    },
+    /// List handoff packets in this workspace
+    List {
+        /// Filter to a specific agent
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Max packets to return (default: 20)
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
 }

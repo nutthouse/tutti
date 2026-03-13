@@ -12,6 +12,9 @@ tt status                # see what every agent is doing right now
 tt usage --by-workspace  # inspect API-profile token usage + plan %
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
+tt handoff generate backend
+                         # write a handoff packet to .tutti/handoffs
+tt handoff apply backend # send latest packet into running backend session
 tt run verify-app        # run reusable workflow steps (prompt + commands)
 tt run --list            # show configured workflows
 tt run --list --json     # machine-readable workflow discovery
@@ -87,7 +90,7 @@ source ~/.zshrc
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -97,7 +100,7 @@ source ~/.zshrc
 - Workspace `[[tool_pack]]` declarations + `tt doctor` prerequisite checks (commands/env/profile/runtime)
 
 ### Planned / in progress
-- Automated handoff packet generation and session replacement
+- Session replacement flow (`tt handoff apply`) hardening and richer packet templates
 - Web dashboard and API/WebSocket UI
 - Provider-level failover/rate-limit rotation
 - Richer cost attribution and context-health telemetry
@@ -199,11 +202,13 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Interactive terminal watch mode with `PLAN` + live `CTX` plus quick attach/peek flow
 - Per-agent log capture and tailing (`tt logs`)
 
-### Handoffs (Planned)
-- Automatic context serialization when context runs low
-- Configurable handoff packet contents
-- One-command session replacement with context transfer
-- Handoff history for audit and replay
+### Handoffs (Built + Planned)
+- `tt handoff generate <agent>` creates markdown packets in `.tutti/handoffs/`
+- `tt handoff apply <agent>` injects latest packet into a running agent session
+- `tt handoff list [--agent ...] [--json]` for packet discovery
+- Auto packet generation in `tt watch` (and post-`tt up`) when `CTX` crosses configured handoff threshold
+- Configurable packet templates and richer handoff content (planned)
+- One-command session replacement polish/hardening (planned)
 
 ### Dashboard (Planned)
 - Web-based dashboard at localhost (optional)
@@ -296,13 +301,13 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt handoff`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter
 - [x] `tt usage` profile/workspace capacity reporting
 - [ ] Context health monitoring
-- [ ] Automatic handoff packet generation
+- [x] Automatic handoff packet generation
 - [ ] Web dashboard
 - [ ] Cost tracking and attribution (provider-accurate)
 - [x] OpenClaw skill for Tutti orchestration workflows

@@ -42,6 +42,7 @@ fn main() {
             follow,
         } => cli::logs::run(agent, lines, follow),
         Commands::Switch => cli::switch::run(),
+        Commands::Handoff { command } => cli::handoff::run(command),
         Commands::Run {
             ref workflow,
             list,
