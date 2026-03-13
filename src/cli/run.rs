@@ -5,6 +5,7 @@ use crate::automation::{
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
+use serde::Serialize;
 
 pub fn run(
     workflow: Option<&str>,
@@ -19,7 +20,7 @@ pub fn run(
     config.validate()?;
 
     if list {
-        print_workflow_list(&config);
+        print_workflow_list(&config, json)?;
         return Ok(());
     }
 
@@ -65,11 +66,32 @@ pub fn run(
     Ok(())
 }
 
-fn print_workflow_list(config: &TuttiConfig) {
+#[derive(Debug, Serialize)]
+struct WorkflowListItem {
+    name: String,
+    description: Option<String>,
+    steps: usize,
+}
+
+fn print_workflow_list(config: &TuttiConfig, as_json: bool) -> Result<()> {
     if config.workflows.is_empty() {
         println!("No workflows configured.");
         println!("Add [[workflow]] entries to tutti.toml.");
-        return;
+        return Ok(());
+    }
+
+    if as_json {
+        let items: Vec<WorkflowListItem> = config
+            .workflows
+            .iter()
+            .map(|workflow| WorkflowListItem {
+                name: workflow.name.clone(),
+                description: workflow.description.clone(),
+                steps: workflow.steps.len(),
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
     }
 
     let mut table = Table::new();
@@ -88,6 +110,7 @@ fn print_workflow_list(config: &TuttiConfig) {
     }
 
     println!("{table}");
+    Ok(())
 }
 
 fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {

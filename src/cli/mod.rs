@@ -141,7 +141,7 @@ pub enum Commands {
         agent: Option<String>,
 
         /// Emit machine-readable JSON (execution mode only)
-        #[arg(long, conflicts_with_all = ["list", "dry_run"])]
+        #[arg(long, conflicts_with = "dry_run")]
         json: bool,
 
         /// Force fail-closed behavior for command steps

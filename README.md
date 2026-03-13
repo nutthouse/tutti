@@ -14,6 +14,7 @@ tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt run verify-app        # run reusable workflow steps (prompt + commands)
 tt run --list            # show configured workflows
+tt run --list --json     # machine-readable workflow discovery
 tt run verify-app --json # machine-readable workflow execution result
 tt verify                # run verification workflow + persist summary
 tt verify --json         # machine-readable verify execution result

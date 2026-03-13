@@ -29,6 +29,7 @@ This document defines a stable first-pass contract for building an OpenClaw skil
 - `run_workflow`
   - Command: `tt run <workflow> [--agent <agent>] [--strict] [--json]`
   - Success criteria: exit code `0`.
+  - Discovery: `tt run --list --json`
 - `verify_team`
   - Command: `tt verify [--workflow <name>] [--agent <agent>] [--strict] [--json]`
   - Success criteria:
