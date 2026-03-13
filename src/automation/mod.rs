@@ -158,6 +158,7 @@ impl<'a> WorkflowResolver<'a> {
                     id,
                     run,
                     cwd,
+                    subdir,
                     agent,
                     timeout_secs,
                     fail_mode,
@@ -169,7 +170,7 @@ impl<'a> WorkflowResolver<'a> {
                     }
 
                     let cwd_mode = cwd.unwrap_or(WorkflowCommandCwd::Workspace);
-                    let resolved_cwd = match cwd_mode {
+                    let mut resolved_cwd = match cwd_mode {
                         WorkflowCommandCwd::Workspace => self.project_root.to_path_buf(),
                         WorkflowCommandCwd::AgentWorktree => {
                             let agent_name = effective_agent.ok_or_else(|| {
@@ -193,6 +194,17 @@ impl<'a> WorkflowResolver<'a> {
                             path
                         }
                     };
+
+                    if let Some(subdir) = subdir.as_deref() {
+                        let subdir = subdir.trim();
+                        resolved_cwd = resolved_cwd.join(subdir);
+                        if !resolved_cwd.exists() {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "command step subdir does not exist: {}",
+                                resolved_cwd.display()
+                            )));
+                        }
+                    }
 
                     let output_json = resolve_optional_path(&resolved_cwd, output_json.as_deref());
                     steps.push(ResolvedStep::Command {
@@ -2000,6 +2012,7 @@ mod tests {
                     id: None,
                     run: "echo one".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Open),
@@ -2009,6 +2022,7 @@ mod tests {
                     id: None,
                     run: "exit 7".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Open),
@@ -2018,6 +2032,7 @@ mod tests {
                     id: None,
                     run: "echo three".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Open),
@@ -2062,6 +2077,7 @@ mod tests {
                     id: None,
                     run: "echo one".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Closed),
@@ -2071,6 +2087,7 @@ mod tests {
                     id: None,
                     run: "exit 9".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Closed),
@@ -2080,6 +2097,7 @@ mod tests {
                     id: None,
                     run: "echo never".to_string(),
                     cwd: Some(WorkflowCommandCwd::Workspace),
+                    subdir: None,
                     agent: None,
                     timeout_secs: Some(30),
                     fail_mode: Some(WorkflowFailMode::Closed),
@@ -2123,6 +2141,7 @@ mod tests {
                 id: None,
                 run: "exit 4".to_string(),
                 cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: None,
                 agent: None,
                 timeout_secs: Some(30),
                 fail_mode: Some(WorkflowFailMode::Open),
@@ -2164,6 +2183,7 @@ mod tests {
                 id: None,
                 run: "echo ok".to_string(),
                 cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: None,
                 agent: None,
                 timeout_secs: Some(30),
                 fail_mode: Some(WorkflowFailMode::Closed),
@@ -2213,6 +2233,7 @@ mod tests {
                 id: None,
                 run: "echo hook".to_string(),
                 cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: None,
                 agent: None,
                 timeout_secs: Some(30),
                 fail_mode: Some(WorkflowFailMode::Open),
@@ -2404,6 +2425,47 @@ mod tests {
     }
 
     #[test]
+    fn resolver_applies_command_subdir() {
+        let dir = std::env::temp_dir().join("tutti-test-command-subdir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("backend")).unwrap();
+
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                run: "echo ok".to_string(),
+                cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: Some("backend".to_string()),
+                agent: None,
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+        let config = sample_config(workflow, vec![]);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap();
+
+        match &resolved.steps[0] {
+            ResolvedStep::Command { cwd, .. } => assert_eq!(cwd, &dir.join("backend")),
+            _ => panic!("expected command step"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn resolver_supports_control_steps() {
         let config = TuttiConfig {
             workspace: WorkspaceConfig {
@@ -2451,6 +2513,7 @@ mod tests {
                         id: None,
                         run: "echo ok".to_string(),
                         cwd: Some(WorkflowCommandCwd::Workspace),
+                        subdir: None,
                         agent: None,
                         timeout_secs: None,
                         fail_mode: None,

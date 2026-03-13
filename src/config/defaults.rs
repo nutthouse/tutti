@@ -81,6 +81,7 @@ prompt = "You own the UI. Follow existing component patterns."
 # type = "command"
 # run = "cargo test --quiet"
 # cwd = "workspace"
+# subdir = "backend"           # optional workspace-relative path
 # fail_mode = "closed"
 # timeout_secs = 1200
 # output_json = ".tutti/state/verify.json"
@@ -104,6 +105,7 @@ prompt = "You own the UI. Follow existing component patterns."
 # id = "fmt"
 # run = "cargo fmt"
 # cwd = "workspace"
+# subdir = "backend"
 # fail_mode = "open"
 #
 # [[workflow]]

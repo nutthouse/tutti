@@ -157,6 +157,8 @@ pub enum WorkflowStepConfig {
         #[serde(default)]
         cwd: Option<WorkflowCommandCwd>,
         #[serde(default)]
+        subdir: Option<String>,
+        #[serde(default)]
         agent: Option<String>,
         #[serde(default)]
         timeout_secs: Option<u64>,
@@ -624,6 +626,7 @@ impl TuttiConfig {
                     WorkflowStepConfig::Command {
                         id,
                         run,
+                        subdir,
                         output_json,
                         ..
                     } => {
@@ -633,6 +636,24 @@ impl TuttiConfig {
                                 workflow.name,
                                 idx + 1
                             )));
+                        }
+                        if let Some(subdir) = subdir.as_deref() {
+                            let trimmed = subdir.trim();
+                            if trimmed.is_empty() {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} has empty subdir",
+                                    workflow.name,
+                                    idx + 1
+                                )));
+                            }
+                            if std::path::Path::new(trimmed).is_absolute() {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} subdir must be workspace-relative: '{}'",
+                                    workflow.name,
+                                    idx + 1,
+                                    trimmed
+                                )));
+                            }
                         }
                         validate_step_id_and_output(
                             &workflow.name,
@@ -1141,6 +1162,7 @@ type = "command"
 id = "tests"
 run = "cargo test --quiet"
 cwd = "workspace"
+subdir = "backend"
 fail_mode = "closed"
 timeout_secs = 1200
 output_json = "tmp/tests.json"
@@ -1310,6 +1332,55 @@ output_json = "out.json"
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("missing id"));
+    }
+
+    #[test]
+    fn validate_command_subdir_must_be_relative() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+subdir = "/tmp"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("subdir must be workspace-relative")
+        );
+    }
+
+    #[test]
+    fn validate_command_subdir_cannot_be_empty() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+subdir = "   "
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty subdir"));
     }
 
     #[test]

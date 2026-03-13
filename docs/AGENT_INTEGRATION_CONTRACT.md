@@ -147,6 +147,7 @@ Hook behavior in v1:
 - Hook defaults are fail-open unless configured fail-closed.
 - Workflow step types:
   - `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+  - `command` supports `cwd` plus optional `subdir` (workspace-relative) for deterministic per-service execution paths.
   - `review`/`land` steps auto-start required sessions when missing.
   - `prompt` supports `inject_files` to copy workspace-relative files into the target agent worktree before send.
 - Workflow auto-reclaim:
