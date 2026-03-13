@@ -1,6 +1,7 @@
 use crate::error::{Result, TuttiError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -71,6 +72,18 @@ pub struct AgentHealth {
     pub reason: Option<String>,
     #[serde(default)]
     pub pane_hash: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlEvent {
+    pub event: String,
+    pub workspace: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    pub correlation_id: String,
+    #[serde(default)]
+    pub data: Option<Value>,
 }
 
 /// Ensure the .tutti/ directory structure exists.
@@ -248,6 +261,38 @@ pub fn save_workflow_output(
     let body = serde_json::to_string_pretty(json)?;
     std::fs::write(&path, body)?;
     Ok(path)
+}
+
+pub fn append_control_event(project_root: &Path, event: &ControlEvent) -> Result<()> {
+    let state_dir = project_root.join(".tutti").join("state");
+    std::fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join("events.jsonl");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = serde_json::to_string(event)?;
+    use std::io::Write;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+pub fn load_control_events(project_root: &Path) -> Result<Vec<ControlEvent>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("events.jsonl");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let body = std::fs::read_to_string(path)?;
+    let mut out = Vec::new();
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(event) = serde_json::from_str::<ControlEvent>(line) {
+            out.push(event);
+        }
+    }
+    Ok(out)
 }
 
 /// Load all agent states from .tutti/state/.
@@ -507,6 +552,30 @@ mod tests {
         assert!(path.exists());
         let body = std::fs::read_to_string(path).unwrap();
         assert!(body.contains("\"ok\": true"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn control_events_append_and_load() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-events-state-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let event = ControlEvent {
+            event: "agent.started".to_string(),
+            workspace: "ws".to_string(),
+            agent: Some("backend".to_string()),
+            timestamp: Utc::now(),
+            correlation_id: "abc123".to_string(),
+            data: Some(serde_json::json!({"runtime":"claude-code"})),
+        };
+        append_control_event(&dir, &event).unwrap();
+        append_control_event(&dir, &event).unwrap();
+
+        let loaded = load_control_events(&dir).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].event, "agent.started");
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

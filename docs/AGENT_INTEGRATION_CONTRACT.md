@@ -124,7 +124,8 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - `tt serve --port 4040`
   - `GET /v1/health`
   - `GET /v1/health/{workspace}/{agent}`
-  - `GET /v1/status`, `GET /v1/voices`, `GET /v1/workflows`, `GET /v1/runs`, `GET /v1/logs`, `GET /v1/handoffs`
+  - `GET /v1/status`, `GET /v1/voices`, `GET /v1/workflows`, `GET /v1/runs`, `GET /v1/logs`, `GET /v1/handoffs`, `GET /v1/events`
+  - Events cursor: `GET /v1/events?cursor=<RFC3339 timestamp>`
   - `POST /v1/actions/up|down|send|run|verify|review|land`
   - API envelope: `ok/action/error/data`
   - Mutating idempotency: `Idempotency-Key` header (or `idempotency_key` request field)
@@ -186,6 +187,7 @@ Integration guidance:
 Automation state files:
 - `.tutti/state/health/{agent}.json`: latest probe-based health snapshot for each agent.
 - `.tutti/state/automation-runs.jsonl`: append-only execution records (workflow/hook runs).
+- `.tutti/state/events.jsonl`: append-only control-plane events (`agent.*`, `workflow.*`, `handoff.*`).
 - `.tutti/state/verify-last.json`: last verification summary (`workflow_name`, `success`, `failed_steps`, `strict`, `agent_scope`).
 - `.tutti/state/scheduler-last-runs.json`: scheduler fire timestamps per workspace/workflow key.
 - `.tutti/state/workflow-outputs/<run-id>/<step-id>.json`: canonical structured step outputs.

@@ -119,11 +119,16 @@ fn start_control_http_server(
 }
 
 fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusCode, String) {
-    let path = request.url().split('?').next().unwrap_or("/").to_string();
+    let raw_url = request.url().to_string();
+    let (path, query) = match raw_url.split_once('?') {
+        Some((p, q)) => (p.to_string(), Some(q.to_string())),
+        None => (raw_url, None),
+    };
+    let query_map = parse_query(query.as_deref());
     let method = request.method().clone();
 
     if method == Method::Get {
-        match route_read(&path, targets) {
+        match route_read(&path, &query_map, targets) {
             Ok(value) => (StatusCode(200), value.to_string()),
             Err(TuttiError::AgentNotFound(e)) => {
                 (StatusCode(404), api_err("read", "not_found", e).to_string())
@@ -154,7 +159,11 @@ fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusC
     }
 }
 
-fn route_read(path: &str, targets: &[WorkspaceTarget]) -> Result<Value> {
+fn route_read(
+    path: &str,
+    query: &HashMap<String, String>,
+    targets: &[WorkspaceTarget],
+) -> Result<Value> {
     match path {
         "/v1/health" => {
             let mut all = Vec::new();
@@ -174,6 +183,10 @@ fn route_read(path: &str, targets: &[WorkspaceTarget]) -> Result<Value> {
         "/v1/runs" => Ok(api_ok("runs.list", runs_data(targets)?)),
         "/v1/logs" => Ok(api_ok("logs.list", logs_data(targets)?)),
         "/v1/handoffs" => Ok(api_ok("handoffs.list", handoffs_data(targets)?)),
+        "/v1/events" => Ok(api_ok(
+            "events.list",
+            events_data(targets, query.get("cursor").map(|s| s.as_str()))?,
+        )),
         _ if path.starts_with("/v1/health/") => {
             let parts: Vec<&str> = path.split('/').collect();
             if parts.len() == 5 {
@@ -194,6 +207,23 @@ fn route_read(path: &str, targets: &[WorkspaceTarget]) -> Result<Value> {
         }
         _ => Err(TuttiError::ConfigValidation("not found".to_string())),
     }
+}
+
+fn parse_query(query: Option<&str>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(query) = query else {
+        return out;
+    };
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().unwrap_or_default().trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = parts.next().unwrap_or_default().trim();
+        out.insert(key.to_string(), value.to_string());
+    }
+    out
 }
 
 fn route_action(
@@ -554,6 +584,37 @@ fn handoffs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
         }
     }
     Ok(Value::Array(rows))
+}
+
+fn events_data(targets: &[WorkspaceTarget], cursor: Option<&str>) -> Result<Value> {
+    let cursor_ts = match cursor {
+        Some(raw) if !raw.trim().is_empty() => Some(
+            DateTime::parse_from_rfc3339(raw)
+                .map_err(|e| {
+                    TuttiError::ConfigValidation(format!(
+                        "invalid cursor '{}': expected RFC3339 timestamp ({e})",
+                        raw
+                    ))
+                })?
+                .with_timezone(&Utc),
+        ),
+        _ => None,
+    };
+
+    let mut rows = Vec::new();
+    for target in targets {
+        let events = state::load_control_events(&target.project_root)?;
+        for event in events {
+            if let Some(ts) = cursor_ts
+                && event.timestamp <= ts
+            {
+                continue;
+            }
+            rows.push(event);
+        }
+    }
+    rows.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    Ok(json!(rows))
 }
 
 fn with_project_root<T, F>(project_root: &Path, operation: F) -> Result<T>

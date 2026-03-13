@@ -7,6 +7,7 @@ use crate::permissions::{has_configured_policy, normalize, render_claude_setting
 use crate::runtime;
 use crate::session::TmuxSession;
 use crate::state;
+use crate::state::ControlEvent;
 use crate::worktree;
 use chrono::Utc;
 use colored::Colorize;
@@ -221,6 +222,20 @@ pub fn run(
             stopped_at: None,
         };
         state::save_agent_state(project_root, &agent_state)?;
+        let _ = state::append_control_event(
+            project_root,
+            &ControlEvent {
+                event: "agent.started".to_string(),
+                workspace: config.workspace.name.clone(),
+                agent: Some(agent.name.clone()),
+                timestamp: Utc::now(),
+                correlation_id: format!("launch-{}-{}", Utc::now().timestamp_millis(), agent.name),
+                data: Some(serde_json::json!({
+                    "runtime": runtime_name,
+                    "session_name": session
+                })),
+            },
+        );
 
         launched.push((agent.name.clone(), session, runtime_name));
         if profile_limit.is_some() {
@@ -800,6 +815,24 @@ fn run_all(
                         stopped_at: None,
                     };
                     let _ = state::save_agent_state(project_root, &agent_state);
+                    let _ = state::append_control_event(
+                        project_root,
+                        &ControlEvent {
+                            event: "agent.started".to_string(),
+                            workspace: config.workspace.name.clone(),
+                            agent: Some(agent.name.clone()),
+                            timestamp: Utc::now(),
+                            correlation_id: format!(
+                                "launch-{}-{}",
+                                Utc::now().timestamp_millis(),
+                                agent.name
+                            ),
+                            data: Some(serde_json::json!({
+                                "runtime": agent_state.runtime,
+                                "session_name": agent_state.session_name
+                            })),
+                        },
+                    );
                     println!("  launched {}", agent.name);
 
                     if let Some(limit) = &profile_limit {

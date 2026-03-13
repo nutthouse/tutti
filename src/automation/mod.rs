@@ -7,8 +7,8 @@ use crate::health;
 use crate::health::WaitFailureReason;
 use crate::session::TmuxSession;
 use crate::state::{
-    AutomationRunRecord, VerifyLastSummary, append_automation_run, save_verify_last_summary,
-    save_workflow_output,
+    AutomationRunRecord, ControlEvent, VerifyLastSummary, append_automation_run,
+    append_control_event, save_verify_last_summary, save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -1614,6 +1614,29 @@ pub fn execute_workflow_with_hooks(
         };
         HookDispatcher::dispatch_workflow_complete(config, &payload)?;
     }
+
+    let event_name = if result.success {
+        "workflow.completed"
+    } else {
+        "workflow.failed"
+    };
+    let _ = append_control_event(
+        project_root,
+        &ControlEvent {
+            event: event_name.to_string(),
+            workspace: config.workspace.name.clone(),
+            agent: agent_scope.map(|s| s.to_string()),
+            timestamp: Utc::now(),
+            correlation_id: result.run_id.clone(),
+            data: Some(serde_json::json!({
+                "workflow_name": result.workflow_name.clone(),
+                "origin": options.origin.as_str(),
+                "success": result.success,
+                "failed_steps": result.failed_steps.clone(),
+                "strict": result.strict
+            })),
+        },
+    );
 
     Ok(result)
 }

@@ -2,6 +2,7 @@ use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use crate::session::TmuxSession;
 use crate::state;
+use crate::state::ControlEvent;
 use crate::worktree;
 use crate::{automation::HookDispatcher, automation::HookEventPayload};
 use chrono::Utc;
@@ -58,6 +59,17 @@ pub fn run(
         }
 
         TmuxSession::kill_session(&session)?;
+        let _ = state::append_control_event(
+            project_root,
+            &ControlEvent {
+                event: "agent.stopped".to_string(),
+                workspace: config.workspace.name.clone(),
+                agent: Some(agent.name.clone()),
+                timestamp: Utc::now(),
+                correlation_id: format!("down-{}-{}", Utc::now().timestamp_millis(), agent.name),
+                data: Some(serde_json::json!({"reason":"manual","session_name":session})),
+            },
+        );
         println!("  {} {}", "stopped".red(), agent.name);
         stopped += 1;
 
@@ -140,6 +152,23 @@ fn run_all(clean: bool) -> Result<()> {
                             let _ = state::save_agent_state(project_root, &agent_state);
                         }
                         let _ = TmuxSession::kill_session(&session);
+                        let _ = state::append_control_event(
+                            project_root,
+                            &ControlEvent {
+                                event: "agent.stopped".to_string(),
+                                workspace: config.workspace.name.clone(),
+                                agent: Some(agent.name.clone()),
+                                timestamp: Utc::now(),
+                                correlation_id: format!(
+                                    "down-{}-{}",
+                                    Utc::now().timestamp_millis(),
+                                    agent.name
+                                ),
+                                data: Some(
+                                    serde_json::json!({"reason":"manual","session_name":session}),
+                                ),
+                            },
+                        );
                         ws_stopped += 1;
 
                         if !config.hooks.is_empty() {

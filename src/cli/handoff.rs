@@ -2,6 +2,7 @@ use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use crate::session::TmuxSession;
 use crate::state;
+use crate::state::ControlEvent;
 use chrono::Utc;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
@@ -47,6 +48,21 @@ pub fn run(command: super::HandoffSubcommand) -> Result<()> {
                     println!("  ctx: {}%", ctx);
                 }
             }
+            let _ = state::append_control_event(
+                project_root,
+                &ControlEvent {
+                    event: "handoff.generated".to_string(),
+                    workspace: config.workspace.name.clone(),
+                    agent: Some(agent),
+                    timestamp: Utc::now(),
+                    correlation_id: format!("handoff-{}", Utc::now().timestamp_millis()),
+                    data: Some(serde_json::json!({
+                        "packet": generated.packet,
+                        "reason": generated.reason,
+                        "ctx_pct": generated.ctx_pct
+                    })),
+                },
+            );
             Ok(())
         }
         super::HandoffSubcommand::Apply { agent, packet } => {
@@ -85,6 +101,20 @@ pub fn run(command: super::HandoffSubcommand) -> Result<()> {
             println!(
                 "Applied handoff packet to {agent}: {}",
                 packet_path.display()
+            );
+            let _ = state::append_control_event(
+                project_root,
+                &ControlEvent {
+                    event: "handoff.applied".to_string(),
+                    workspace: config.workspace.name.clone(),
+                    agent: Some(agent),
+                    timestamp: Utc::now(),
+                    correlation_id: format!("handoff-{}", Utc::now().timestamp_millis()),
+                    data: Some(serde_json::json!({
+                        "packet": packet_path.display().to_string(),
+                        "session_name": session
+                    })),
+                },
             );
             Ok(())
         }
