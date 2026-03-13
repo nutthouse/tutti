@@ -3,6 +3,7 @@ use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::health::{WaitCompletionSource, WaitFailureReason};
 use crate::session::TmuxSession;
+use crate::{budget, budget::BudgetGuardOutcome};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -32,6 +33,14 @@ pub fn run(
     let workspace_name = target.workspace_name;
     let agent_name = target.agent_name;
     let runtime_name = target.runtime_name;
+    let (workspace_config, _) = TuttiConfig::load(&target.project_root)?;
+    let budget_outcome = budget::enforce_pre_exec(
+        &workspace_config,
+        &target.project_root,
+        "send",
+        Some(&agent_name),
+    )?;
+    print_budget_warnings(&budget_outcome);
     let session = TmuxSession::session_name(&workspace_name, &agent_name);
 
     if !TmuxSession::session_exists(&session) {
@@ -210,6 +219,12 @@ fn pane_delta(before: &str, after: &str) -> String {
     }
 
     after_lines[overlap..].join("\n").trim_end().to_string()
+}
+
+fn print_budget_warnings(outcome: &BudgetGuardOutcome) {
+    for warning in &outcome.warnings {
+        eprintln!("warn: {warning}");
+    }
 }
 
 #[cfg(test)]

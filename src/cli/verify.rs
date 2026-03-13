@@ -5,6 +5,7 @@ use crate::automation::{
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use crate::state::{VerifyLastSummary, load_verify_last_summary};
+use crate::{budget, budget::BudgetGuardOutcome};
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
@@ -27,6 +28,9 @@ pub fn run(
     if last {
         return print_last_summary(project_root, json);
     }
+
+    let budget_outcome = budget::enforce_pre_exec(&config, project_root, "verify", agent)?;
+    print_budget_warnings(&budget_outcome);
 
     let workflow_name = workflow.unwrap_or("verify");
     let options = ExecuteOptions {
@@ -131,6 +135,12 @@ fn format_failed_steps(steps: &[usize]) -> String {
         .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn print_budget_warnings(outcome: &BudgetGuardOutcome) {
+    for warning in &outcome.warnings {
+        eprintln!("warn: {warning}");
+    }
 }
 
 #[cfg(test)]

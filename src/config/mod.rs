@@ -26,6 +26,8 @@ pub struct TuttiConfig {
     pub handoff: Option<HandoffConfig>,
     #[serde(default)]
     pub observe: Option<ObserveConfig>,
+    #[serde(default)]
+    pub budget: Option<BudgetConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +270,25 @@ pub struct ObserveConfig {
     pub track_cost: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetMode {
+    Warn,
+    Enforce,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BudgetConfig {
+    #[serde(default = "default_budget_mode")]
+    pub mode: BudgetMode,
+    #[serde(default = "default_budget_warn_threshold_pct")]
+    pub warn_threshold_pct: f64,
+    #[serde(default)]
+    pub workspace_weekly_tokens: Option<u64>,
+    #[serde(default)]
+    pub agent_weekly_tokens: HashMap<String, u64>,
+}
+
 // ── Global config (~/.config/tutti/config.toml) ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -361,6 +382,14 @@ fn default_launch_policy_mode() -> LaunchPolicyMode {
 
 fn default_port() -> u16 {
     4040
+}
+
+fn default_budget_mode() -> BudgetMode {
+    BudgetMode::Warn
+}
+
+fn default_budget_warn_threshold_pct() -> f64 {
+    80.0
 }
 
 fn validate_schedule_expression(expr: &str) -> std::result::Result<(), String> {
@@ -492,6 +521,7 @@ impl TuttiConfig {
 
         self.validate_automation()?;
         self.validate_tool_packs()?;
+        self.validate_budget()?;
 
         Ok(())
     }
@@ -772,6 +802,48 @@ impl TuttiConfig {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn validate_budget(&self) -> Result<()> {
+        let Some(budget) = self.budget.as_ref() else {
+            return Ok(());
+        };
+
+        if !(budget.warn_threshold_pct > 0.0 && budget.warn_threshold_pct <= 100.0) {
+            return Err(TuttiError::ConfigValidation(
+                "budget.warn_threshold_pct must be in (0, 100]".to_string(),
+            ));
+        }
+
+        if budget.workspace_weekly_tokens == Some(0) {
+            return Err(TuttiError::ConfigValidation(
+                "budget.workspace_weekly_tokens must be > 0".to_string(),
+            ));
+        }
+
+        let agent_names: std::collections::HashSet<&str> =
+            self.agents.iter().map(|a| a.name.as_str()).collect();
+        for (agent, cap) in &budget.agent_weekly_tokens {
+            if agent.trim().is_empty() {
+                return Err(TuttiError::ConfigValidation(
+                    "budget.agent_weekly_tokens contains an empty agent key".to_string(),
+                ));
+            }
+            if *cap == 0 {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "budget.agent_weekly_tokens['{}'] must be > 0",
+                    agent
+                )));
+            }
+            if !agent_names.contains(agent.as_str()) {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "budget.agent_weekly_tokens references unknown agent '{}'",
+                    agent
+                )));
+            }
+        }
+
         Ok(())
     }
 }
@@ -1138,6 +1210,60 @@ force = true
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn parse_budget_config() {
+        let toml = r#"
+[workspace]
+name = "test-project"
+
+[defaults]
+runtime = "claude-code"
+
+[[agent]]
+name = "backend"
+prompt = "You own backend."
+
+[budget]
+mode = "enforce"
+warn_threshold_pct = 85
+workspace_weekly_tokens = 1000000
+
+[budget.agent_weekly_tokens]
+backend = 250000
+"#;
+        let config: TuttiConfig = toml::from_str(toml).unwrap();
+        let budget = config.budget.as_ref().expect("budget should parse");
+        assert_eq!(budget.mode, BudgetMode::Enforce);
+        assert_eq!(budget.warn_threshold_pct, 85.0);
+        assert_eq!(budget.workspace_weekly_tokens, Some(1_000_000));
+        assert_eq!(budget.agent_weekly_tokens.get("backend"), Some(&250_000));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_budget_rejects_unknown_agent_caps() {
+        let toml = r#"
+[workspace]
+name = "test-project"
+
+[defaults]
+runtime = "claude-code"
+
+[[agent]]
+name = "backend"
+prompt = "You own backend."
+
+[budget]
+workspace_weekly_tokens = 1000000
+
+[budget.agent_weekly_tokens]
+frontend = 250000
+"#;
+        let config: TuttiConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown agent"));
     }
 
     #[test]

@@ -1741,6 +1741,7 @@ mod tests {
             hooks,
             handoff: None,
             observe: None,
+            budget: None,
         }
     }
 
@@ -2157,6 +2158,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
 
         let dir = std::env::temp_dir().join("tutti-test-resolver-control-steps");

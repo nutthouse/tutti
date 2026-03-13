@@ -128,6 +128,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - Events cursor/filter: `GET /v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Event stream (SSE): `GET /v1/events/stream?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Stream event types include: `agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, `handoff.generated`, `handoff.applied`
+  - Budget control events may be emitted when configured: `budget.threshold`, `budget.blocked`
   - `POST /v1/actions/up|down|send|run|verify|review|land`
   - API envelope: `ok/action/error/data`
   - `send` action includes structured completion payload in `data.send` (`waited`, `completion_source`, `captured_output`)
@@ -190,7 +191,7 @@ Integration guidance:
 Automation state files:
 - `.tutti/state/health/{agent}.json`: latest probe-based health snapshot for each agent.
 - `.tutti/state/automation-runs.jsonl`: append-only execution records (workflow/hook runs).
-- `.tutti/state/events.jsonl`: append-only control-plane events (`agent.*`, `workflow.*`, `handoff.*`).
+- `.tutti/state/events.jsonl`: append-only control-plane events (`agent.*`, `workflow.*`, `handoff.*`, `budget.*`).
 - `.tutti/state/policy-decisions.jsonl`: append-only launch policy decisions (`action`, `mode`, `policy`, `enforcement`, `decision`).
 - `.tutti/state/verify-last.json`: last verification summary (`workflow_name`, `success`, `failed_steps`, `strict`, `agent_scope`).
 - `.tutti/state/scheduler-last-runs.json`: scheduler fire timestamps per workspace/workflow key.

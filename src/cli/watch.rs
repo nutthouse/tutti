@@ -580,6 +580,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         }
     }
 

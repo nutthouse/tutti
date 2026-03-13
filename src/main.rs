@@ -1,4 +1,5 @@
 mod automation;
+mod budget;
 mod cli;
 mod config;
 mod error;

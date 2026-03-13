@@ -9,6 +9,7 @@ use crate::session::TmuxSession;
 use crate::state;
 use crate::state::{ControlEvent, PolicyDecisionRecord};
 use crate::worktree;
+use crate::{budget, budget::BudgetGuardOutcome};
 use chrono::Utc;
 use colored::Colorize;
 use std::collections::{HashMap, HashSet};
@@ -120,6 +121,10 @@ pub fn run(
     let mut warned_bypass = false;
 
     for agent in &agents {
+        let budget_outcome =
+            budget::enforce_pre_exec(&config, project_root, "up", Some(&agent.name))?;
+        print_budget_warnings(&budget_outcome);
+
         let runtime_name = agent.resolved_runtime(&config.defaults).ok_or_else(|| {
             TuttiError::ConfigValidation(format!(
                 "agent '{}' has no runtime (set runtime on agent or in [defaults])",
@@ -718,6 +723,12 @@ fn print_launch_summary(launched: &[(String, String, String)]) {
     println!("{table}");
 }
 
+fn print_budget_warnings(outcome: &BudgetGuardOutcome) {
+    for warning in &outcome.warnings {
+        eprintln!("  {} {}", "warn".yellow(), warning);
+    }
+}
+
 /// Best-effort capacity warning after launch. Never blocks or errors.
 fn capacity_warning(
     config: &crate::config::TuttiConfig,
@@ -840,6 +851,14 @@ fn run_all(
                 let mut warned_bypass = false;
 
                 for agent in sorted {
+                    match budget::enforce_pre_exec(&config, project_root, "up", Some(&agent.name)) {
+                        Ok(outcome) => print_budget_warnings(&outcome),
+                        Err(e) => {
+                            eprintln!("  Skipping {} ({e})", agent.name);
+                            continue;
+                        }
+                    }
+
                     let runtime_name = match agent.resolved_runtime(&config.defaults) {
                         Some(rt) => rt,
                         None => {
@@ -1096,6 +1115,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let env = build_workspace_env(&config);
         assert_eq!(env.get("GIT_AUTHOR_NAME").unwrap(), "Test User");
@@ -1129,6 +1149,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let mut env = build_workspace_env(&config);
         // Simulate agent-level override
@@ -1163,6 +1184,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -1210,6 +1232,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -1269,6 +1292,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -1317,6 +1341,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -1366,6 +1391,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
 
         let resolved = resolve_launch_settings(
@@ -1397,6 +1423,7 @@ mod tests {
             hooks: vec![],
             handoff: None,
             observe: None,
+            budget: None,
         };
         let launch_settings = LaunchSettings {
             mode: LaunchMode::Auto,

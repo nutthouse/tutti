@@ -4,6 +4,7 @@ use crate::automation::{
 };
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
+use crate::{budget, budget::BudgetGuardOutcome};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
 
@@ -31,6 +32,8 @@ pub fn run(
     let project_root = config_path.parent().ok_or_else(|| {
         TuttiError::ConfigValidation("could not determine workspace root".to_string())
     })?;
+    let budget_outcome = budget::enforce_pre_exec(&config, project_root, "run", agent)?;
+    print_budget_warnings(&budget_outcome);
 
     let options = ExecuteOptions {
         strict,
@@ -400,6 +403,12 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out = s.chars().take(max.saturating_sub(3)).collect::<String>();
     out.push_str("...");
     out
+}
+
+fn print_budget_warnings(outcome: &BudgetGuardOutcome) {
+    for warning in &outcome.warnings {
+        eprintln!("warn: {warning}");
+    }
 }
 
 #[cfg(test)]

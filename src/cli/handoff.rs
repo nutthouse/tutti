@@ -582,6 +582,7 @@ mod tests {
                 include: vec![],
             }),
             observe: None,
+            budget: None,
         }
     }
 

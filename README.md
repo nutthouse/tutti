@@ -115,6 +115,7 @@ source ~/.zshrc
 - Token/capacity reporting via `tt usage` for API profiles (`plan = "api"`) from local Claude Code + Codex session logs
 - `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
 - Workspace `[[tool_pack]]` declarations + `tt doctor` prerequisite checks (commands/env/profile/runtime)
+- API-profile budget guardrails (`[budget]`) with pre-exec checks on `tt up/send/run/verify`
 
 ### Planned / in progress
 - Session replacement flow (`tt handoff apply`) hardening and richer packet templates
@@ -149,6 +150,15 @@ runtime = "claude-code"
 [launch]
 mode = "auto"            # safe | auto | unattended
 policy = "constrained"   # constrained | bypass
+
+[budget]
+mode = "warn"                  # warn | enforce
+warn_threshold_pct = 80
+workspace_weekly_tokens = 5000000
+
+[budget.agent_weekly_tokens]
+backend = 2000000
+frontend = 1500000
 
 [[agent]]
 name = "backend"
@@ -231,6 +241,7 @@ weekly_hours = 45.0
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
 For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
+Budget guardrails are API-only: when `[budget]` is configured and the workspace profile has `plan = "api"`, Tutti checks budget caps before `up/send/run/verify`, emits `budget.threshold` / `budget.blocked` control events, and either warns or blocks based on `budget.mode`.
 
 Optional tool packs can be declared per workspace and validated with `tt doctor`:
 

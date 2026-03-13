@@ -31,6 +31,15 @@ runtime = "claude-code"   # default runtime for agents
 # - constrained mode requires [permissions] in ~/.config/tutti/config.toml.
 # - mode = "unattended" + policy = "bypass" is highest autonomy and highest risk.
 
+# Budget guardrails (optional, API profiles only)
+# [budget]
+# mode = "warn"                  # warn | enforce
+# warn_threshold_pct = 80        # alert threshold for warning events
+# workspace_weekly_tokens = 5000000
+# [budget.agent_weekly_tokens]
+# backend = 2000000
+# frontend = 1500000
+
 # Define your agents — each gets its own terminal session
 [[agent]]
 name = "backend"
