@@ -360,6 +360,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 | Claude Code | ✅ Primary | Full support including context monitoring |
 | Codex CLI | ✅ Supported | Token tracking via local Codex session logs |
 | Aider | ✅ Supported | Model-agnostic |
+| OpenClaw | ✅ Supported | Native runtime adapter (`runtime = "openclaw"`) |
 | Gemini CLI | 🔜 Planned | |
 | Custom | 🔜 Planned | Any CLI agent via adapter interface |
 

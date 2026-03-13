@@ -52,6 +52,11 @@ prompt = "You own the UI. Follow existing component patterns."
 # CUSTOM_VAR = "value"           # agent-level env vars (override workspace env)
 
 # [[agent]]
+# name = "conductor"
+# runtime = "openclaw"
+# prompt = "Coordinate other agents and keep workflows moving."
+
+# [[agent]]
 # name = "pr-monitor"
 # runtime = "claude-code"
 # prompt = "Monitor open PRs. Check CI status."

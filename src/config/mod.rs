@@ -478,7 +478,7 @@ impl TuttiConfig {
         topological_sort(&self.agents)?;
 
         // Check runtimes are known
-        let known_runtimes = ["claude-code", "codex", "aider"];
+        let known_runtimes = ["claude-code", "codex", "aider", "openclaw"];
         for agent in &self.agents {
             if let Some(rt) = agent.resolved_runtime(&self.defaults)
                 && !known_runtimes.contains(&rt.as_str())

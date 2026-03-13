@@ -1,6 +1,7 @@
 pub mod aider;
 pub mod claude_code;
 pub mod codex;
+pub mod openclaw;
 
 /// Status of an agent as detected from terminal output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +162,7 @@ pub fn get_adapter(
         "claude-code" => &claude_code::CONFIG,
         "codex" => &codex::CONFIG,
         "aider" => &aider::CONFIG,
+        "openclaw" => &openclaw::CONFIG,
         _ => return None,
     };
     Some(Box::new(CommonAdapter {
@@ -193,6 +195,7 @@ pub fn compatible_command_override<'a>(
         "claude-code" => command_lc.contains("claude") || provider == "anthropic",
         "codex" => command_lc.contains("codex") || provider == "openai",
         "aider" => command_lc.contains("aider"),
+        "openclaw" => command_lc.contains("openclaw") || provider == "openclaw",
         _ => false,
     };
 
@@ -368,6 +371,58 @@ mod tests {
         assert_eq!(a.build_spawn_command(None), "aider");
     }
 
+    // -- OpenClaw tests --
+
+    #[test]
+    fn openclaw_detect_working_from_spinner() {
+        let a = adapter("openclaw");
+        assert_eq!(
+            a.detect_status("Some previous output\n⠋ Thinking..."),
+            AgentStatus::Working
+        );
+    }
+
+    #[test]
+    fn openclaw_detect_idle() {
+        let a = adapter("openclaw");
+        assert_eq!(
+            a.detect_status("Done.\n\nWhat would you like to do?"),
+            AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn openclaw_detect_auth_failure() {
+        let a = adapter("openclaw");
+        assert!(matches!(
+            a.detect_status("Error: authentication_error - token has expired"),
+            AgentStatus::AuthFailed(_)
+        ));
+    }
+
+    #[test]
+    fn openclaw_detect_unknown() {
+        let a = adapter("openclaw");
+        assert_eq!(
+            a.detect_status("random output with nothing recognizable"),
+            AgentStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn openclaw_spawn_with_prompt() {
+        let a = adapter("openclaw");
+        let cmd = a.build_spawn_command(Some("You are a backend developer"));
+        assert!(cmd.contains("openclaw"));
+        assert!(cmd.contains("--prompt"));
+    }
+
+    #[test]
+    fn openclaw_spawn_without_prompt() {
+        let a = adapter("openclaw");
+        assert_eq!(a.build_spawn_command(None), "openclaw");
+    }
+
     #[test]
     fn unknown_runtime_returns_none() {
         assert!(get_adapter("unknown", None).is_none());
@@ -383,6 +438,10 @@ mod tests {
             compatible_command_override("codex", Some("openai"), Some("codex-enterprise")),
             Some("codex-enterprise")
         );
+        assert_eq!(
+            compatible_command_override("openclaw", Some("openclaw"), Some("openclaw")),
+            Some("openclaw")
+        );
     }
 
     #[test]
@@ -393,6 +452,10 @@ mod tests {
         );
         assert_eq!(
             compatible_command_override("claude-code", Some("openai"), Some("codex")),
+            None
+        );
+        assert_eq!(
+            compatible_command_override("openclaw", Some("openai"), Some("codex")),
             None
         );
     }
