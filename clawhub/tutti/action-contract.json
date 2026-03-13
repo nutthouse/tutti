@@ -1,8 +1,8 @@
 {
   "name": "tutti-openclaw",
-  "version": "1.0.0",
-  "description": "Action contract for using Tutti from OpenClaw via integrations/openclaw/tutti_openclaw.py",
-  "entrypoint": "integrations/openclaw/tutti_openclaw.py",
+  "version": "1.1.0",
+  "description": "Action contract for using Tutti from OpenClaw via tutti_openclaw.py",
+  "entrypoint": "tutti_openclaw.py",
   "global_args": {
     "--tt-bin": "Override the Tutti CLI command/prefix (defaults to `tt`, or TUTTI_BIN env var)"
   },
@@ -39,6 +39,11 @@
       "description": "Run tt up <agent>"
     },
     {
+      "name": "send_prompt",
+      "args": ["<agent>", "[--auto-up]", "[--wait]", "[--output]", "[--timeout-secs <n>]", "[--idle-stable-secs <n>]", "[--output-lines <n>]", "<prompt...>"],
+      "description": "Send a prompt to an agent with optional auto-start, wait-for-idle, and output capture"
+    },
+    {
       "name": "list_workflows",
       "args": [],
       "description": "Run tt run --list --json"
@@ -62,6 +67,11 @@
       "name": "read_verify_status",
       "args": [],
       "description": "Run tt verify --last --json"
+    },
+    {
+      "name": "land_agent",
+      "args": ["<agent>", "[--pr]", "[--force]"],
+      "description": "Land an agent's branch back to current branch, or push and open PR with --pr"
     },
     {
       "name": "generate_handoff",
