@@ -37,6 +37,7 @@ tt run --list --json     # machine-readable workflow discovery
 tt run verify-app --dry-run --json
                          # machine-readable resolved execution plan
 tt run verify-app --json # machine-readable workflow execution result
+tt run --resume <run_id> # resume a failed run from checkpoint state
 tt verify                # run verification workflow + persist summary
 tt verify --json         # machine-readable verify execution result
 tt verify --last         # show latest persisted verification summary
@@ -275,14 +276,16 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Start and terminate individual agents (`tt up` / `tt down`)
 - Inspect worktree + branch changes (`tt diff <agent>`)
 - Land agent commits into current branch (`tt land <agent>`)
-- Override local cleanliness guard when needed (`tt land <agent> --force`)
+- Override local cleanliness guard when needed (`tt land <agent> --force`, with temporary stash/restore)
 - Push/open PRs from agent branches (`tt land <agent> --pr`)
 - Dispatch review packets to reviewer agent (`tt review <agent>`)
 - Ad-hoc prompt dispatch with optional auto-start + wait + captured output (`tt send --auto_up --wait --output`)
 
 ### Automation (Built)
 - `tt run` / `tt verify` reusable workflow execution with persisted run records
+- Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+- Workflow `review`/`land` steps auto-start required sessions when they are not already running
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 - `tt serve` local control API endpoints:

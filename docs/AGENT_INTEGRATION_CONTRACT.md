@@ -97,6 +97,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - `tt land <agent>`
 - Force land even when local branch has tracked changes:
   - `tt land <agent> --force`
+  - Force mode performs a temporary stash/pop around landing to avoid tracked-dirty blocks.
 - Push and open PR from agent branch:
   - `tt land <agent> --pr`
 - Send review packet to reviewer agent:
@@ -115,6 +116,8 @@ Use `peek` for automation. Use `attach` for operator handoff.
 
 - Run a named workflow:
   - `tt run <workflow>`
+- Resume a failed workflow run:
+  - `tt run --resume <run-id>`
 - Dry-run resolution:
   - `tt run <workflow> --dry-run`
 - Run verification workflow:
@@ -144,6 +147,7 @@ Hook behavior in v1:
 - Hook defaults are fail-open unless configured fail-closed.
 - Workflow step types:
   - `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+  - `review`/`land` steps auto-start required sessions when missing.
   - `prompt` supports `inject_files` to copy workspace-relative files into the target agent worktree before send.
 - Workflow auto-reclaim:
   - Agents with `persistent = false` that were not running at workflow start are auto-stopped at workflow end.
@@ -196,6 +200,7 @@ Automation state files:
 - `.tutti/state/verify-last.json`: last verification summary (`workflow_name`, `success`, `failed_steps`, `strict`, `agent_scope`).
 - `.tutti/state/scheduler-last-runs.json`: scheduler fire timestamps per workspace/workflow key.
 - `.tutti/state/workflow-outputs/<run-id>/<step-id>.json`: canonical structured step outputs.
+- `.tutti/state/workflow-checkpoints/<run-id>.json`: execution checkpoint used by `tt run --resume`.
 
 ## Failure Handling Contract
 

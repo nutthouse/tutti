@@ -8,12 +8,13 @@ use crate::health::WaitFailureReason;
 use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, ControlEvent, VerifyLastSummary, append_automation_run,
-    append_control_event, save_verify_last_summary, save_workflow_output,
+    append_control_event, load_workflow_checkpoint, save_verify_last_summary,
+    save_workflow_checkpoint, save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -480,6 +481,66 @@ impl ExecutionResult {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ResumeContext {
+    pub run_id: String,
+    pub workflow_name: String,
+    pub strict: bool,
+    pub agent_scope: Option<String>,
+    pub started_at: chrono::DateTime<Utc>,
+    pub completed_steps: HashSet<usize>,
+    pub step_results: Vec<StepResult>,
+    pub output_files: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkflowCheckpointRecord {
+    run_id: String,
+    workflow_name: String,
+    strict: bool,
+    origin: String,
+    agent_scope: Option<String>,
+    started_at: chrono::DateTime<Utc>,
+    finished_at: chrono::DateTime<Utc>,
+    success: bool,
+    failed_steps: Vec<usize>,
+    step_results: Vec<StepResult>,
+    output_files: HashMap<String, String>,
+}
+
+pub fn load_resume_context(project_root: &Path, run_id: &str) -> Result<Option<ResumeContext>> {
+    let Some(raw) = load_workflow_checkpoint(project_root, run_id)? else {
+        return Ok(None);
+    };
+    let record: WorkflowCheckpointRecord =
+        serde_json::from_value(raw).map_err(|e| TuttiError::State(e.to_string()))?;
+
+    if record.success {
+        return Err(TuttiError::ConfigValidation(format!(
+            "run '{}' already succeeded; nothing to resume",
+            run_id
+        )));
+    }
+
+    let step_results: Vec<StepResult> = record
+        .step_results
+        .into_iter()
+        .filter(|s| s.status != StepStatus::Failed)
+        .collect();
+    let completed_steps: HashSet<usize> = step_results.iter().map(|s| s.index).collect();
+
+    Ok(Some(ResumeContext {
+        run_id: record.run_id,
+        workflow_name: record.workflow_name,
+        strict: record.strict,
+        agent_scope: record.agent_scope,
+        started_at: record.started_at,
+        completed_steps,
+        step_results,
+        output_files: record.output_files,
+    }))
+}
+
 pub struct WorkflowExecutor<'a> {
     config: &'a TuttiConfig,
     project_root: &'a Path,
@@ -499,19 +560,33 @@ impl<'a> WorkflowExecutor<'a> {
         options: &ExecuteOptions,
         agent_scope: Option<&str>,
         run_id: Option<&str>,
+        resume: Option<&ResumeContext>,
     ) -> Result<ExecutionResult> {
-        let started_at = Utc::now();
+        let started_at = resume.map(|r| r.started_at).unwrap_or_else(Utc::now);
         let run_id = run_id
             .map(ToString::to_string)
+            .or_else(|| resume.map(|r| r.run_id.clone()))
             .unwrap_or_else(generate_run_id);
         let mut success = true;
         let mut failed_steps = Vec::new();
-        let mut step_results = Vec::with_capacity(workflow.steps.len());
-        let mut outputs = HashMap::<String, StepOutputValue>::new();
-        let mut output_files = HashMap::<String, String>::new();
+        let mut step_results = resume
+            .map(|r| r.step_results.clone())
+            .unwrap_or_else(|| Vec::with_capacity(workflow.steps.len()));
+        let mut output_files = resume.map(|r| r.output_files.clone()).unwrap_or_default();
+        let mut outputs = if let Some(ctx) = resume {
+            load_resume_outputs(&ctx.output_files)?
+        } else {
+            HashMap::<String, StepOutputValue>::new()
+        };
+        let completed_steps = resume
+            .map(|r| r.completed_steps.clone())
+            .unwrap_or_default();
 
         for (idx, step) in workflow.steps.iter().enumerate() {
             let step_index = idx + 1;
+            if completed_steps.contains(&step_index) {
+                continue;
+            }
             match step {
                 ResolvedStep::Prompt {
                     step_id,
@@ -976,6 +1051,7 @@ impl<'a> WorkflowExecutor<'a> {
                                 &resolved_nested,
                                 &nested_options,
                                 agent_override.as_deref(),
+                                None,
                             )
                         });
 
@@ -1070,6 +1146,46 @@ impl<'a> WorkflowExecutor<'a> {
                     fail_mode,
                 } => {
                     let started = std::time::Instant::now();
+                    if let Err(e) =
+                        ensure_agent_session_running(self.config, self.project_root, agent)
+                    {
+                        if *fail_mode == WorkflowFailMode::Open {
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "land".to_string(),
+                                status: StepStatus::Warning,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(1),
+                                timed_out: false,
+                                message: Some(format!(
+                                    "failed to auto-start '{}' before land: {e}",
+                                    agent
+                                )),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            continue;
+                        } else {
+                            failed_steps.push(step_index);
+                            success = false;
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "land".to_string(),
+                                status: StepStatus::Failed,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(1),
+                                timed_out: false,
+                                message: Some(format!(
+                                    "failed to auto-start '{}' before land: {e}",
+                                    agent
+                                )),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            break;
+                        }
+                    }
+
                     match with_project_root(self.project_root, || {
                         crate::cli::land::run(agent, *pr, *force)
                     }) {
@@ -1122,6 +1238,45 @@ impl<'a> WorkflowExecutor<'a> {
                     fail_mode,
                 } => {
                     let started = std::time::Instant::now();
+                    if let Err(e) =
+                        ensure_agent_session_running(self.config, self.project_root, reviewer)
+                    {
+                        if *fail_mode == WorkflowFailMode::Open {
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "review".to_string(),
+                                status: StepStatus::Warning,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(1),
+                                timed_out: false,
+                                message: Some(format!(
+                                    "failed to auto-start reviewer '{}': {e}",
+                                    reviewer
+                                )),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            continue;
+                        } else {
+                            failed_steps.push(step_index);
+                            success = false;
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "review".to_string(),
+                                status: StepStatus::Failed,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(1),
+                                timed_out: false,
+                                message: Some(format!(
+                                    "failed to auto-start reviewer '{}': {e}",
+                                    reviewer
+                                )),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            break;
+                        }
+                    }
                     match with_project_root(self.project_root, || {
                         crate::cli::review::run(agent, reviewer)
                     }) {
@@ -1198,6 +1353,8 @@ impl<'a> WorkflowExecutor<'a> {
                 hook_agent: options.hook_agent.clone(),
             },
         )?;
+
+        save_execution_checkpoint(self.project_root, options, agent_scope, &result)?;
 
         Ok(result)
     }
@@ -1304,6 +1461,71 @@ fn load_and_store_output(
         path: canonical_path,
         json: parsed,
     })
+}
+
+fn load_resume_outputs(
+    output_files: &HashMap<String, String>,
+) -> Result<HashMap<String, StepOutputValue>> {
+    let mut outputs = HashMap::new();
+    for (step_id, path_str) in output_files {
+        let path = PathBuf::from(path_str);
+        let body = std::fs::read_to_string(&path).map_err(|e| {
+            TuttiError::ConfigValidation(format!(
+                "failed reading resumed output_json for step '{}': {} ({e})",
+                step_id,
+                path.display()
+            ))
+        })?;
+        let parsed: Value = serde_json::from_str(&body).map_err(|e| {
+            TuttiError::ConfigValidation(format!(
+                "failed parsing resumed output_json for step '{}': {} ({e})",
+                step_id,
+                path.display()
+            ))
+        })?;
+        outputs.insert(step_id.clone(), StepOutputValue { path, json: parsed });
+    }
+    Ok(outputs)
+}
+
+fn save_execution_checkpoint(
+    project_root: &Path,
+    options: &ExecuteOptions,
+    agent_scope: Option<&str>,
+    result: &ExecutionResult,
+) -> Result<()> {
+    let completed_steps: HashSet<usize> = result
+        .step_results
+        .iter()
+        .filter(|s| s.status != StepStatus::Failed)
+        .map(|s| s.index)
+        .collect();
+    let mut completed_steps: Vec<usize> = completed_steps.into_iter().collect();
+    completed_steps.sort_unstable();
+
+    let record = WorkflowCheckpointRecord {
+        run_id: result.run_id.clone(),
+        workflow_name: result.workflow_name.clone(),
+        strict: result.strict,
+        origin: options.origin.as_str().to_string(),
+        agent_scope: agent_scope.map(|s| s.to_string()),
+        started_at: result.started_at,
+        finished_at: result.finished_at,
+        success: result.success,
+        failed_steps: result.failed_steps.clone(),
+        step_results: result.step_results.clone(),
+        output_files: result.output_files.clone(),
+    };
+
+    let mut value = serde_json::to_value(record)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "completed_steps".to_string(),
+            serde_json::to_value(completed_steps)?,
+        );
+    }
+    save_workflow_checkpoint(project_root, &result.run_id, &value)?;
+    Ok(())
 }
 
 fn render_template(
@@ -1444,6 +1666,7 @@ fn dispatch_agent_stop_hook(
             &resolved,
             &options,
             Some(&payload.agent_name),
+            None,
         )?
     } else if let Some(cmd) = hook.run.as_deref() {
         let resolved = ResolvedWorkflow {
@@ -1465,6 +1688,7 @@ fn dispatch_agent_stop_hook(
             &resolved,
             &options,
             Some(&payload.agent_name),
+            None,
         )?
     } else {
         return Err(TuttiError::ConfigValidation(
@@ -1516,6 +1740,7 @@ fn dispatch_workflow_complete_hook(
             &resolved,
             &options,
             payload.agent_scope.as_deref(),
+            None,
         )?
     } else if let Some(cmd) = hook.run.as_deref() {
         let resolved = ResolvedWorkflow {
@@ -1537,6 +1762,7 @@ fn dispatch_workflow_complete_hook(
             &resolved,
             &options,
             payload.agent_scope.as_deref(),
+            None,
         )?
     } else {
         return Err(TuttiError::ConfigValidation(
@@ -1599,10 +1825,13 @@ pub fn execute_workflow_with_hooks(
     resolved: &ResolvedWorkflow,
     options: &ExecuteOptions,
     agent_scope: Option<&str>,
+    resume: Option<&ResumeContext>,
 ) -> Result<ExecutionResult> {
     let running_before = running_sessions(config);
     let executor = WorkflowExecutor::new(config, project_root);
-    let run_id = generate_run_id();
+    let run_id = resume
+        .map(|r| r.run_id.clone())
+        .unwrap_or_else(generate_run_id);
     let _ = append_control_event(
         project_root,
         &ControlEvent {
@@ -1614,11 +1843,12 @@ pub fn execute_workflow_with_hooks(
             data: Some(serde_json::json!({
                 "workflow_name": resolved.name,
                 "origin": options.origin.as_str(),
-                "strict": options.strict
+                "strict": options.strict,
+                "resumed": resume.is_some()
             })),
         },
     );
-    let result = executor.execute(resolved, options, agent_scope, Some(&run_id))?;
+    let result = executor.execute(resolved, options, agent_scope, Some(&run_id), resume)?;
     reclaim_non_persistent_sessions(config, project_root, &running_before)?;
 
     // Recursion guard: don't emit workflow_complete from workflow_complete hooks.
@@ -1658,6 +1888,20 @@ pub fn execute_workflow_with_hooks(
     );
 
     Ok(result)
+}
+
+fn ensure_agent_session_running(
+    config: &TuttiConfig,
+    project_root: &Path,
+    agent: &str,
+) -> Result<()> {
+    let session = TmuxSession::session_name(&config.workspace.name, agent);
+    if TmuxSession::session_exists(&session) {
+        return Ok(());
+    }
+    with_project_root(project_root, || {
+        crate::cli::up::run(Some(agent), None, false, None, None)
+    })
 }
 
 fn running_sessions(config: &TuttiConfig) -> std::collections::HashSet<String> {
@@ -1797,7 +2041,9 @@ mod tests {
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
         let executor = WorkflowExecutor::new(&config, &dir);
-        let result = executor.execute(&resolved, &opts, None, None).unwrap();
+        let result = executor
+            .execute(&resolved, &opts, None, None, None)
+            .unwrap();
 
         assert!(result.success);
         assert_eq!(result.warning_count(), 1);
@@ -1857,7 +2103,9 @@ mod tests {
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
         let executor = WorkflowExecutor::new(&config, &dir);
-        let result = executor.execute(&resolved, &opts, None, None).unwrap();
+        let result = executor
+            .execute(&resolved, &opts, None, None, None)
+            .unwrap();
 
         assert!(!result.success);
         assert_eq!(result.failed_steps, vec![2]);
@@ -1897,7 +2145,9 @@ mod tests {
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
         let executor = WorkflowExecutor::new(&config, &dir);
-        let result = executor.execute(&resolved, &opts, None, None).unwrap();
+        let result = executor
+            .execute(&resolved, &opts, None, None, None)
+            .unwrap();
 
         assert!(!result.success);
         assert_eq!(result.failed_steps, vec![1]);
@@ -1935,7 +2185,8 @@ mod tests {
             hook_agent: None,
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
-        let result = execute_workflow_with_hooks(&config, &dir, &resolved, &opts, None).unwrap();
+        let result =
+            execute_workflow_with_hooks(&config, &dir, &resolved, &opts, None, None).unwrap();
 
         let events = crate::state::load_control_events(&dir).unwrap();
         let started = events
@@ -2069,6 +2320,86 @@ mod tests {
             std::fs::read_to_string(destination).unwrap(),
             "{\"ok\":true}\n"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_resume_context_filters_failed_steps() {
+        let dir = std::env::temp_dir().join("tutti-test-resume-context");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let checkpoint = serde_json::json!({
+            "run_id": "run123",
+            "workflow_name": "verify",
+            "strict": false,
+            "origin": "run",
+            "agent_scope": "backend",
+            "started_at": Utc::now(),
+            "finished_at": Utc::now(),
+            "success": false,
+            "failed_steps": [2],
+            "step_results": [
+                {
+                    "index": 1,
+                    "step_type": "command",
+                    "status": "success",
+                    "duration_ms": 1,
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "message": null,
+                    "stdout": "",
+                    "stderr": ""
+                },
+                {
+                    "index": 2,
+                    "step_type": "command",
+                    "status": "failed",
+                    "duration_ms": 1,
+                    "exit_code": 1,
+                    "timed_out": false,
+                    "message": "boom",
+                    "stdout": "",
+                    "stderr": ""
+                }
+            ],
+            "output_files": {}
+        });
+        crate::state::save_workflow_checkpoint(&dir, "run123", &checkpoint).unwrap();
+
+        let resumed = load_resume_context(&dir, "run123").unwrap().unwrap();
+        assert_eq!(resumed.workflow_name, "verify");
+        assert!(resumed.completed_steps.contains(&1));
+        assert!(!resumed.completed_steps.contains(&2));
+        assert_eq!(resumed.step_results.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_resume_context_rejects_completed_run() {
+        let dir = std::env::temp_dir().join("tutti-test-resume-complete");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let checkpoint = serde_json::json!({
+            "run_id": "run-ok",
+            "workflow_name": "verify",
+            "strict": false,
+            "origin": "run",
+            "agent_scope": null,
+            "started_at": Utc::now(),
+            "finished_at": Utc::now(),
+            "success": true,
+            "failed_steps": [],
+            "step_results": [],
+            "output_files": {}
+        });
+        crate::state::save_workflow_checkpoint(&dir, "run-ok", &checkpoint).unwrap();
+
+        let err = load_resume_context(&dir, "run-ok").unwrap_err();
+        assert!(err.to_string().contains("already succeeded"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

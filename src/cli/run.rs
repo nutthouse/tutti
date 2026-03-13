@@ -1,6 +1,6 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, ExecutionResult, ResolvedStep, ResolvedWorkflow, StepStatus,
-    WorkflowResolver, execute_workflow_with_hooks,
+    WorkflowResolver, execute_workflow_with_hooks, load_resume_context,
 };
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
@@ -10,6 +10,7 @@ use serde::Serialize;
 
 pub fn run(
     workflow: Option<&str>,
+    resume: Option<&str>,
     list: bool,
     agent: Option<&str>,
     json: bool,
@@ -25,18 +26,38 @@ pub fn run(
         return Ok(());
     }
 
-    let workflow = workflow.ok_or_else(|| {
-        TuttiError::ConfigValidation("workflow name is required unless --list is set".to_string())
-    })?;
-
     let project_root = config_path.parent().ok_or_else(|| {
         TuttiError::ConfigValidation("could not determine workspace root".to_string())
     })?;
-    let budget_outcome = budget::enforce_pre_exec(&config, project_root, "run", agent)?;
+
+    let resume_context = if let Some(run_id) = resume {
+        load_resume_context(project_root, run_id)?
+    } else {
+        None
+    };
+
+    let workflow_name = if let Some(ctx) = resume_context.as_ref() {
+        ctx.workflow_name.as_str()
+    } else {
+        workflow.ok_or_else(|| {
+            TuttiError::ConfigValidation(
+                "workflow name is required unless --list or --resume is set".to_string(),
+            )
+        })?
+    };
+
+    let effective_agent = agent.or_else(|| {
+        resume_context
+            .as_ref()
+            .and_then(|r| r.agent_scope.as_deref())
+    });
+    let budget_outcome = budget::enforce_pre_exec(&config, project_root, "run", effective_agent)?;
     print_budget_warnings(&budget_outcome);
 
+    let effective_strict = strict || resume_context.as_ref().is_some_and(|r| r.strict);
+
     let options = ExecuteOptions {
-        strict,
+        strict: effective_strict,
         force_open_commands: false,
         origin: ExecutionOrigin::Run,
         hook_event: None,
@@ -44,21 +65,37 @@ pub fn run(
     };
 
     let resolver = WorkflowResolver::new(&config, project_root);
-    let resolved = resolver.resolve(workflow, agent, &options)?;
+    let resolved = resolver.resolve(workflow_name, effective_agent, &options)?;
+
+    if let Some(ctx) = resume_context.as_ref()
+        && ctx.completed_steps.len() >= resolved.steps.len()
+    {
+        return Err(TuttiError::ConfigValidation(format!(
+            "run '{}' has no pending steps to resume",
+            ctx.run_id
+        )));
+    }
 
     if dry_run {
         if json {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serialize_dry_run(&resolved, strict))?
+                serde_json::to_string_pretty(&serialize_dry_run(&resolved, effective_strict))?
             );
         } else {
-            print_dry_run(&resolved, strict);
+            print_dry_run(&resolved, effective_strict);
         }
         return Ok(());
     }
 
-    let result = execute_workflow_with_hooks(&config, project_root, &resolved, &options, agent)?;
+    let result = execute_workflow_with_hooks(
+        &config,
+        project_root,
+        &resolved,
+        &options,
+        effective_agent,
+        resume_context.as_ref(),
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -364,6 +401,7 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
 
 pub fn print_execution_result(result: &ExecutionResult) {
     println!("Workflow: {}", result.workflow_name);
+    println!("Run ID: {}", result.run_id);
 
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);

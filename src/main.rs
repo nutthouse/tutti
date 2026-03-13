@@ -100,6 +100,7 @@ fn main() {
         Commands::Handoff { command } => cli::handoff::run(command),
         Commands::Run {
             ref workflow,
+            ref resume,
             list,
             ref agent,
             json,
@@ -107,6 +108,7 @@ fn main() {
             dry_run,
         } => cli::run::run(
             workflow.as_deref(),
+            resume.as_deref(),
             list,
             agent.as_deref(),
             json,

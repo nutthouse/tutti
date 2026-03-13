@@ -63,7 +63,7 @@ pub fn run_due_workflows_for_workspace(
         };
 
         let resolved = resolver.resolve(&workflow.name, None, &options)?;
-        match execute_workflow_with_hooks(config, project_root, &resolved, &options, None) {
+        match execute_workflow_with_hooks(config, project_root, &resolved, &options, None, None) {
             Ok(result) => {
                 events.push(format!(
                     "scheduled workflow '{}' ({})",

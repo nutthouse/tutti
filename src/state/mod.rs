@@ -112,6 +112,7 @@ pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
         "state",
         "state/runtime-settings",
         "state/health",
+        "state/workflow-checkpoints",
         "state/workflow-outputs",
         "worktrees",
         "handoffs",
@@ -280,6 +281,39 @@ pub fn save_workflow_output(
     let body = serde_json::to_string_pretty(json)?;
     std::fs::write(&path, body)?;
     Ok(path)
+}
+
+pub fn save_workflow_checkpoint(
+    project_root: &Path,
+    run_id: &str,
+    json: &serde_json::Value,
+) -> Result<PathBuf> {
+    let dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-checkpoints");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{run_id}.json"));
+    let body = serde_json::to_string_pretty(json)?;
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+pub fn load_workflow_checkpoint(
+    project_root: &Path,
+    run_id: &str,
+) -> Result<Option<serde_json::Value>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-checkpoints")
+        .join(format!("{run_id}.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = std::fs::read_to_string(path)?;
+    let value = serde_json::from_str(&body).map_err(|e| TuttiError::State(e.to_string()))?;
+    Ok(Some(value))
 }
 
 pub fn append_control_event(project_root: &Path, event: &ControlEvent) -> Result<()> {
@@ -483,6 +517,7 @@ mod tests {
 
         assert!(dir.join(".tutti/state").exists());
         assert!(dir.join(".tutti/state/runtime-settings").exists());
+        assert!(dir.join(".tutti/state/workflow-checkpoints").exists());
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());
@@ -603,6 +638,30 @@ mod tests {
         assert!(path.exists());
         let body = std::fs::read_to_string(path).unwrap();
         assert!(body.contains("\"ok\": true"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn workflow_checkpoint_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-workflow-checkpoint-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let value = serde_json::json!({
+            "run_id": "run123",
+            "workflow_name": "verify",
+            "success": false
+        });
+        let path = save_workflow_checkpoint(&dir, "run123", &value).unwrap();
+        assert!(path.exists());
+        let loaded = load_workflow_checkpoint(&dir, "run123").unwrap().unwrap();
+        assert_eq!(
+            loaded.get("workflow_name").and_then(|v| v.as_str()),
+            Some("verify")
+        );
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

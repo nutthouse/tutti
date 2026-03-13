@@ -59,13 +59,35 @@ pub fn run(agent_ref: &str, pr: bool, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    for sha in &commit_list {
-        run_git(&["cherry-pick", sha], &resolved.project_root).map_err(|e| {
-            TuttiError::Git(format!(
-                "{e}. Resolve conflicts and continue with `git cherry-pick --continue` or abort with `git cherry-pick --abort`."
-            ))
-        })?;
+    let stashed_for_force = if force {
+        stash_for_force_land(&resolved.project_root)?
+    } else {
+        false
+    };
+
+    let land_result = (|| -> Result<()> {
+        for sha in &commit_list {
+            run_git(&["cherry-pick", sha], &resolved.project_root).map_err(|e| {
+                TuttiError::Git(format!(
+                    "{e}. Resolve conflicts and continue with `git cherry-pick --continue` or abort with `git cherry-pick --abort`."
+                ))
+            })?;
+        }
+        Ok(())
+    })();
+
+    if stashed_for_force {
+        match &land_result {
+            Ok(_) => restore_force_land_stash(&resolved.project_root)?,
+            Err(_) => {
+                eprintln!(
+                    "warn: force-land stash was kept because landing failed; recover with `git stash list` / `git stash pop`."
+                );
+            }
+        }
     }
+
+    land_result?;
 
     println!(
         "Landed {} commit(s) from {} ({}) onto current branch.",
@@ -125,9 +147,9 @@ fn push_and_open_pr(project_root: &Path, branch: &str) -> Result<()> {
 }
 
 fn ensure_git_clean(cwd: &Path) -> Result<()> {
-    let has_unstaged = !git_success(&["diff", "--quiet", "--ignore-submodules=dirty"], cwd, true)?;
+    let has_unstaged = !git_success(&["diff", "--quiet", "--ignore-submodules=all"], cwd, true)?;
     let has_staged = !git_success(
-        &["diff", "--cached", "--quiet", "--ignore-submodules=dirty"],
+        &["diff", "--cached", "--quiet", "--ignore-submodules=all"],
         cwd,
         true,
     )?;
@@ -138,6 +160,46 @@ fn ensure_git_clean(cwd: &Path) -> Result<()> {
     Err(TuttiError::Git(
         "working tree has tracked changes. Commit/stash changes, or use `tt land <agent> --force` to override.".to_string(),
     ))
+}
+
+fn stash_for_force_land(cwd: &Path) -> Result<bool> {
+    let has_changes = !git_success(&["diff", "--quiet", "--ignore-submodules=all"], cwd, true)?
+        || !git_success(
+            &["diff", "--cached", "--quiet", "--ignore-submodules=all"],
+            cwd,
+            true,
+        )?;
+    if !has_changes {
+        return Ok(false);
+    }
+
+    let output = Command::new("git")
+        .args([
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            "tutti: force-land preflight stash",
+        ])
+        .current_dir(cwd)
+        .output()?;
+    if output.status.success() {
+        Ok(true)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(TuttiError::Git(format!(
+            "git stash push failed before force-land: {}",
+            stderr.trim()
+        )))
+    }
+}
+
+fn restore_force_land_stash(cwd: &Path) -> Result<()> {
+    run_git(&["stash", "pop", "--index"], cwd).map_err(|e| {
+        TuttiError::Git(format!(
+            "{e}. force-land stash remains; inspect with `git stash list`."
+        ))
+    })
 }
 
 fn ensure_branch_exists(project_root: &Path, branch: &str) -> Result<()> {

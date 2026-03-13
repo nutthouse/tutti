@@ -356,7 +356,7 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             with_project_root(&target.project_root, || {
-                super::run::run(Some(workflow), false, agent, false, strict, dry_run)
+                super::run::run(Some(workflow), None, false, agent, false, strict, dry_run)
             })?;
             Ok(json!({
                 "workspace": target.name,

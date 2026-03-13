@@ -45,7 +45,8 @@ pub fn run(
     let resolver = WorkflowResolver::new(&config, project_root);
     let resolved = resolver.resolve(workflow_name, agent, &options)?;
 
-    let result = execute_workflow_with_hooks(&config, project_root, &resolved, &options, agent)?;
+    let result =
+        execute_workflow_with_hooks(&config, project_root, &resolved, &options, agent, None)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);

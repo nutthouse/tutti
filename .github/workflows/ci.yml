@@ -70,7 +70,6 @@ jobs:
 
       - name: Prepare isolated global config
         run: |
-          export HOME="$RUNNER_TEMP/home"
           mkdir -p "$HOME/.config/tutti"
           cat > "$HOME/.config/tutti/config.toml" <<'EOF'
           [[profile]]
@@ -82,7 +81,6 @@ jobs:
           [permissions]
           allow = ["Read", "Edit", "Write"]
           EOF
-          echo "HOME=$HOME" >> "$GITHUB_ENV"
 
       - name: Prepare smoke workspace
         run: |
