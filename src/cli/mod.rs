@@ -87,7 +87,11 @@ pub enum Commands {
     },
 
     /// Check workspace readiness (tools, env, auth profile, runtimes)
-    Doctor,
+    Doctor {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Attach to an agent's terminal session
     Attach {

@@ -55,6 +55,8 @@ Before launch/verify loops:
 2. If non-zero, surface failing checks and stop.
 3. If zero, continue with workflow execution.
 
+For machine reads, prefer `tt doctor --json`.
+
 ## Machine State Reads
 
 - Agent state directory: `.tutti/state/`

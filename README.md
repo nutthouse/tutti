@@ -18,6 +18,7 @@ tt verify                # run verification workflow + persist summary
 tt verify --last         # show latest persisted verification summary
 tt verify --last --json  # machine-readable verify status
 tt doctor                # preflight runtime/profile/tool-pack prerequisites
+tt doctor --json         # machine-readable preflight report
 tt permissions check git status
                          # evaluate team command policy
 tt logs backend -f       # follow captured output for an agent

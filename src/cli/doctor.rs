@@ -3,8 +3,10 @@ use crate::error::{Result, TuttiError};
 use crate::runtime;
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum DoctorStatus {
     Pass,
     Warn,
@@ -21,14 +23,27 @@ impl DoctorStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct DoctorCheck {
     check: String,
     status: DoctorStatus,
     detail: String,
 }
 
-pub fn run() -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+struct DoctorSummary {
+    pass: usize,
+    warn: usize,
+    fail: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DoctorReport {
+    checks: Vec<DoctorCheck>,
+    summary: DoctorSummary,
+}
+
+pub fn run(json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (config, _) = TuttiConfig::load(&cwd)?;
     config.validate()?;
@@ -41,12 +56,14 @@ pub fn run() -> Result<()> {
         &|key| std::env::var_os(key).is_some(),
     );
 
-    print_checks(&checks);
+    let report = build_report(checks);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_report(&report);
+    }
 
-    let failures = checks
-        .iter()
-        .filter(|check| check.status == DoctorStatus::Fail)
-        .count();
+    let failures = report.summary.fail;
     if failures > 0 {
         return Err(TuttiError::ConfigValidation(format!(
             "doctor found {failures} failing checks"
@@ -225,12 +242,28 @@ fn check_tool_packs(
     checks
 }
 
-fn print_checks(checks: &[DoctorCheck]) {
+fn build_report(checks: Vec<DoctorCheck>) -> DoctorReport {
+    let fail = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Fail)
+        .count();
+    let warn = checks
+        .iter()
+        .filter(|check| check.status == DoctorStatus::Warn)
+        .count();
+    let pass = checks.len().saturating_sub(fail + warn);
+    DoctorReport {
+        checks,
+        summary: DoctorSummary { pass, warn, fail },
+    }
+}
+
+fn print_report(report: &DoctorReport) {
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
     table.set_header(vec!["Check", "Status", "Detail"]);
 
-    for check in checks {
+    for check in &report.checks {
         table.add_row(vec![
             check.check.clone(),
             check.status.label(),
@@ -240,18 +273,10 @@ fn print_checks(checks: &[DoctorCheck]) {
 
     println!("{table}");
 
-    let total = checks.len();
-    let fail = checks
-        .iter()
-        .filter(|check| check.status == DoctorStatus::Fail)
-        .count();
-    let warn = checks
-        .iter()
-        .filter(|check| check.status == DoctorStatus::Warn)
-        .count();
-    let pass = total.saturating_sub(fail + warn);
-
-    println!("Summary: {} pass, {} warn, {} fail", pass, warn, fail);
+    println!(
+        "Summary: {} pass, {} warn, {} fail",
+        report.summary.pass, report.summary.warn, report.summary.fail
+    );
 }
 
 #[cfg(test)]
@@ -387,5 +412,29 @@ mod tests {
                 && c.status == DoctorStatus::Fail
                 && c.detail.contains("GCP_PROJECT")
         }));
+    }
+
+    #[test]
+    fn build_report_counts_status_totals() {
+        let report = build_report(vec![
+            DoctorCheck {
+                check: "a".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "ok".to_string(),
+            },
+            DoctorCheck {
+                check: "b".to_string(),
+                status: DoctorStatus::Warn,
+                detail: "warn".to_string(),
+            },
+            DoctorCheck {
+                check: "c".to_string(),
+                status: DoctorStatus::Fail,
+                detail: "fail".to_string(),
+            },
+        ]);
+        assert_eq!(report.summary.pass, 1);
+        assert_eq!(report.summary.warn, 1);
+        assert_eq!(report.summary.fail, 1);
     }
 }

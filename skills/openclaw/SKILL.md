@@ -27,7 +27,7 @@ Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by 
 ## Execution Pattern
 
 1. Preflight:
-   - `tt doctor`
+   - `tt doctor --json`
    - stop if non-zero and report failures.
 2. Launch:
    - `tt up` or `tt up <agent>`.
