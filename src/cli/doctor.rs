@@ -338,13 +338,15 @@ fn build_report(checks: Vec<DoctorCheck>) -> DoctorReport {
 fn print_report(report: &DoctorReport) {
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
-    table.set_header(vec!["Check", "Status", "Detail"]);
+    table.set_header(vec!["Check", "Status", "Detail", "Suggested Fix"]);
 
     for check in &report.checks {
+        let suggestion = suggestion_for_check(check).unwrap_or("—").to_string();
         table.add_row(vec![
             check.check.clone(),
             check.status.label(),
             check.detail.clone(),
+            suggestion,
         ]);
     }
 
@@ -354,6 +356,44 @@ fn print_report(report: &DoctorReport) {
         "Summary: {} pass, {} warn, {} fail",
         report.summary.pass, report.summary.warn, report.summary.fail
     );
+}
+
+fn suggestion_for_check(check: &DoctorCheck) -> Option<&'static str> {
+    match check.check.as_str() {
+        "tmux" if check.status == DoctorStatus::Fail => Some("Install tmux and re-run doctor"),
+        "auth profile" if check.status == DoctorStatus::Fail => {
+            Some("Set workspace.auth.default_profile to an existing profile")
+        }
+        "auth profile" if check.status == DoctorStatus::Warn => {
+            Some("Configure workspace.auth.default_profile in tutti.toml")
+        }
+        "profile command" if check.status == DoctorStatus::Fail => {
+            Some("Install the profile command or update profile.command in global config")
+        }
+        "launch policy" if check.status == DoctorStatus::Fail => Some(
+            "Add [permissions].allow in global config, or launch with --mode safe / --policy bypass",
+        ),
+        "launch policy" if check.status == DoctorStatus::Warn => {
+            Some("Prefer constrained mode for safer unattended runs")
+        }
+        "launch/best_effort" => {
+            Some("Use claude-code for hard allowlist enforcement in constrained mode")
+        }
+        check_name if check_name.starts_with("runtime/") && check.status == DoctorStatus::Fail => {
+            Some("Install runtime CLI or adjust runtime/profile command mapping")
+        }
+        check_name
+            if check_name.starts_with("tool-pack/") && check.status == DoctorStatus::Fail =>
+        {
+            Some("Install the missing command/env required by this tool pack")
+        }
+        check_name
+            if check_name.starts_with("tool-pack/") && check.status == DoctorStatus::Warn =>
+        {
+            Some("Declare required_commands/required_env to make this check meaningful")
+        }
+        _ => None,
+    }
 }
 
 fn doctor_exit_status(summary: &DoctorSummary, strict: bool) -> Result<()> {
@@ -608,5 +648,16 @@ mod tests {
             fail: 0,
         };
         assert!(doctor_exit_status(&summary, false).is_ok());
+    }
+
+    #[test]
+    fn suggestion_for_launch_policy_failure_is_actionable() {
+        let check = DoctorCheck {
+            check: "launch policy".to_string(),
+            status: DoctorStatus::Fail,
+            detail: "missing policy".to_string(),
+        };
+        let suggestion = suggestion_for_check(&check).unwrap();
+        assert!(suggestion.contains("[permissions]"));
     }
 }
