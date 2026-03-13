@@ -342,6 +342,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Declarative `[[tool_pack]]` blocks in `tutti.toml` (`required_commands`, `required_env`)
 - `tt doctor` reports pass/warn/fail for tmux, profile wiring, runtime binaries, and tool-pack prerequisites
 - `tt doctor` also probes running agents for auth health (`auth/<agent>` checks)
+- CI smoke profile (`.github/workflows/ci.yml`) runs headless `tt doctor --strict` + `tt run smoke-check --strict`
 
 ### Community (Planned)
 - Share and discover arrangements (team configs)

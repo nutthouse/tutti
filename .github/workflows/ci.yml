@@ -45,3 +45,84 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
+
+  smoke:
+    name: Smoke (Doctor + Workflow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
+      - name: Prepare fake runtime command
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/claude" <<'EOF'
+          #!/usr/bin/env bash
+          echo "claude smoke stub"
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/claude"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare isolated global config
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME/.config/tutti"
+          cat > "$HOME/.config/tutti/config.toml" <<'EOF'
+          [[profile]]
+          name = "ci"
+          provider = "anthropic"
+          command = "claude"
+          plan = "max"
+
+          [permissions]
+          allow = ["Read", "Edit", "Write"]
+          EOF
+          echo "HOME=$HOME" >> "$GITHUB_ENV"
+
+      - name: Prepare smoke workspace
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke-ws"
+          cat > "$RUNNER_TEMP/smoke-ws/tutti.toml" <<'EOF'
+          [workspace]
+          name = "ci-smoke"
+
+          [workspace.auth]
+          default_profile = "ci"
+
+          [defaults]
+          worktree = false
+          runtime = "claude-code"
+
+          [[agent]]
+          name = "smoke"
+          prompt = "Smoke test agent."
+
+          [[tool_pack]]
+          name = "ci-smoke"
+          required_commands = ["sh"]
+          required_env = ["CI_SMOKE"]
+
+          [[workflow]]
+          name = "smoke-check"
+
+          [[workflow.step]]
+          id = "capture"
+          type = "command"
+          run = "mkdir -p .tutti/state && printf '{\"ok\":true}\\n' > .tutti/state/smoke.json"
+          cwd = "workspace"
+          fail_mode = "closed"
+          output_json = ".tutti/state/smoke.json"
+          EOF
+
+      - name: Run doctor strict and workflow smoke
+        env:
+          CI_SMOKE: "1"
+        run: |
+          cd "$RUNNER_TEMP/smoke-ws"
+          cargo run --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -- doctor --strict
+          cargo run --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -- run smoke-check --strict --json
