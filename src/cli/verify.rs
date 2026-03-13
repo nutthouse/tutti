@@ -42,7 +42,11 @@ pub fn run(
     let executor = WorkflowExecutor::new(project_root);
     let result = executor.execute(&resolved, &options, agent)?;
 
-    super::run::print_execution_result(&result);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        super::run::print_execution_result(&result);
+    }
     save_verify_summary(project_root, workflow_name, strict, agent, &result)?;
 
     if strict && !result.success {

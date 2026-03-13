@@ -10,6 +10,7 @@ pub fn run(
     workflow: Option<&str>,
     list: bool,
     agent: Option<&str>,
+    json: bool,
     strict: bool,
     dry_run: bool,
 ) -> Result<()> {
@@ -48,7 +49,11 @@ pub fn run(
 
     let executor = WorkflowExecutor::new(project_root);
     let result = executor.execute(&resolved, &options, agent)?;
-    print_execution_result(&result);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        print_execution_result(&result);
+    }
 
     if !result.success {
         return Err(TuttiError::ConfigValidation(format!(

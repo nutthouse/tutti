@@ -46,9 +46,17 @@ fn main() {
             ref workflow,
             list,
             ref agent,
+            json,
             strict,
             dry_run,
-        } => cli::run::run(workflow.as_deref(), list, agent.as_deref(), strict, dry_run),
+        } => cli::run::run(
+            workflow.as_deref(),
+            list,
+            agent.as_deref(),
+            json,
+            strict,
+            dry_run,
+        ),
         Commands::Verify {
             last,
             json,

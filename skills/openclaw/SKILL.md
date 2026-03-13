@@ -16,8 +16,8 @@ Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by 
 
 - `launch_team`: `tt up`
 - `launch_agent`: `tt up <agent>`
-- `run_workflow`: `tt run <workflow> [--agent <agent>] [--strict]`
-- `verify_team`: `tt verify [--workflow <name>] [--agent <agent>] [--strict]`
+- `run_workflow`: `tt run <workflow> [--agent <agent>] [--strict] [--json]`
+- `verify_team`: `tt verify [--workflow <name>] [--agent <agent>] [--strict] [--json]`
 - `team_status`: `tt status`
 - `agent_output`: `tt peek <agent> --lines <n>`
 - `stop_agent`: `tt down <agent>`

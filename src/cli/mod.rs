@@ -140,6 +140,10 @@ pub enum Commands {
         #[arg(long)]
         agent: Option<String>,
 
+        /// Emit machine-readable JSON (execution mode only)
+        #[arg(long, conflicts_with_all = ["list", "dry_run"])]
+        json: bool,
+
         /// Force fail-closed behavior for command steps
         #[arg(long)]
         strict: bool,
@@ -155,8 +159,8 @@ pub enum Commands {
         #[arg(long, conflicts_with_all = ["workflow", "agent", "strict"])]
         last: bool,
 
-        /// Emit machine-readable JSON (requires --last)
-        #[arg(long, requires = "last")]
+        /// Emit machine-readable JSON
+        #[arg(long)]
         json: bool,
 
         /// Workflow name (default: verify)

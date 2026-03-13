@@ -27,10 +27,10 @@ This document defines a stable first-pass contract for building an OpenClaw skil
   - Command: `tt up <agent>`
   - Success criteria: exit code `0`.
 - `run_workflow`
-  - Command: `tt run <workflow> [--agent <agent>] [--strict]`
+  - Command: `tt run <workflow> [--agent <agent>] [--strict] [--json]`
   - Success criteria: exit code `0`.
 - `verify_team`
-  - Command: `tt verify [--workflow <name>] [--agent <agent>] [--strict]`
+  - Command: `tt verify [--workflow <name>] [--agent <agent>] [--strict] [--json]`
   - Success criteria:
     - strict mode: exit code `0`.
     - non-strict mode: exit code `0` (warnings allowed).

@@ -180,8 +180,8 @@ When building an OpenClaw skill/plugin:
 - Expose high-level intents mapped to Tutti commands:
   - `launch_team` -> `tt up`
   - `launch_agent` -> `tt up <agent>`
-  - `run_workflow` -> `tt run <workflow>`
-  - `verify_team` -> `tt verify`
+  - `run_workflow` -> `tt run <workflow> --json`
+  - `verify_team` -> `tt verify --json`
   - `team_status` -> `tt status`
   - `agent_output` -> `tt peek <agent> --lines N`
   - `read_verify_status` -> `tt verify --last --json` (or read `.tutti/state/verify-last.json`)
