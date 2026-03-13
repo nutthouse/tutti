@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod attach;
+pub mod doctor;
 pub mod down;
 pub mod init;
 pub mod logs;
@@ -84,6 +85,9 @@ pub enum Commands {
         #[arg(long)]
         restart_persistent: bool,
     },
+
+    /// Check workspace readiness (tools, env, auth profile, runtimes)
+    Doctor,
 
     /// Attach to an agent's terminal session
     Attach {

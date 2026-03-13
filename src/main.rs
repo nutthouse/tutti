@@ -33,6 +33,7 @@ fn main() {
             interval,
             restart_persistent,
         } => cli::watch::run(interval, restart_persistent),
+        Commands::Doctor => cli::doctor::run(),
         Commands::Attach { ref agent } => cli::attach::run(agent),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
         Commands::Logs {

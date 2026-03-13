@@ -663,6 +663,7 @@ mod tests {
                 persistent: false,
                 env: HashMap::new(),
             }],
+            tool_packs: vec![],
             workflows: vec![workflow],
             hooks,
             handoff: None,

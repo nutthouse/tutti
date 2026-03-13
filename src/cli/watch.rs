@@ -562,6 +562,7 @@ mod tests {
                     env: HashMap::new(),
                 })
                 .collect(),
+            tool_packs: vec![],
             workflows: vec![],
             hooks: vec![],
             handoff: None,

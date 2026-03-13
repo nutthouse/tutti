@@ -27,6 +27,7 @@ Use these surfaces, in this order of preference:
 3. `.tutti/state/automation-runs.jsonl` and `.tutti/state/verify-last.json` for automation outcomes.
 4. `.tutti/logs/*.log` (when enabled) for historical output analysis.
 5. `tt permissions check ...` when integrations want to preflight local command safety policy.
+6. `tt doctor` before long-running automation to validate workspace prerequisites.
 
 Avoid:
 - Parsing pretty tables from `tt status` as your primary machine interface.
@@ -177,8 +178,11 @@ When building an OpenClaw skill/plugin:
 - Expose high-level intents mapped to Tutti commands:
   - `launch_team` -> `tt up`
   - `launch_agent` -> `tt up <agent>`
+  - `run_workflow` -> `tt run <workflow>`
+  - `verify_team` -> `tt verify`
   - `team_status` -> `tt status`
   - `agent_output` -> `tt peek <agent> --lines N`
+  - `read_verify_status` -> read `.tutti/state/verify-last.json`
   - `stop_agent` -> `tt down <agent>`
   - `stop_team` -> `tt down`
 - Prefer reading `.tutti/state/` for control logic over parsing command tables.

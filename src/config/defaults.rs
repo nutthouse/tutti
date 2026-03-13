@@ -75,6 +75,13 @@ prompt = "You own the UI. Follow existing component patterns."
 # agent = "backend"
 # workflow = "verify-app"
 # fail_mode = "open"
+#
+# Optional tool-pack prerequisites for `tt doctor` (Milestone 3)
+# [[tool_pack]]
+# name = "analytics"
+# description = "BigQuery + jq based analysis workflows"
+# required_commands = ["bq", "jq"]
+# required_env = ["GCP_PROJECT"]
 
 # Handoff settings (Phase 2)
 # [handoff]

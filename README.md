@@ -14,6 +14,7 @@ tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt run verify-app        # run reusable workflow steps (prompt + commands)
 tt verify                # run verification workflow + persist summary
+tt doctor                # preflight runtime/profile/tool-pack prerequisites
 tt permissions check git status
                          # evaluate team command policy
 tt logs backend -f       # follow captured output for an agent
@@ -75,13 +76,14 @@ source ~/.zshrc
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `permissions`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
 - Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
 - Token/capacity reporting via `tt usage` for API profiles (`plan = "api"`) from local Claude Code + Codex session logs
 - `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
+- Workspace `[[tool_pack]]` declarations + `tt doctor` prerequisite checks (commands/env/profile/runtime)
 
 ### Planned / in progress
 - Automated handoff packet generation and session replacement
@@ -146,6 +148,15 @@ weekly_hours = 45.0
 `tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 
+Optional tool packs can be declared per workspace and validated with `tt doctor`:
+
+```toml
+[[tool_pack]]
+name = "analytics"
+required_commands = ["bq", "jq"]
+required_env = ["GCP_PROJECT"]
+```
+
 ## Core Concepts
 
 ### Voices
@@ -203,6 +214,10 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Team-shared command allowlist in `~/.config/tutti/config.toml` under `[permissions]`
 - `tt permissions check <command...>` evaluates command prefixes against policy
 - `tt permissions export --runtime claude` emits a Claude settings scaffold
+
+### Tool Packs (Built, Opt-in)
+- Declarative `[[tool_pack]]` blocks in `tutti.toml` (`required_commands`, `required_env`)
+- `tt doctor` reports pass/warn/fail for tmux, profile wiring, runtime binaries, and tool-pack prerequisites
 
 ### Community (Planned)
 - Share and discover arrangements (team configs)
@@ -267,7 +282,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt permissions`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter

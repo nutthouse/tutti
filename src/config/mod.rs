@@ -14,6 +14,8 @@ pub struct TuttiConfig {
     pub defaults: DefaultsConfig,
     #[serde(default, rename = "agent")]
     pub agents: Vec<AgentConfig>,
+    #[serde(default, rename = "tool_pack")]
+    pub tool_packs: Vec<ToolPackConfig>,
     #[serde(default, rename = "workflow")]
     pub workflows: Vec<WorkflowConfig>,
     #[serde(default, rename = "hook")]
@@ -80,6 +82,17 @@ pub struct AgentConfig {
     /// Agent-level environment variables (override workspace env).
     #[serde(default)]
     pub env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolPackConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required_commands: Vec<String>,
+    #[serde(default)]
+    pub required_env: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +342,7 @@ impl TuttiConfig {
         }
 
         self.validate_automation()?;
+        self.validate_tool_packs()?;
 
         Ok(())
     }
@@ -423,6 +437,40 @@ impl TuttiConfig {
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_tool_packs(&self) -> Result<()> {
+        let mut names = std::collections::HashSet::new();
+        for pack in &self.tool_packs {
+            if pack.name.trim().is_empty() {
+                return Err(TuttiError::ConfigValidation(
+                    "tool_pack name cannot be empty".to_string(),
+                ));
+            }
+            if !names.insert(pack.name.as_str()) {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "duplicate tool_pack name: '{}'",
+                    pack.name
+                )));
+            }
+            for cmd in &pack.required_commands {
+                if cmd.trim().is_empty() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "tool_pack '{}' has empty required_commands entry",
+                        pack.name
+                    )));
+                }
+            }
+            for key in &pack.required_env {
+                if key.trim().is_empty() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "tool_pack '{}' has empty required_env entry",
+                        pack.name
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -689,6 +737,50 @@ fail_mode = "open"
         assert_eq!(config.workflows.len(), 1);
         assert_eq!(config.hooks.len(), 1);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn parse_tool_packs() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[tool_pack]]
+name = "analytics"
+required_commands = ["bq", "jq"]
+required_env = ["GCP_PROJECT"]
+"#;
+
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.tool_packs.len(), 1);
+        assert_eq!(config.tool_packs[0].name, "analytics");
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_duplicate_tool_pack_names() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[tool_pack]]
+name = "analytics"
+
+[[tool_pack]]
+name = "analytics"
+"#;
+
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("duplicate tool_pack name"));
     }
 
     #[test]
