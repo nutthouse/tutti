@@ -1,6 +1,6 @@
 use crate::automation::{
-    ExecuteOptions, ExecutionOrigin, ExecutionResult, StepStatus, WorkflowExecutor,
-    WorkflowResolver,
+    ExecuteOptions, ExecutionOrigin, ExecutionResult, ResolvedStep, ResolvedWorkflow, StepStatus,
+    WorkflowExecutor, WorkflowResolver,
 };
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
@@ -44,7 +44,14 @@ pub fn run(
     let resolved = resolver.resolve(workflow, agent, &options)?;
 
     if dry_run {
-        print_dry_run(&resolved, strict);
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serialize_dry_run(&resolved, strict))?
+            );
+        } else {
+            print_dry_run(&resolved, strict);
+        }
         return Ok(());
     }
 
@@ -155,6 +162,63 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
     println!("{table}");
 }
 
+#[derive(Debug, Serialize)]
+struct DryRunPlan {
+    workflow: String,
+    description: Option<String>,
+    strict: bool,
+    steps: Vec<DryRunStep>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DryRunStep {
+    Prompt {
+        index: usize,
+        agent: String,
+        summary: String,
+    },
+    Command {
+        index: usize,
+        agent: Option<String>,
+        cwd: String,
+        fail_mode: String,
+        summary: String,
+    },
+}
+
+fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
+    let mut steps = Vec::with_capacity(workflow.steps.len());
+    for (idx, step) in workflow.steps.iter().enumerate() {
+        match step {
+            ResolvedStep::Prompt { agent, text, .. } => steps.push(DryRunStep::Prompt {
+                index: idx + 1,
+                agent: agent.clone(),
+                summary: text.clone(),
+            }),
+            ResolvedStep::Command {
+                run,
+                cwd,
+                agent,
+                fail_mode,
+                ..
+            } => steps.push(DryRunStep::Command {
+                index: idx + 1,
+                agent: agent.clone(),
+                cwd: cwd.display().to_string(),
+                fail_mode: format!("{:?}", fail_mode).to_lowercase(),
+                summary: run.clone(),
+            }),
+        }
+    }
+    DryRunPlan {
+        workflow: workflow.name.clone(),
+        description: workflow.description.clone(),
+        strict,
+        steps,
+    }
+}
+
 pub fn print_execution_result(result: &ExecutionResult) {
     println!("Workflow: {}", result.workflow_name);
 
@@ -196,4 +260,65 @@ fn truncate(s: &str, max: usize) -> String {
     let mut out = s.chars().take(max.saturating_sub(3)).collect::<String>();
     out.push_str("...");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automation::ResolvedStep;
+    use crate::config::WorkflowFailMode;
+    use std::path::PathBuf;
+
+    #[test]
+    fn serialize_dry_run_contains_prompt_and_command_steps() {
+        let workflow = ResolvedWorkflow {
+            name: "verify".to_string(),
+            description: Some("desc".to_string()),
+            steps: vec![
+                ResolvedStep::Prompt {
+                    agent: "backend".to_string(),
+                    text: "check changes".to_string(),
+                    session_name: "sess".to_string(),
+                },
+                ResolvedStep::Command {
+                    run: "cargo test".to_string(),
+                    cwd: PathBuf::from("/tmp/ws"),
+                    agent: Some("backend".to_string()),
+                    timeout_secs: 30,
+                    fail_mode: WorkflowFailMode::Closed,
+                },
+            ],
+        };
+
+        let plan = serialize_dry_run(&workflow, true);
+        assert_eq!(plan.workflow, "verify");
+        assert!(plan.strict);
+        assert_eq!(plan.steps.len(), 2);
+        match &plan.steps[0] {
+            DryRunStep::Prompt {
+                agent,
+                summary,
+                index,
+                ..
+            } => {
+                assert_eq!(*index, 1);
+                assert_eq!(agent, "backend");
+                assert_eq!(summary, "check changes");
+            }
+            _ => panic!("expected prompt"),
+        }
+        match &plan.steps[1] {
+            DryRunStep::Command {
+                index,
+                summary,
+                fail_mode,
+                ..
+            } => {
+                assert_eq!(*index, 2);
+                assert_eq!(summary, "cargo test");
+                assert_eq!(fail_mode, "closed");
+            }
+            _ => panic!("expected command"),
+        }
+    }
 }
