@@ -124,6 +124,10 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - `tt serve --port 4040`
   - `GET /v1/health`
   - `GET /v1/health/{workspace}/{agent}`
+  - `GET /v1/status`, `GET /v1/voices`, `GET /v1/workflows`, `GET /v1/runs`, `GET /v1/logs`, `GET /v1/handoffs`
+  - `POST /v1/actions/up|down|send|run|verify|review|land`
+  - API envelope: `ok/action/error/data`
+  - Mutating idempotency: `Idempotency-Key` header (or `idempotency_key` request field)
 - Generate handoff packet:
   - `tt handoff generate <agent>`
 - Apply latest handoff packet:

@@ -27,7 +27,7 @@ tt send frontend --wait --timeout-secs 900 "Analyze the review page UX issues"
 tt send frontend --auto_up --wait --output "Analyze the review page UX issues"
                          # auto-start if needed and print captured pane delta
 tt health --json         # probe + print machine-readable health
-tt serve --port 4040     # scheduler + probes + local /v1/health
+tt serve --port 4040     # scheduler + probes + local /v1 control API
 tt handoff generate backend
                          # write a handoff packet to .tutti/handoffs
 tt handoff apply backend # send latest packet into running backend session
@@ -273,6 +273,11 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
+- `tt serve` local control API endpoints:
+  - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/logs`, `/v1/handoffs`
+  - Actions (POST): `/v1/actions/up|down|send|run|verify|review|land`
+  - Envelope shape: `ok/action/error/data`
+  - Mutating actions support `Idempotency-Key` header (or `idempotency_key` request field)
 
 ### Observability (Built)
 - Real-time status for all running agents
