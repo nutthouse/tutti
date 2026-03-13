@@ -278,7 +278,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
   - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/logs`, `/v1/handoffs`, `/v1/events`
   - Event cursor/list filter: `/v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
   - SSE stream: `/v1/events/stream?cursor=<RFC3339 timestamp>&workspace=<name>`
-  - Stream emits lifecycle/control events (`agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.completed`, `workflow.failed`, handoff events)
+  - Stream emits lifecycle/control events (`agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, handoff events)
   - Actions (POST): `/v1/actions/up|down|send|run|verify|review|land`
   - Envelope shape: `ok/action/error/data`
   - Mutating actions support `Idempotency-Key` header (or `idempotency_key` request field)

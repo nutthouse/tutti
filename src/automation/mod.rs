@@ -498,13 +498,12 @@ impl<'a> WorkflowExecutor<'a> {
         workflow: &ResolvedWorkflow,
         options: &ExecuteOptions,
         agent_scope: Option<&str>,
+        run_id: Option<&str>,
     ) -> Result<ExecutionResult> {
         let started_at = Utc::now();
-        let run_id = format!(
-            "{}-{}",
-            started_at.format("%Y%m%d%H%M%S"),
-            std::process::id()
-        );
+        let run_id = run_id
+            .map(ToString::to_string)
+            .unwrap_or_else(generate_run_id);
         let mut success = true;
         let mut failed_steps = Vec::new();
         let mut step_results = Vec::with_capacity(workflow.steps.len());
@@ -1204,6 +1203,10 @@ impl<'a> WorkflowExecutor<'a> {
     }
 }
 
+fn generate_run_id() -> String {
+    format!("{}-{}", Utc::now().timestamp_millis(), std::process::id())
+}
+
 #[derive(Debug)]
 struct CommandOutcome {
     exit_code: Option<i32>,
@@ -1599,7 +1602,23 @@ pub fn execute_workflow_with_hooks(
 ) -> Result<ExecutionResult> {
     let running_before = running_sessions(config);
     let executor = WorkflowExecutor::new(config, project_root);
-    let result = executor.execute(resolved, options, agent_scope)?;
+    let run_id = generate_run_id();
+    let _ = append_control_event(
+        project_root,
+        &ControlEvent {
+            event: "workflow.started".to_string(),
+            workspace: config.workspace.name.clone(),
+            agent: agent_scope.map(|s| s.to_string()),
+            timestamp: Utc::now(),
+            correlation_id: run_id.clone(),
+            data: Some(serde_json::json!({
+                "workflow_name": resolved.name,
+                "origin": options.origin.as_str(),
+                "strict": options.strict
+            })),
+        },
+    );
+    let result = executor.execute(resolved, options, agent_scope, Some(&run_id))?;
     reclaim_non_persistent_sessions(config, project_root, &running_before)?;
 
     // Recursion guard: don't emit workflow_complete from workflow_complete hooks.
@@ -1777,7 +1796,7 @@ mod tests {
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
         let executor = WorkflowExecutor::new(&config, &dir);
-        let result = executor.execute(&resolved, &opts, None).unwrap();
+        let result = executor.execute(&resolved, &opts, None, None).unwrap();
 
         assert!(result.success);
         assert_eq!(result.warning_count(), 1);
@@ -1837,7 +1856,7 @@ mod tests {
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
         let executor = WorkflowExecutor::new(&config, &dir);
-        let result = executor.execute(&resolved, &opts, None).unwrap();
+        let result = executor.execute(&resolved, &opts, None, None).unwrap();
 
         assert!(!result.success);
         assert_eq!(result.failed_steps, vec![2]);
@@ -1877,10 +1896,58 @@ mod tests {
         };
         let resolved = resolver.resolve("verify", None, &opts).unwrap();
         let executor = WorkflowExecutor::new(&config, &dir);
-        let result = executor.execute(&resolved, &opts, None).unwrap();
+        let result = executor.execute(&resolved, &opts, None, None).unwrap();
 
         assert!(!result.success);
         assert_eq!(result.failed_steps, vec![1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_with_hooks_emits_started_and_completed_with_same_correlation() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                run: "echo ok".to_string(),
+                cwd: Some(WorkflowCommandCwd::Workspace),
+                agent: None,
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-workflow-start-event");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let resolver = WorkflowResolver::new(&config, &dir);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = resolver.resolve("verify", None, &opts).unwrap();
+        let result = execute_workflow_with_hooks(&config, &dir, &resolved, &opts, None).unwrap();
+
+        let events = crate::state::load_control_events(&dir).unwrap();
+        let started = events
+            .iter()
+            .find(|e| e.event == "workflow.started")
+            .unwrap();
+        let completed = events
+            .iter()
+            .find(|e| e.event == "workflow.completed")
+            .unwrap();
+        assert_eq!(result.run_id, started.correlation_id);
+        assert_eq!(result.run_id, completed.correlation_id);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
