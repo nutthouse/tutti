@@ -122,6 +122,7 @@ Hook behavior in v1:
 Policy notes:
 - Policy is opt-in via `[permissions]` in `~/.config/tutti/config.toml`.
 - When policy is absent, Tutti allows commands and reports that policy is not configured.
+- Policy entries can include shell command prefixes and Claude tool names (`Read`, `Edit`, `Write`, etc.).
 - `tt up` launch integration:
   - Claude constrained mode: auto-generates a runtime settings file and launches with `--permission-mode dontAsk`.
   - Codex constrained mode: uses non-interactive flags (`-a never -s workspace-write`) plus policy guidance prompt (best-effort).

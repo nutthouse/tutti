@@ -2,6 +2,25 @@ use crate::config::{GlobalConfig, PermissionsConfig};
 use crate::error::Result;
 use serde_json::json;
 
+const CLAUDE_TOOL_NAMES: &[&str] = &[
+    "Bash",
+    "Edit",
+    "ExitPlanMode",
+    "Glob",
+    "Grep",
+    "LS",
+    "MultiEdit",
+    "NotebookEdit",
+    "NotebookRead",
+    "Read",
+    "Task",
+    "TodoRead",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+];
+
 pub fn has_configured_policy(global: &GlobalConfig) -> bool {
     global
         .permissions
@@ -15,7 +34,7 @@ pub fn render_claude_settings(policy: &PermissionsConfig) -> Result<String> {
         .iter()
         .map(normalize)
         .filter(|entry| !entry.is_empty())
-        .map(|entry| format!("Bash({entry})"))
+        .map(|entry| claude_permission_entry(&entry))
         .collect();
 
     let payload = json!({
@@ -33,6 +52,23 @@ pub fn normalize<S: AsRef<str>>(input: S) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn claude_permission_entry(entry: &str) -> String {
+    if is_claude_tool_permission(entry) {
+        entry.to_string()
+    } else {
+        format!("Bash({entry})")
+    }
+}
+
+fn is_claude_tool_permission(entry: &str) -> bool {
+    if entry.contains('(') && entry.ends_with(')') {
+        return true;
+    }
+    CLAUDE_TOOL_NAMES
+        .iter()
+        .any(|tool| entry.eq_ignore_ascii_case(tool))
 }
 
 #[cfg(test)]
@@ -64,5 +100,24 @@ mod tests {
         let rendered = render_claude_settings(&policy).expect("render should succeed");
         assert!(rendered.contains("Bash(git status)"));
         assert!(rendered.contains("Bash(cargo test --quiet)"));
+    }
+
+    #[test]
+    fn render_claude_settings_preserves_tool_permissions() {
+        let policy = PermissionsConfig {
+            allow: vec![
+                "Edit".to_string(),
+                "Read".to_string(),
+                "Bash(git diff)".to_string(),
+                "git status".to_string(),
+            ],
+        };
+        let rendered = render_claude_settings(&policy).expect("render should succeed");
+        assert!(rendered.contains("\"Edit\""));
+        assert!(rendered.contains("\"Read\""));
+        assert!(rendered.contains("\"Bash(git diff)\""));
+        assert!(rendered.contains("\"Bash(git status)\""));
+        assert!(!rendered.contains("Bash(Edit)"));
+        assert!(!rendered.contains("Bash(Read)"));
     }
 }

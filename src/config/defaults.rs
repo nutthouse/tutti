@@ -148,5 +148,7 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 #   "git diff",
 #   "git log",
 #   "cargo test",
+#   "Read",      # optional Claude tool names
+#   "Edit",
 # ]
 "#;

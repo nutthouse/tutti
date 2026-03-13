@@ -241,6 +241,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 ### Permissions Policy (Built, Opt-in)
 - Team-shared command allowlist in `~/.config/tutti/config.toml` under `[permissions]`
+- Policy entries may be shell command prefixes (`git status`, `cargo test`) and/or Claude tool names (`Read`, `Edit`, `Write`)
 - `tt permissions check <command...>` evaluates command prefixes against policy
 - `tt permissions export --runtime claude` emits a Claude settings scaffold
 - `tt up` auto-wires constrained non-interactive policy for Claude sessions
