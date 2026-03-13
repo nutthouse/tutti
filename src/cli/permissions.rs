@@ -1,8 +1,11 @@
 use crate::cli::PermissionsSubcommand;
-use crate::config::{GlobalConfig, PermissionsConfig, global_config_path};
+use crate::config::{GlobalConfig, PermissionsConfig, TuttiConfig, global_config_path};
 use crate::error::{Result, TuttiError};
 use crate::permissions::{normalize, render_claude_settings};
+use crate::state::{PolicyDecisionRecord, append_policy_decision};
+use chrono::Utc;
 use serde::Serialize;
+use serde_json::json;
 use std::path::Path;
 
 pub fn run(command: PermissionsSubcommand) -> Result<()> {
@@ -32,7 +35,16 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
     }
 
     let global = GlobalConfig::load()?;
+    let workspace_ctx = resolve_workspace_context();
     let Some(policy) = global.permissions.as_ref() else {
+        persist_permission_check_decision(
+            workspace_ctx.as_ref(),
+            &command_line,
+            true,
+            false,
+            None,
+            Some("policy not configured"),
+        );
         if as_json {
             let report = PermissionCheckReport {
                 command: command_line,
@@ -53,6 +65,14 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
     };
 
     if let Some(matched) = matching_allow_rule(policy, &command_line) {
+        persist_permission_check_decision(
+            workspace_ctx.as_ref(),
+            &command_line,
+            true,
+            true,
+            Some(matched),
+            None,
+        );
         if as_json {
             let report = PermissionCheckReport {
                 command: command_line,
@@ -69,6 +89,14 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
         return Ok(());
     }
 
+    persist_permission_check_decision(
+        workspace_ctx.as_ref(),
+        &command_line,
+        false,
+        true,
+        None,
+        Some("blocked by permissions policy"),
+    );
     if as_json {
         let report = PermissionCheckReport {
             command: command_line.clone(),
@@ -83,6 +111,63 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
     Err(TuttiError::ConfigValidation(format!(
         "command blocked by permissions policy: '{command_line}'"
     )))
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceContext {
+    workspace: String,
+    project_root: std::path::PathBuf,
+}
+
+fn resolve_workspace_context() -> Option<WorkspaceContext> {
+    let cwd = std::env::current_dir().ok()?;
+    let (config, config_path) = TuttiConfig::load(&cwd).ok()?;
+    let project_root = config_path.parent()?.to_path_buf();
+    Some(WorkspaceContext {
+        workspace: config.workspace.name,
+        project_root,
+    })
+}
+
+fn persist_permission_check_decision(
+    workspace_ctx: Option<&WorkspaceContext>,
+    command: &str,
+    allowed: bool,
+    policy_configured: bool,
+    matched_rule: Option<&str>,
+    reason: Option<&str>,
+) {
+    let Some(ctx) = workspace_ctx else {
+        return;
+    };
+
+    let _ = append_policy_decision(
+        &ctx.project_root,
+        &PolicyDecisionRecord {
+            timestamp: Utc::now(),
+            workspace: ctx.workspace.clone(),
+            agent: None,
+            runtime: None,
+            action: "permission_check".to_string(),
+            mode: "n/a".to_string(),
+            policy: if policy_configured {
+                "configured".to_string()
+            } else {
+                "unset".to_string()
+            },
+            enforcement: "hard".to_string(),
+            decision: if allowed {
+                "allow".to_string()
+            } else {
+                "block".to_string()
+            },
+            reason: reason.map(ToString::to_string),
+            data: Some(json!({
+                "command": command,
+                "matched_rule": matched_rule
+            })),
+        },
+    );
 }
 
 fn run_export(runtime: &str, output: Option<&Path>) -> Result<()> {
@@ -149,6 +234,7 @@ fn matching_allow_rule<'a>(policy: &'a PermissionsConfig, command_line: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::load_policy_decisions;
 
     #[test]
     fn matching_rule_supports_exact_and_prefix() {
@@ -200,5 +286,35 @@ mod tests {
         let policy = PermissionsConfig::default();
         let err = render_export("codex", &policy).expect_err("should fail");
         assert!(err.to_string().contains("unsupported runtime"));
+    }
+
+    #[test]
+    fn persist_permission_check_decision_writes_policy_log() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-permissions-policy-log-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".tutti/state")).unwrap();
+
+        let ctx = WorkspaceContext {
+            workspace: "ws".to_string(),
+            project_root: dir.clone(),
+        };
+        persist_permission_check_decision(
+            Some(&ctx),
+            "git status",
+            true,
+            true,
+            Some("git status"),
+            None,
+        );
+
+        let records = load_policy_decisions(&dir).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].action, "permission_check");
+        assert_eq!(records[0].decision, "allow");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
