@@ -45,9 +45,6 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
         _ => 0,
     };
 
-    // Resolve profile command override
-    let command_override = resolve_profile_command(&config, global.as_ref());
-
     // Build workspace-level env vars
     let workspace_env = build_workspace_env(&config);
 
@@ -83,6 +80,8 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
             ))
         })?;
 
+        let command_override =
+            resolve_profile_command_for_runtime(&config, global.as_ref(), &runtime_name);
         let adapter = runtime::get_adapter(&runtime_name, command_override.as_deref())
             .ok_or_else(|| TuttiError::RuntimeUnknown(runtime_name.clone()))?;
 
@@ -218,11 +217,20 @@ fn build_workspace_env(config: &TuttiConfig) -> HashMap<String, String> {
     env
 }
 
-/// Resolve the command override from the default profile, if set.
-fn resolve_profile_command(config: &TuttiConfig, global: Option<&GlobalConfig>) -> Option<String> {
+/// Resolve a runtime-compatible command override from the workspace profile.
+fn resolve_profile_command_for_runtime(
+    config: &TuttiConfig,
+    global: Option<&GlobalConfig>,
+    runtime_name: &str,
+) -> Option<String> {
     let profile_name = config.workspace.auth.as_ref()?.default_profile.as_ref()?;
     let profile = global?.get_profile(profile_name)?;
-    Some(profile.command.clone())
+    runtime::compatible_command_override(
+        runtime_name,
+        Some(profile.provider.as_str()),
+        Some(profile.command.as_str()),
+    )
+    .map(ToString::to_string)
 }
 
 fn resolve_profile_limit(config: &TuttiConfig, global: &GlobalConfig) -> Option<ProfileLimit> {
@@ -408,7 +416,6 @@ fn run_all() -> Result<()> {
                 let project_root = config_path.parent().unwrap();
                 state::ensure_tutti_dir(project_root)?;
 
-                let command_override = resolve_profile_command(&config, Some(&global));
                 let profile_limit = resolve_profile_limit(&config, &global);
                 let workspace_env = build_workspace_env(&config);
 
@@ -429,6 +436,8 @@ fn run_all() -> Result<()> {
                             continue;
                         }
                     };
+                    let command_override =
+                        resolve_profile_command_for_runtime(&config, Some(&global), &runtime_name);
                     let adapter =
                         match runtime::get_adapter(&runtime_name, command_override.as_deref()) {
                             Some(a) => a,
@@ -751,5 +760,99 @@ mod tests {
         assert!(!is_api_usage_plan(None));
         assert!(!is_api_usage_plan(Some("max")));
         assert!(!is_api_usage_plan(Some("pro")));
+    }
+
+    #[test]
+    fn resolve_profile_command_for_runtime_ignores_mismatched_profile_command() {
+        let config = TuttiConfig {
+            workspace: crate::config::WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: Some(WorkspaceAuth {
+                    default_profile: Some("claude-profile".to_string()),
+                }),
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("codex".to_string()),
+            },
+            agents: vec![],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+        };
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![ProfileConfig {
+                name: "claude-profile".to_string(),
+                provider: "anthropic".to_string(),
+                command: "claude".to_string(),
+                max_concurrent: None,
+                monthly_budget: None,
+                priority: None,
+                plan: None,
+                reset_day: None,
+                weekly_hours: None,
+            }],
+            registered_workspaces: vec![],
+            dashboard: None,
+            resilience: None,
+            permissions: None,
+        };
+
+        assert_eq!(
+            resolve_profile_command_for_runtime(&config, Some(&global), "codex"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_profile_command_for_runtime_applies_matching_profile_command() {
+        let config = TuttiConfig {
+            workspace: crate::config::WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: Some(WorkspaceAuth {
+                    default_profile: Some("codex-profile".to_string()),
+                }),
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("codex".to_string()),
+            },
+            agents: vec![],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+        };
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![ProfileConfig {
+                name: "codex-profile".to_string(),
+                provider: "openai".to_string(),
+                command: "/opt/bin/codex-prod".to_string(),
+                max_concurrent: None,
+                monthly_budget: None,
+                priority: None,
+                plan: None,
+                reset_day: None,
+                weekly_hours: None,
+            }],
+            registered_workspaces: vec![],
+            dashboard: None,
+            resilience: None,
+            permissions: None,
+        };
+
+        assert_eq!(
+            resolve_profile_command_for_runtime(&config, Some(&global), "codex").as_deref(),
+            Some("/opt/bin/codex-prod")
+        );
     }
 }

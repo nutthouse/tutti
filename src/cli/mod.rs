@@ -9,6 +9,7 @@ pub mod logs;
 pub mod peek;
 pub mod permissions;
 pub mod run;
+pub mod send;
 pub mod snapshot;
 pub mod status;
 pub mod switch;
@@ -98,6 +99,16 @@ pub enum Commands {
     Attach {
         /// Agent name (or workspace/agent for cross-workspace)
         agent: String,
+    },
+
+    /// Send a one-off prompt to a running agent session
+    Send {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Prompt text to send
+        #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
+        prompt: Vec<String>,
     },
 
     /// Read-only view of an agent's terminal

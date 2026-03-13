@@ -35,6 +35,10 @@ fn main() {
         } => cli::watch::run(interval, restart_persistent),
         Commands::Doctor { json } => cli::doctor::run(json),
         Commands::Attach { ref agent } => cli::attach::run(agent),
+        Commands::Send {
+            ref agent,
+            ref prompt,
+        } => cli::send::run(agent, prompt),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
         Commands::Logs {
             ref agent,

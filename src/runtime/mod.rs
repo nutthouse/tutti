@@ -152,6 +152,36 @@ pub fn get_adapter(
     }))
 }
 
+/// Return a profile command override only when it is compatible with the agent runtime.
+///
+/// This prevents cross-runtime leakage where, for example, a Claude profile command
+/// would accidentally override Codex agents in mixed-runtime workspaces.
+pub fn compatible_command_override<'a>(
+    runtime: &str,
+    profile_provider: Option<&str>,
+    profile_command: Option<&'a str>,
+) -> Option<&'a str> {
+    let command = profile_command?.trim();
+    if command.is_empty() {
+        return None;
+    }
+
+    let provider = profile_provider
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let command_lc = command.to_ascii_lowercase();
+
+    let compatible = match runtime {
+        "claude-code" => command_lc.contains("claude") || provider == "anthropic",
+        "codex" => command_lc.contains("codex") || provider == "openai",
+        "aider" => command_lc.contains("aider"),
+        _ => false,
+    };
+
+    if compatible { Some(command) } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +354,29 @@ mod tests {
     #[test]
     fn unknown_runtime_returns_none() {
         assert!(get_adapter("unknown", None).is_none());
+    }
+
+    #[test]
+    fn compatible_override_matches_runtime() {
+        assert_eq!(
+            compatible_command_override("claude-code", Some("anthropic"), Some("claude-work")),
+            Some("claude-work")
+        );
+        assert_eq!(
+            compatible_command_override("codex", Some("openai"), Some("codex-enterprise")),
+            Some("codex-enterprise")
+        );
+    }
+
+    #[test]
+    fn compatible_override_rejects_mismatch() {
+        assert_eq!(
+            compatible_command_override("codex", Some("anthropic"), Some("claude")),
+            None
+        );
+        assert_eq!(
+            compatible_command_override("claude-code", Some("openai"), Some("codex")),
+            None
+        );
     }
 }

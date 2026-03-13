@@ -151,7 +151,11 @@ fn evaluate_checks(
             continue;
         };
 
-        let command_override = workspace_profile.map(|profile| profile.command.as_str());
+        let command_override = runtime::compatible_command_override(
+            &runtime_name,
+            workspace_profile.map(|profile| profile.provider.as_str()),
+            workspace_profile.map(|profile| profile.command.as_str()),
+        );
         let Some(adapter) = runtime::get_adapter(&runtime_name, command_override) else {
             checks.push(DoctorCheck {
                 check: format!("runtime/{}", agent.name),
@@ -379,6 +383,30 @@ mod tests {
         );
 
         assert!(checks.iter().any(|c| {
+            c.check == "runtime/backend"
+                && c.status == DoctorStatus::Pass
+                && c.detail.contains("claude-work")
+        }));
+    }
+
+    #[test]
+    fn ignores_mismatched_profile_command_override_for_runtime() {
+        let mut config = sample_config(Some("work"));
+        config.defaults.runtime = Some("codex".to_string());
+        let global = sample_global("work", "claude-work");
+        let checks = evaluate_checks(
+            &config,
+            &global,
+            &|cmd| cmd == "tmux" || cmd == "codex",
+            &|_| true,
+        );
+
+        assert!(checks.iter().any(|c| {
+            c.check == "runtime/backend"
+                && c.status == DoctorStatus::Pass
+                && c.detail.contains("codex")
+        }));
+        assert!(!checks.iter().any(|c| {
             c.check == "runtime/backend"
                 && c.status == DoctorStatus::Pass
                 && c.detail.contains("claude-work")
