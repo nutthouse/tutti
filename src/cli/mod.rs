@@ -142,6 +142,10 @@ pub enum Commands {
 
     /// Run verification workflow and persist latest summary
     Verify {
+        /// Show the latest verification summary and exit
+        #[arg(long, conflicts_with_all = ["workflow", "agent", "strict"])]
+        last: bool,
+
         /// Workflow name (default: verify)
         #[arg(long)]
         workflow: Option<String>,

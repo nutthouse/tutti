@@ -14,6 +14,7 @@ tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt run verify-app        # run reusable workflow steps (prompt + commands)
 tt verify                # run verification workflow + persist summary
+tt verify --last         # show latest persisted verification summary
 tt doctor                # preflight runtime/profile/tool-pack prerequisites
 tt permissions check git status
                          # evaluate team command policy

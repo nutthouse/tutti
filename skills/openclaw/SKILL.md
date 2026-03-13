@@ -10,7 +10,7 @@ Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by 
 
 1. Run from workspace root (`tutti.toml` present).
 2. Run `tt doctor` before launching long workflows.
-3. Prefer `.tutti/state/*.json` and `.tutti/state/verify-last.json` for machine reads.
+3. Prefer `.tutti/state/*.json` and `tt verify --last` for verification reads.
 
 ## Intent Mapping
 
@@ -22,7 +22,7 @@ Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by 
 - `agent_output`: `tt peek <agent> --lines <n>`
 - `stop_agent`: `tt down <agent>`
 - `stop_team`: `tt down`
-- `read_verify_status`: read `.tutti/state/verify-last.json`
+- `read_verify_status`: `tt verify --last` (fallback: `.tutti/state/verify-last.json`)
 
 ## Execution Pattern
 
@@ -41,7 +41,7 @@ Use when asked to launch/monitor/verify/stop a multi-agent workspace managed by 
 ## Failure Policy
 
 - Non-zero `tt` exit: surface command + stderr summary.
-- `tt verify` non-strict warnings: report as warning, include `verify-last.json` fields.
+- `tt verify` non-strict warnings: report as warning, include `tt verify --last` fields.
 - Missing state file: treat as transient for up to 3 short retries.
 
 ## Output Contract (Recommended)
