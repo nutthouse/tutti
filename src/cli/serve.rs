@@ -8,9 +8,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 #[derive(Clone)]
@@ -106,16 +109,31 @@ fn start_control_http_server(
         TuttiError::ConfigValidation(format!("failed to bind health HTTP server: {e}"))
     })?;
     thread::spawn(move || {
-        for mut request in server.incoming_requests() {
-            let (status, body) = route_request(&mut request, &targets);
-            let mut response = Response::from_string(body).with_status_code(status);
-            if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
-                response = response.with_header(h);
-            }
-            let _ = request.respond(response);
+        for request in server.incoming_requests() {
+            let request_targets = targets.clone();
+            thread::spawn(move || {
+                handle_http_request(request, &request_targets);
+            });
         }
     });
     Ok(())
+}
+
+fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
+    let is_stream = request.method() == &Method::Get
+        && request.url().split('?').next() == Some("/v1/events/stream");
+    if is_stream {
+        handle_sse_request(request, targets);
+        return;
+    }
+
+    let mut request = request;
+    let (status, body) = route_request(&mut request, targets);
+    let mut response = Response::from_string(body).with_status_code(status);
+    if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
+        response = response.with_header(h);
+    }
+    let _ = request.respond(response);
 }
 
 fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusCode, String) {
@@ -185,7 +203,11 @@ fn route_read(
         "/v1/handoffs" => Ok(api_ok("handoffs.list", handoffs_data(targets)?)),
         "/v1/events" => Ok(api_ok(
             "events.list",
-            events_data(targets, query.get("cursor").map(|s| s.as_str()))?,
+            events_data(
+                targets,
+                query.get("cursor").map(|s| s.as_str()),
+                query.get("workspace").map(|s| s.as_str()),
+            )?,
         )),
         _ if path.starts_with("/v1/health/") => {
             let parts: Vec<&str> = path.split('/').collect();
@@ -586,9 +608,122 @@ fn handoffs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     Ok(Value::Array(rows))
 }
 
-fn events_data(targets: &[WorkspaceTarget], cursor: Option<&str>) -> Result<Value> {
-    let cursor_ts = match cursor {
-        Some(raw) if !raw.trim().is_empty() => Some(
+fn events_data(
+    targets: &[WorkspaceTarget],
+    cursor: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<Value> {
+    let cursor_ts = parse_cursor_ts(cursor)?;
+    let events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
+    Ok(json!(events))
+}
+
+fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
+    let raw_url = request.url().to_string();
+    let (_, query) = match raw_url.split_once('?') {
+        Some((p, q)) => (p.to_string(), Some(q.to_string())),
+        None => (raw_url, None),
+    };
+    let query_map = parse_query(query.as_deref());
+    let workspace = query_map.get("workspace").map(|v| v.to_string());
+    let cursor_ts = match parse_cursor_ts(query_map.get("cursor").map(|v| v.as_str())) {
+        Ok(value) => value,
+        Err(e) => {
+            let body = api_err("events.stream", "bad_request", e.to_string()).to_string();
+            let mut response = Response::from_string(body).with_status_code(StatusCode(400));
+            if let Some(h) = header("Content-Type", "application/json") {
+                response = response.with_header(h);
+            }
+            let _ = request.respond(response);
+            return;
+        }
+    };
+    let timeout_secs = query_map
+        .get("timeout_secs")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(300)
+        .clamp(1, 3600);
+    let poll_millis = query_map
+        .get("poll_millis")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1000)
+        .clamp(200, 10_000);
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let stream_targets = targets.to_vec();
+    thread::spawn(move || {
+        let _ = tx.send(b": tutti events stream\n\n".to_vec());
+        let mut cursor = cursor_ts;
+        let mut seen = HashSet::<String>::new();
+        let mut last_heartbeat = Instant::now();
+        let started = Instant::now();
+
+        while started.elapsed() < Duration::from_secs(timeout_secs) {
+            let since =
+                cursor.and_then(|ts| ts.checked_sub_signed(chrono::TimeDelta::nanoseconds(1)));
+            match load_events_for_targets(&stream_targets, workspace.as_deref(), since, false) {
+                Ok(events) => {
+                    for event in events {
+                        let key = event_key(&event);
+                        if !seen.insert(key) {
+                            continue;
+                        }
+                        cursor = Some(cursor.map_or(event.timestamp, |ts| ts.max(event.timestamp)));
+                        let payload =
+                            serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+                        let chunk = format!("event: {}\ndata: {}\n\n", event.event, payload);
+                        if tx.send(chunk.into_bytes()).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let chunk = format!(
+                        "event: error\ndata: {}\n\n",
+                        json!({"message": e.to_string()})
+                    );
+                    let _ = tx.send(chunk.into_bytes());
+                    return;
+                }
+            }
+
+            if last_heartbeat.elapsed() >= Duration::from_secs(10) {
+                if tx.send(b": keepalive\n\n".to_vec()).is_err() {
+                    return;
+                }
+                last_heartbeat = Instant::now();
+            }
+            thread::sleep(Duration::from_millis(poll_millis));
+        }
+
+        let _ = tx.send(
+            format!(
+                "event: end\ndata: {}\n\n",
+                json!({"reason":"timeout","timeout_secs": timeout_secs})
+            )
+            .into_bytes(),
+        );
+    });
+
+    let mut headers = Vec::new();
+    if let Some(h) = header("Content-Type", "text/event-stream") {
+        headers.push(h);
+    }
+    if let Some(h) = header("Cache-Control", "no-cache") {
+        headers.push(h);
+    }
+    if let Some(h) = header("Connection", "keep-alive") {
+        headers.push(h);
+    }
+    let reader = ChannelReader::new(rx);
+    let response =
+        Response::new(StatusCode(200), headers, reader, None, None).with_chunked_threshold(0);
+    let _ = request.respond(response);
+}
+
+fn parse_cursor_ts(cursor: Option<&str>) -> Result<Option<DateTime<Utc>>> {
+    match cursor {
+        Some(raw) if !raw.trim().is_empty() => Ok(Some(
             DateTime::parse_from_rfc3339(raw)
                 .map_err(|e| {
                     TuttiError::ConfigValidation(format!(
@@ -597,24 +732,108 @@ fn events_data(targets: &[WorkspaceTarget], cursor: Option<&str>) -> Result<Valu
                     ))
                 })?
                 .with_timezone(&Utc),
-        ),
-        _ => None,
+        )),
+        _ => Ok(None),
+    }
+}
+
+fn load_events_for_targets(
+    targets: &[WorkspaceTarget],
+    workspace: Option<&str>,
+    cursor_ts: Option<DateTime<Utc>>,
+    include_cursor: bool,
+) -> Result<Vec<state::ControlEvent>> {
+    let selected: Vec<&WorkspaceTarget> = if let Some(ws) = workspace {
+        vec![
+            targets
+                .iter()
+                .find(|t| t.name == ws)
+                .ok_or_else(|| TuttiError::AgentNotFound(ws.to_string()))?,
+        ]
+    } else {
+        targets.iter().collect()
     };
 
     let mut rows = Vec::new();
-    for target in targets {
+    for target in selected {
         let events = state::load_control_events(&target.project_root)?;
         for event in events {
             if let Some(ts) = cursor_ts
-                && event.timestamp <= ts
+                && ((include_cursor && event.timestamp < ts)
+                    || (!include_cursor && event.timestamp <= ts))
             {
                 continue;
             }
             rows.push(event);
         }
     }
-    rows.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-    Ok(json!(rows))
+    rows.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.correlation_id.cmp(&b.correlation_id))
+    });
+    Ok(rows)
+}
+
+fn event_key(event: &state::ControlEvent) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        event.timestamp.to_rfc3339(),
+        event.correlation_id,
+        event.workspace,
+        event.agent.as_deref().unwrap_or(""),
+        event.event
+    )
+}
+
+fn header(name: &str, value: &str) -> Option<Header> {
+    Header::from_bytes(name.as_bytes(), value.as_bytes()).ok()
+}
+
+struct ChannelReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    offset: usize,
+}
+
+impl ChannelReader {
+    fn new(rx: mpsc::Receiver<Vec<u8>>) -> Self {
+        Self {
+            rx,
+            buf: Vec::new(),
+            offset: 0,
+        }
+    }
+}
+
+impl Read for ChannelReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+
+        loop {
+            if self.offset < self.buf.len() {
+                let remaining = self.buf.len() - self.offset;
+                let n = remaining.min(out.len());
+                out[..n].copy_from_slice(&self.buf[self.offset..self.offset + n]);
+                self.offset += n;
+                if self.offset >= self.buf.len() {
+                    self.buf.clear();
+                    self.offset = 0;
+                }
+                return Ok(n);
+            }
+
+            match self.rx.recv() {
+                Ok(chunk) => {
+                    self.buf = chunk;
+                    self.offset = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+    }
 }
 
 fn with_project_root<T, F>(project_root: &Path, operation: F) -> Result<T>

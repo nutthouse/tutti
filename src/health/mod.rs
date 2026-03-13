@@ -2,8 +2,8 @@ use crate::config::TuttiConfig;
 use crate::error::Result;
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
-use crate::state::{self, ActivityState, AgentHealth, AuthState};
-use chrono::Utc;
+use crate::state::{self, ActivityState, AgentHealth, AuthState, ControlEvent};
+use chrono::{DateTime, Utc};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -125,6 +125,9 @@ pub fn probe_workspace(
             }
         }
 
+        for event in transition_events(previous.as_ref(), &health, now) {
+            let _ = state::append_control_event(project_root, &event);
+        }
         state::save_agent_health(project_root, &health)?;
         out.push(health);
     }
@@ -208,4 +211,140 @@ fn hash_output(output: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     output.hash(&mut hasher);
     hasher.finish()
+}
+
+fn transition_events(
+    previous: Option<&AgentHealth>,
+    current: &AgentHealth,
+    now: DateTime<Utc>,
+) -> Vec<ControlEvent> {
+    let Some(previous) = previous else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let prefix = format!("probe-{}-{}", now.timestamp_millis(), current.agent);
+
+    if previous.running != current.running {
+        let event = if current.running {
+            "agent.started"
+        } else {
+            "agent.stopped"
+        };
+        out.push(ControlEvent {
+            event: event.to_string(),
+            workspace: current.workspace.clone(),
+            agent: Some(current.agent.clone()),
+            timestamp: now,
+            correlation_id: format!("{prefix}-{event}"),
+            data: Some(serde_json::json!({
+                "source": "probe",
+                "runtime": current.runtime,
+                "session_name": current.session_name
+            })),
+        });
+    }
+
+    if current.running && previous.activity_state != current.activity_state {
+        let event = match current.activity_state {
+            ActivityState::Working => Some("agent.working"),
+            ActivityState::Idle => Some("agent.idle"),
+            _ => None,
+        };
+        if let Some(event) = event {
+            out.push(ControlEvent {
+                event: event.to_string(),
+                workspace: current.workspace.clone(),
+                agent: Some(current.agent.clone()),
+                timestamp: now,
+                correlation_id: format!("{prefix}-{event}"),
+                data: Some(serde_json::json!({
+                    "source": "probe",
+                    "from": previous.activity_state,
+                    "to": current.activity_state
+                })),
+            });
+        }
+    }
+
+    if current.running && previous.auth_state != current.auth_state {
+        match current.auth_state {
+            AuthState::Failed => out.push(ControlEvent {
+                event: "agent.auth_failed".to_string(),
+                workspace: current.workspace.clone(),
+                agent: Some(current.agent.clone()),
+                timestamp: now,
+                correlation_id: format!("{prefix}-agent.auth_failed"),
+                data: Some(serde_json::json!({
+                    "source": "probe",
+                    "reason": current.reason,
+                    "runtime": current.runtime
+                })),
+            }),
+            AuthState::Ok if matches!(previous.auth_state, AuthState::Failed) => {
+                out.push(ControlEvent {
+                    event: "agent.auth_recovered".to_string(),
+                    workspace: current.workspace.clone(),
+                    agent: Some(current.agent.clone()),
+                    timestamp: now,
+                    correlation_id: format!("{prefix}-agent.auth_recovered"),
+                    data: Some(serde_json::json!({
+                        "source": "probe",
+                        "runtime": current.runtime
+                    })),
+                })
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_health(
+        running: bool,
+        activity_state: ActivityState,
+        auth_state: AuthState,
+        reason: Option<&str>,
+    ) -> AgentHealth {
+        AgentHealth {
+            workspace: "ws".to_string(),
+            agent: "backend".to_string(),
+            runtime: "claude-code".to_string(),
+            session_name: "tutti-ws-backend".to_string(),
+            running,
+            activity_state,
+            auth_state,
+            last_output_change_at: None,
+            last_probe_at: Utc::now(),
+            reason: reason.map(ToString::to_string),
+            pane_hash: Some(123),
+        }
+    }
+
+    #[test]
+    fn transition_events_emits_activity_and_auth_changes() {
+        let previous = sample_health(true, ActivityState::Working, AuthState::Ok, None);
+        let current = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Failed,
+            Some("auth expired"),
+        );
+        let events = transition_events(Some(&previous), &current, Utc::now());
+        assert!(events.iter().any(|e| e.event == "agent.idle"));
+        assert!(events.iter().any(|e| e.event == "agent.auth_failed"));
+    }
+
+    #[test]
+    fn transition_events_emits_running_changes() {
+        let previous = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        let current = sample_health(false, ActivityState::Stopped, AuthState::Ok, None);
+        let events = transition_events(Some(&previous), &current, Utc::now());
+        assert!(events.iter().any(|e| e.event == "agent.stopped"));
+    }
 }
