@@ -50,10 +50,11 @@ fn main() {
         } => cli::run::run(workflow, agent.as_deref(), strict, dry_run),
         Commands::Verify {
             last,
+            json,
             ref workflow,
             ref agent,
             strict,
-        } => cli::verify::run(last, workflow.as_deref(), agent.as_deref(), strict),
+        } => cli::verify::run(last, json, workflow.as_deref(), agent.as_deref(), strict),
         Commands::Usage {
             ref profile,
             by_workspace,

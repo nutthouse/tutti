@@ -184,7 +184,7 @@ When building an OpenClaw skill/plugin:
   - `verify_team` -> `tt verify`
   - `team_status` -> `tt status`
   - `agent_output` -> `tt peek <agent> --lines N`
-  - `read_verify_status` -> `tt verify --last` (or read `.tutti/state/verify-last.json`)
+  - `read_verify_status` -> `tt verify --last --json` (or read `.tutti/state/verify-last.json`)
   - `stop_agent` -> `tt down <agent>`
   - `stop_team` -> `tt down`
 - Prefer reading `.tutti/state/` for control logic over parsing command tables.

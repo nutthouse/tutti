@@ -7,7 +7,13 @@ use crate::state::load_verify_last_summary;
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 
-pub fn run(last: bool, workflow: Option<&str>, agent: Option<&str>, strict: bool) -> Result<()> {
+pub fn run(
+    last: bool,
+    json: bool,
+    workflow: Option<&str>,
+    agent: Option<&str>,
+    strict: bool,
+) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (config, config_path) = TuttiConfig::load(&cwd)?;
     config.validate()?;
@@ -17,7 +23,7 @@ pub fn run(last: bool, workflow: Option<&str>, agent: Option<&str>, strict: bool
     })?;
 
     if last {
-        return print_last_summary(project_root);
+        return print_last_summary(project_root, json);
     }
 
     let workflow_name = workflow.unwrap_or("verify");
@@ -49,11 +55,16 @@ pub fn run(last: bool, workflow: Option<&str>, agent: Option<&str>, strict: bool
     Ok(())
 }
 
-fn print_last_summary(project_root: &std::path::Path) -> Result<()> {
+fn print_last_summary(project_root: &std::path::Path, as_json: bool) -> Result<()> {
     let Some(summary) = load_verify_last_summary(project_root)? else {
         println!("No verify summary found yet (.tutti/state/verify-last.json).");
         return Ok(());
     };
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
 
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);

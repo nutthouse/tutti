@@ -146,6 +146,10 @@ pub enum Commands {
         #[arg(long, conflicts_with_all = ["workflow", "agent", "strict"])]
         last: bool,
 
+        /// Emit machine-readable JSON (requires --last)
+        #[arg(long, requires = "last")]
+        json: bool,
+
         /// Workflow name (default: verify)
         #[arg(long)]
         workflow: Option<String>,

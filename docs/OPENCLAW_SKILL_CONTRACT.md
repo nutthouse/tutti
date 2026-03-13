@@ -44,7 +44,7 @@ This document defines a stable first-pass contract for building an OpenClaw skil
 - `stop_team`
   - Command: `tt down`
 - `read_verify_status`
-  - Command: `tt verify --last`
+  - Command: `tt verify --last --json`
   - Fallback file read: `.tutti/state/verify-last.json`
 
 ## Preflight Flow (Recommended)
