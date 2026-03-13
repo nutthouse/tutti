@@ -6,10 +6,25 @@ use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 
-pub fn run(workflow: &str, agent: Option<&str>, strict: bool, dry_run: bool) -> Result<()> {
+pub fn run(
+    workflow: Option<&str>,
+    list: bool,
+    agent: Option<&str>,
+    strict: bool,
+    dry_run: bool,
+) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (config, config_path) = TuttiConfig::load(&cwd)?;
     config.validate()?;
+
+    if list {
+        print_workflow_list(&config);
+        return Ok(());
+    }
+
+    let workflow = workflow.ok_or_else(|| {
+        TuttiError::ConfigValidation("workflow name is required unless --list is set".to_string())
+    })?;
 
     let project_root = config_path.parent().ok_or_else(|| {
         TuttiError::ConfigValidation("could not determine workspace root".to_string())
@@ -43,6 +58,31 @@ pub fn run(workflow: &str, agent: Option<&str>, strict: bool, dry_run: bool) -> 
     }
 
     Ok(())
+}
+
+fn print_workflow_list(config: &TuttiConfig) {
+    if config.workflows.is_empty() {
+        println!("No workflows configured.");
+        println!("Add [[workflow]] entries to tutti.toml.");
+        return;
+    }
+
+    let mut table = Table::new();
+    table.load_preset(UTF8_BORDERS_ONLY);
+    table.set_header(vec!["Workflow", "Steps", "Description"]);
+
+    for workflow in &config.workflows {
+        table.add_row(vec![
+            workflow.name.clone(),
+            workflow.steps.len().to_string(),
+            workflow
+                .description
+                .clone()
+                .unwrap_or_else(|| "--".to_string()),
+        ]);
+    }
+
+    println!("{table}");
 }
 
 fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {

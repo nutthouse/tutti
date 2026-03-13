@@ -13,6 +13,7 @@ tt usage --by-workspace  # inspect API-profile token usage + plan %
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
 tt run verify-app        # run reusable workflow steps (prompt + commands)
+tt run --list            # show configured workflows
 tt verify                # run verification workflow + persist summary
 tt verify --last         # show latest persisted verification summary
 tt verify --last --json  # machine-readable verify status

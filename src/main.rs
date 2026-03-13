@@ -44,10 +44,11 @@ fn main() {
         Commands::Switch => cli::switch::run(),
         Commands::Run {
             ref workflow,
+            list,
             ref agent,
             strict,
             dry_run,
-        } => cli::run::run(workflow, agent.as_deref(), strict, dry_run),
+        } => cli::run::run(workflow.as_deref(), list, agent.as_deref(), strict, dry_run),
         Commands::Verify {
             last,
             json,

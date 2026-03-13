@@ -125,7 +125,12 @@ pub enum Commands {
     /// Run a reusable workflow (prompt + command steps)
     Run {
         /// Workflow name
-        workflow: String,
+        #[arg(required_unless_present = "list")]
+        workflow: Option<String>,
+
+        /// List configured workflows and exit
+        #[arg(long, conflicts_with_all = ["agent", "strict", "dry_run", "workflow"])]
+        list: bool,
 
         /// Override target agent for agent-scoped steps
         #[arg(long)]
