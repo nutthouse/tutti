@@ -130,6 +130,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - Stream event types include: `agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, `handoff.generated`, `handoff.applied`
   - `POST /v1/actions/up|down|send|run|verify|review|land`
   - API envelope: `ok/action/error/data`
+  - `send` action includes structured completion payload in `data.send` (`waited`, `completion_source`, `captured_output`)
   - Mutating idempotency: `Idempotency-Key` header (or `idempotency_key` request field)
 - Generate handoff packet:
   - `tt handoff generate <agent>`

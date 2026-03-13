@@ -281,6 +281,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
   - Stream emits lifecycle/control events (`agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, handoff events)
   - Actions (POST): `/v1/actions/up|down|send|run|verify|review|land`
   - Envelope shape: `ok/action/error/data`
+  - `send` action returns structured send result (`waited`, `completion_source`, `captured_output`)
   - Mutating actions support `Idempotency-Key` header (or `idempotency_key` request field)
 
 ### Observability (Built)

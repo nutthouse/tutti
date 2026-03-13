@@ -75,7 +75,8 @@ fn main() {
                 output,
                 output_lines,
             },
-        ),
+        )
+        .map(|_| ()),
         Commands::Peek { ref agent, lines } => cli::peek::run(agent, lines),
         Commands::Logs {
             ref agent,

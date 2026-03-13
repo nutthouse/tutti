@@ -3,10 +3,24 @@ use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::health::{WaitCompletionSource, WaitFailureReason};
 use crate::session::TmuxSession;
+use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub fn run(agent_ref: &str, prompt_parts: &[String], options: SendOptions) -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+pub struct SendExecutionResult {
+    pub workspace: String,
+    pub agent: String,
+    pub waited: bool,
+    pub completion_source: Option<String>,
+    pub captured_output: Option<String>,
+}
+
+pub fn run(
+    agent_ref: &str,
+    prompt_parts: &[String],
+    options: SendOptions,
+) -> Result<SendExecutionResult> {
     crate::session::tmux::check_tmux()?;
 
     let prompt = assemble_prompt(prompt_parts)
@@ -44,6 +58,7 @@ pub fn run(agent_ref: &str, prompt_parts: &[String], options: SendOptions) -> Re
     };
 
     TmuxSession::send_text(&session, &prompt)?;
+    let mut completion_source = None;
     if options.wait {
         let outcome = health::wait_for_agent_idle(
             &runtime_name,
@@ -77,11 +92,13 @@ pub fn run(agent_ref: &str, prompt_parts: &[String], options: SendOptions) -> Re
             Some(WaitCompletionSource::HeuristicIdleStable) => "heuristic_idle_stable",
             None => "unknown",
         };
+        completion_source = Some(source.to_string());
         println!("sent prompt to {agent_name} ({workspace_name}) and wait completed ({source})");
     } else {
         println!("sent prompt to {agent_name} ({workspace_name})");
     }
 
+    let mut captured_output = None;
     if options.output {
         let after_output = TmuxSession::capture_pane(&session, capture_lines).unwrap_or_default();
         let delta = pane_delta(before_output.as_deref().unwrap_or(""), &after_output);
@@ -90,9 +107,16 @@ pub fn run(agent_ref: &str, prompt_parts: &[String], options: SendOptions) -> Re
         } else {
             println!("\n{delta}");
         }
+        captured_output = Some(delta);
     }
 
-    Ok(())
+    Ok(SendExecutionResult {
+        workspace: workspace_name,
+        agent: agent_name,
+        waited: options.wait,
+        completion_source,
+        captured_output,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]

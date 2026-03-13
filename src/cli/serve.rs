@@ -338,10 +338,14 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
                     .and_then(Value::as_u64)
                     .unwrap_or(200) as u32,
             };
-            with_project_root(&target.project_root, || {
+            let send_result = with_project_root(&target.project_root, || {
                 super::send::run(agent, &[prompt.to_string()], options)
             })?;
-            Ok(json!({"workspace": target.name, "agent": agent}))
+            Ok(json!({
+                "workspace": target.name,
+                "agent": agent,
+                "send": send_result
+            }))
         }
         "run" => {
             let workflow = required_body_str(body, "workflow")?;
