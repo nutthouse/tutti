@@ -201,6 +201,10 @@ fn route_read(
         "/v1/runs" => Ok(api_ok("runs.list", runs_data(targets)?)),
         "/v1/logs" => Ok(api_ok("logs.list", logs_data(targets)?)),
         "/v1/handoffs" => Ok(api_ok("handoffs.list", handoffs_data(targets)?)),
+        "/v1/policy-decisions" => Ok(api_ok(
+            "policy_decisions.list",
+            policy_decisions_data(targets, query.get("workspace").map(|s| s.as_str()))?,
+        )),
         "/v1/events" => Ok(api_ok(
             "events.list",
             events_data(
@@ -606,6 +610,27 @@ fn handoffs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
         }
     }
     Ok(Value::Array(rows))
+}
+
+fn policy_decisions_data(targets: &[WorkspaceTarget], workspace: Option<&str>) -> Result<Value> {
+    let selected: Vec<&WorkspaceTarget> = if let Some(ws) = workspace {
+        vec![
+            targets
+                .iter()
+                .find(|t| t.name == ws)
+                .ok_or_else(|| TuttiError::AgentNotFound(ws.to_string()))?,
+        ]
+    } else {
+        targets.iter().collect()
+    };
+
+    let mut rows = Vec::new();
+    for target in selected {
+        let records = state::load_policy_decisions(&target.project_root)?;
+        rows.extend(records);
+    }
+    rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(json!(rows))
 }
 
 fn events_data(

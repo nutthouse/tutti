@@ -124,7 +124,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - `tt serve --port 4040`
   - `GET /v1/health`
   - `GET /v1/health/{workspace}/{agent}`
-  - `GET /v1/status`, `GET /v1/voices`, `GET /v1/workflows`, `GET /v1/runs`, `GET /v1/logs`, `GET /v1/handoffs`, `GET /v1/events`
+  - `GET /v1/status`, `GET /v1/voices`, `GET /v1/workflows`, `GET /v1/runs`, `GET /v1/logs`, `GET /v1/handoffs`, `GET /v1/policy-decisions`, `GET /v1/events`
   - Events cursor/filter: `GET /v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Event stream (SSE): `GET /v1/events/stream?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Stream event types include: `agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, `handoff.generated`, `handoff.applied`
@@ -159,7 +159,7 @@ Policy notes:
 - Policy entries can include shell command prefixes and Claude tool names (`Read`, `Edit`, `Write`, etc.).
 - `tt up` launch integration:
   - Claude constrained mode: auto-generates a runtime settings file and launches with `--permission-mode dontAsk`.
-  - Codex constrained mode: uses non-interactive flags (`-a never -s workspace-write`) plus policy guidance prompt (best-effort).
+  - Codex/OpenClaw constrained mode: best-effort policy guidance (Codex also uses `-a never -s workspace-write`).
 
 ## Machine-Readable State Contract
 
@@ -190,6 +190,7 @@ Automation state files:
 - `.tutti/state/health/{agent}.json`: latest probe-based health snapshot for each agent.
 - `.tutti/state/automation-runs.jsonl`: append-only execution records (workflow/hook runs).
 - `.tutti/state/events.jsonl`: append-only control-plane events (`agent.*`, `workflow.*`, `handoff.*`).
+- `.tutti/state/policy-decisions.jsonl`: append-only launch policy decisions (`action`, `mode`, `policy`, `enforcement`, `decision`).
 - `.tutti/state/verify-last.json`: last verification summary (`workflow_name`, `success`, `failed_steps`, `strict`, `agent_scope`).
 - `.tutti/state/scheduler-last-runs.json`: scheduler fire timestamps per workspace/workflow key.
 - `.tutti/state/workflow-outputs/<run-id>/<step-id>.json`: canonical structured step outputs.

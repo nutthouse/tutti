@@ -86,6 +86,25 @@ pub struct ControlEvent {
     pub data: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyDecisionRecord {
+    pub timestamp: DateTime<Utc>,
+    pub workspace: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub runtime: Option<String>,
+    pub action: String,
+    pub mode: String,
+    pub policy: String,
+    pub enforcement: String,
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub data: Option<Value>,
+}
+
 /// Ensure the .tutti/ directory structure exists.
 pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
     let tutti_dir = project_root.join(".tutti");
@@ -290,6 +309,38 @@ pub fn load_control_events(project_root: &Path) -> Result<Vec<ControlEvent>> {
     for line in body.lines().filter(|l| !l.trim().is_empty()) {
         if let Ok(event) = serde_json::from_str::<ControlEvent>(line) {
             out.push(event);
+        }
+    }
+    Ok(out)
+}
+
+pub fn append_policy_decision(project_root: &Path, record: &PolicyDecisionRecord) -> Result<()> {
+    let state_dir = project_root.join(".tutti").join("state");
+    std::fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join("policy-decisions.jsonl");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = serde_json::to_string(record)?;
+    use std::io::Write;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+pub fn load_policy_decisions(project_root: &Path) -> Result<Vec<PolicyDecisionRecord>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("policy-decisions.jsonl");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let body = std::fs::read_to_string(path)?;
+    let mut out = Vec::new();
+    for line in body.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(record) = serde_json::from_str::<PolicyDecisionRecord>(line) {
+            out.push(record);
         }
     }
     Ok(out)
@@ -575,6 +626,35 @@ mod tests {
         let loaded = load_control_events(&dir).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].event, "agent.started");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn policy_decisions_append_and_load() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-policy-state-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let record = PolicyDecisionRecord {
+            timestamp: Utc::now(),
+            workspace: "ws".to_string(),
+            agent: Some("backend".to_string()),
+            runtime: Some("claude-code".to_string()),
+            action: "launch".to_string(),
+            mode: "auto".to_string(),
+            policy: "constrained".to_string(),
+            enforcement: "hard".to_string(),
+            decision: "allow".to_string(),
+            reason: None,
+            data: Some(serde_json::json!({"rules": 3})),
+        };
+        append_policy_decision(&dir, &record).unwrap();
+        append_policy_decision(&dir, &record).unwrap();
+
+        let loaded = load_policy_decisions(&dir).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].enforcement, "hard");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

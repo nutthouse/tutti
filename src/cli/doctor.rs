@@ -140,7 +140,7 @@ fn evaluate_checks(
         agent
             .resolved_runtime(&config.defaults)
             .as_deref()
-            .is_some_and(|rt| matches!(rt, "claude-code" | "codex"))
+            .is_some_and(|rt| matches!(rt, "claude-code" | "codex" | "openclaw"))
     });
     let policy_configured = has_configured_policy(global);
     if launch_requires_constrained_policy(launch_settings) && launch_targets_supported_runtime {
@@ -173,13 +173,13 @@ fn evaluate_checks(
             agent
                 .resolved_runtime(&config.defaults)
                 .as_deref()
-                .is_some_and(|rt| rt == "codex")
+                .is_some_and(|rt| matches!(rt, "codex" | "openclaw"))
         })
     {
         checks.push(DoctorCheck {
-            check: "launch/codex".to_string(),
+            check: "launch/best_effort".to_string(),
             status: DoctorStatus::Warn,
-            detail: "codex constrained mode is best-effort; hard allowlist enforcement is currently Claude-only".to_string(),
+            detail: "codex/openclaw constrained mode is best-effort; hard allowlist enforcement is currently Claude-only".to_string(),
         });
     }
 

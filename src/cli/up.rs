@@ -7,7 +7,7 @@ use crate::permissions::{has_configured_policy, normalize, render_claude_setting
 use crate::runtime;
 use crate::session::TmuxSession;
 use crate::state;
-use crate::state::ControlEvent;
+use crate::state::{ControlEvent, PolicyDecisionRecord};
 use crate::worktree;
 use chrono::Utc;
 use colored::Colorize;
@@ -28,7 +28,8 @@ pub(crate) struct LaunchSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LaunchCommandWarnings {
-    codex_constrained_best_effort: bool,
+    constrained_best_effort: bool,
+    unsupported_constrained_runtime: bool,
     bypass_mode: bool,
 }
 
@@ -114,7 +115,8 @@ pub fn run(
 
     let mut launched = Vec::new();
     let mut refused_by_limit = false;
-    let mut warned_codex_constrained = false;
+    let mut warned_best_effort = false;
+    let mut warned_unsupported_constrained = false;
     let mut warned_bypass = false;
 
     for agent in &agents {
@@ -194,12 +196,21 @@ pub fn run(
             &agent.name,
             agent.prompt.as_deref(),
         )?;
-        if warnings.codex_constrained_best_effort && !warned_codex_constrained {
+        if warnings.constrained_best_effort && !warned_best_effort {
             eprintln!(
-                "  {} codex constrained mode is best-effort; hard allowlist enforcement is currently Claude-only",
-                "warn".yellow()
+                "  {} constrained mode is best-effort for {}; hard allowlist enforcement is currently Claude-only",
+                "warn".yellow(),
+                runtime_name
             );
-            warned_codex_constrained = true;
+            warned_best_effort = true;
+        }
+        if warnings.unsupported_constrained_runtime && !warned_unsupported_constrained {
+            eprintln!(
+                "  {} constrained no-prompt policy is not supported for runtime {}; falling back to runtime defaults",
+                "warn".yellow(),
+                runtime_name
+            );
+            warned_unsupported_constrained = true;
         }
         if warnings.bypass_mode && !warned_bypass {
             eprintln!(
@@ -208,6 +219,18 @@ pub fn run(
             );
             warned_bypass = true;
         }
+        let _ = state::append_policy_decision(
+            project_root,
+            &launch_policy_record(
+                &config.workspace.name,
+                &agent.name,
+                &runtime_name,
+                launch_settings,
+                permissions_policy,
+                warnings,
+                &cmd,
+            ),
+        );
         TmuxSession::create_session(&session, &working_dir, &cmd, &env)?;
 
         // Save state
@@ -371,7 +394,7 @@ fn resolve_launch_permissions<'a>(
 }
 
 fn runtime_supports_policy_constrained_no_prompt(runtime_name: &str) -> bool {
-    matches!(runtime_name, "claude-code" | "codex")
+    matches!(runtime_name, "claude-code" | "codex" | "openclaw")
 }
 
 fn build_launch_command(
@@ -387,7 +410,8 @@ fn build_launch_command(
         return Ok((
             adapter.build_spawn_command(base_prompt),
             LaunchCommandWarnings {
-                codex_constrained_best_effort: false,
+                constrained_best_effort: false,
+                unsupported_constrained_runtime: false,
                 bypass_mode: false,
             },
         ));
@@ -406,7 +430,8 @@ fn build_launch_command(
         return Ok((
             cmd,
             LaunchCommandWarnings {
-                codex_constrained_best_effort: false,
+                constrained_best_effort: false,
+                unsupported_constrained_runtime: false,
                 bypass_mode: !pre_args.is_empty(),
             },
         ));
@@ -430,7 +455,8 @@ fn build_launch_command(
             Ok((
                 adapter.build_spawn_command_with_args(&pre_args, base_prompt),
                 LaunchCommandWarnings {
-                    codex_constrained_best_effort: false,
+                    constrained_best_effort: false,
+                    unsupported_constrained_runtime: false,
                     bypass_mode: false,
                 },
             ))
@@ -452,7 +478,26 @@ fn build_launch_command(
             Ok((
                 adapter.build_spawn_command_with_args(&pre_args, prompt.as_deref()),
                 LaunchCommandWarnings {
-                    codex_constrained_best_effort: true,
+                    constrained_best_effort: true,
+                    unsupported_constrained_runtime: false,
+                    bypass_mode: false,
+                },
+            ))
+        }
+        "openclaw" => {
+            let policy = permissions_policy.ok_or_else(|| {
+                TuttiError::ConfigValidation(
+                    "openclaw constrained launch requires configured [permissions] policy"
+                        .to_string(),
+                )
+            })?;
+            let policy_appendix = codex_policy_appendix(policy);
+            let prompt = append_policy_prompt(base_prompt, &policy_appendix);
+            Ok((
+                adapter.build_spawn_command(prompt.as_deref()),
+                LaunchCommandWarnings {
+                    constrained_best_effort: true,
+                    unsupported_constrained_runtime: false,
                     bypass_mode: false,
                 },
             ))
@@ -460,7 +505,8 @@ fn build_launch_command(
         _ => Ok((
             adapter.build_spawn_command(base_prompt),
             LaunchCommandWarnings {
-                codex_constrained_best_effort: false,
+                constrained_best_effort: false,
+                unsupported_constrained_runtime: true,
                 bypass_mode: false,
             },
         )),
@@ -510,6 +556,81 @@ fn append_policy_prompt(base_prompt: Option<&str>, appendix: &str) -> Option<Str
     match base_prompt.map(str::trim).filter(|s| !s.is_empty()) {
         Some(base) => Some(format!("{base}\n\n{appendix}")),
         None => Some(appendix.to_string()),
+    }
+}
+
+fn launch_mode_label(settings: LaunchSettings) -> &'static str {
+    match settings.mode {
+        LaunchMode::Safe => "safe",
+        LaunchMode::Auto => "auto",
+        LaunchMode::Unattended => "unattended",
+    }
+}
+
+fn launch_policy_label(settings: LaunchSettings) -> &'static str {
+    match settings.effective_policy() {
+        LaunchPolicyMode::Constrained => "constrained",
+        LaunchPolicyMode::Bypass => "bypass",
+    }
+}
+
+fn launch_policy_record(
+    workspace: &str,
+    agent: &str,
+    runtime_name: &str,
+    settings: LaunchSettings,
+    permissions_policy: Option<&PermissionsConfig>,
+    warnings: LaunchCommandWarnings,
+    command: &str,
+) -> PolicyDecisionRecord {
+    let (enforcement, decision, reason) = if settings.mode == LaunchMode::Safe {
+        (
+            "prompt".to_string(),
+            "allow".to_string(),
+            Some("interactive approval mode".to_string()),
+        )
+    } else if settings.is_bypass() {
+        (
+            "bypass".to_string(),
+            "allow".to_string(),
+            Some("unattended bypass policy".to_string()),
+        )
+    } else if warnings.unsupported_constrained_runtime {
+        (
+            "unsupported".to_string(),
+            "allow".to_string(),
+            Some("runtime does not support constrained no-prompt policy".to_string()),
+        )
+    } else if warnings.constrained_best_effort {
+        (
+            "best_effort".to_string(),
+            "allow".to_string(),
+            Some("constrained policy guidance only (not hard-enforced)".to_string()),
+        )
+    } else {
+        (
+            "hard".to_string(),
+            "allow".to_string(),
+            Some("constrained policy is hard-enforced by runtime".to_string()),
+        )
+    };
+
+    PolicyDecisionRecord {
+        timestamp: Utc::now(),
+        workspace: workspace.to_string(),
+        agent: Some(agent.to_string()),
+        runtime: Some(runtime_name.to_string()),
+        action: "launch".to_string(),
+        mode: launch_mode_label(settings).to_string(),
+        policy: launch_policy_label(settings).to_string(),
+        enforcement,
+        decision,
+        reason,
+        data: Some(serde_json::json!({
+            "policy_rules": permissions_policy.map_or(0, |p| p.allow.len()),
+            "runtime": runtime_name,
+            "command": command
+        })),
     }
 }
 
@@ -714,7 +835,8 @@ fn run_all(
                 };
                 let permissions_policy =
                     resolve_launch_permissions(Some(&global), &config, &sorted, launch_settings)?;
-                let mut warned_codex_constrained = false;
+                let mut warned_best_effort = false;
+                let mut warned_unsupported_constrained = false;
                 let mut warned_bypass = false;
 
                 for agent in sorted {
@@ -784,12 +906,21 @@ fn run_all(
                             continue;
                         }
                     };
-                    if warnings.codex_constrained_best_effort && !warned_codex_constrained {
+                    if warnings.constrained_best_effort && !warned_best_effort {
                         eprintln!(
-                            "  {} codex constrained mode is best-effort; hard allowlist enforcement is currently Claude-only",
-                            "warn".yellow()
+                            "  {} constrained mode is best-effort for {}; hard allowlist enforcement is currently Claude-only",
+                            "warn".yellow(),
+                            runtime_name
                         );
-                        warned_codex_constrained = true;
+                        warned_best_effort = true;
+                    }
+                    if warnings.unsupported_constrained_runtime && !warned_unsupported_constrained {
+                        eprintln!(
+                            "  {} constrained no-prompt policy is not supported for runtime {}; falling back to runtime defaults",
+                            "warn".yellow(),
+                            runtime_name
+                        );
+                        warned_unsupported_constrained = true;
                     }
                     if warnings.bypass_mode && !warned_bypass {
                         eprintln!(
@@ -798,6 +929,18 @@ fn run_all(
                         );
                         warned_bypass = true;
                     }
+                    let _ = state::append_policy_decision(
+                        project_root,
+                        &launch_policy_record(
+                            &config.workspace.name,
+                            &agent.name,
+                            &runtime_name,
+                            launch_settings,
+                            permissions_policy,
+                            warnings,
+                            &cmd,
+                        ),
+                    );
                     if let Err(e) = TmuxSession::create_session(&session, &working_dir, &cmd, &env)
                     {
                         eprintln!("  Failed to launch {}: {e}", agent.name);
@@ -1296,7 +1439,40 @@ mod tests {
         assert!(cmd.contains("'-a' 'never' '-s' 'workspace-write'"));
         assert!(cmd.contains("--prompt"));
         assert!(cmd.contains("Tutti policy constraints"));
-        assert!(warnings.codex_constrained_best_effort);
+        assert!(warnings.constrained_best_effort);
+        assert!(!warnings.unsupported_constrained_runtime);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_launch_command_openclaw_constrained_adds_policy_prompt() {
+        let adapter = runtime::get_adapter("openclaw", None).expect("openclaw adapter");
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-up-openclaw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let policy = PermissionsConfig {
+            allow: vec!["git status".to_string(), "cargo test".to_string()],
+        };
+
+        let (cmd, warnings) = build_launch_command(
+            adapter.as_ref(),
+            "openclaw",
+            LaunchSettings {
+                mode: LaunchMode::Auto,
+                policy: LaunchPolicyMode::Constrained,
+            },
+            Some(&policy),
+            &dir,
+            "backend",
+            Some("You own tests."),
+        )
+        .expect("command should build");
+
+        assert!(cmd.contains("--prompt"));
+        assert!(cmd.contains("Tutti policy constraints"));
+        assert!(warnings.constrained_best_effort);
+        assert!(!warnings.unsupported_constrained_runtime);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

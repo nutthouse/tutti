@@ -275,7 +275,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 - `tt serve` local control API endpoints:
-  - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/logs`, `/v1/handoffs`, `/v1/events`
+  - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/logs`, `/v1/handoffs`, `/v1/policy-decisions`, `/v1/events`
   - Event cursor/list filter: `/v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
   - SSE stream: `/v1/events/stream?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Stream emits lifecycle/control events (`agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, handoff events)
@@ -322,8 +322,9 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `tt permissions check <command...>` evaluates command prefixes against policy
 - `tt permissions export --runtime claude` emits a Claude settings scaffold
 - `tt up` auto-wires constrained non-interactive policy for Claude sessions
-- Codex constrained mode is best-effort (prompt-level policy guidance + non-interactive flags)
+- Codex/OpenClaw constrained mode is best-effort (prompt-level policy guidance; Codex also uses non-interactive flags)
 - If constrained non-interactive launch is selected without policy, `tt up` fails with guidance
+- Launch policy decisions are persisted to `.tutti/state/policy-decisions.jsonl` and exposed via `/v1/policy-decisions`
 
 ### Tool Packs (Built, Opt-in)
 - Declarative `[[tool_pack]]` blocks in `tutti.toml` (`required_commands`, `required_env`)
