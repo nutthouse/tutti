@@ -47,6 +47,35 @@ prompt = "You own the UI. Follow existing component patterns."
 # prompt = "Monitor open PRs. Check CI status."
 # persistent = true          # keeps running, doesn't "finish"
 
+# Reusable automation workflows (opt-in)
+# [[workflow]]
+# name = "verify-app"
+# description = "Run deterministic checks before merge."
+# [[workflow.step]]
+# type = "command"
+# run = "cargo test --quiet"
+# cwd = "workspace"
+# fail_mode = "closed"
+# timeout_secs = 1200
+#
+# [[workflow]]
+# name = "code-simplifier"
+# [[workflow.step]]
+# type = "prompt"
+# agent = "backend"
+# text = "Simplify/refactor recent changes and keep behavior identical."
+# [[workflow.step]]
+# type = "command"
+# run = "cargo fmt"
+# cwd = "workspace"
+# fail_mode = "open"
+#
+# [[hook]]
+# event = "agent_stop"
+# agent = "backend"
+# workflow = "verify-app"
+# fail_mode = "open"
+
 # Handoff settings (Phase 2)
 # [handoff]
 # auto = true

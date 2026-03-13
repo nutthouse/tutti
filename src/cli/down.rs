@@ -3,6 +3,7 @@ use crate::error::{Result, TuttiError};
 use crate::session::TmuxSession;
 use crate::state;
 use crate::worktree;
+use crate::{automation::HookDispatcher, automation::HookEventPayload};
 use chrono::Utc;
 use colored::Colorize;
 
@@ -24,6 +25,7 @@ pub fn run(
         let cwd = std::env::current_dir()?;
         TuttiConfig::load(&cwd)?
     };
+    config.validate()?;
     let project_root = config_path.parent().unwrap();
 
     let agents: Vec<_> = if let Some(name) = agent_filter {
@@ -38,6 +40,7 @@ pub fn run(
     };
 
     let mut stopped = 0;
+    let mut hook_errors: Vec<String> = Vec::new();
 
     for agent in &agents {
         let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
@@ -58,6 +61,27 @@ pub fn run(
         println!("  {} {}", "stopped".red(), agent.name);
         stopped += 1;
 
+        if !config.hooks.is_empty() {
+            let payload = HookEventPayload {
+                workspace_name: config.workspace.name.clone(),
+                project_root: project_root.to_path_buf(),
+                agent_name: agent.name.clone(),
+                runtime: agent
+                    .resolved_runtime(&config.defaults)
+                    .unwrap_or_else(|| "—".to_string()),
+                session_name: session.clone(),
+                reason: "manual".to_string(),
+            };
+            if let Err(e) = HookDispatcher::dispatch_agent_stop(&config, &payload) {
+                eprintln!(
+                    "  {} hook dispatch for {}: {e}",
+                    "warn".yellow(),
+                    agent.name
+                );
+                hook_errors.push(format!("{}: {e}", agent.name));
+            }
+        }
+
         if clean {
             if let Err(e) = worktree::remove_worktree(project_root, &agent.name) {
                 eprintln!(
@@ -77,6 +101,13 @@ pub fn run(
         println!("\nStopped {stopped} agent(s).");
     }
 
+    if !hook_errors.is_empty() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "hook failures: {}",
+            hook_errors.join("; ")
+        )));
+    }
+
     Ok(())
 }
 
@@ -90,8 +121,13 @@ fn run_all(clean: bool) -> Result<()> {
     for ws in &global.registered_workspaces {
         match TuttiConfig::load(&ws.path) {
             Ok((config, config_path)) => {
+                if let Err(e) = config.validate() {
+                    eprintln!("  Skipping {} (invalid config): {e}", ws.name);
+                    continue;
+                }
                 let project_root = config_path.parent().unwrap();
                 let mut ws_stopped = 0;
+                let mut ws_hook_errors: Vec<String> = Vec::new();
 
                 for agent in &config.agents {
                     let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
@@ -106,6 +142,27 @@ fn run_all(clean: bool) -> Result<()> {
                         let _ = TmuxSession::kill_session(&session);
                         ws_stopped += 1;
 
+                        if !config.hooks.is_empty() {
+                            let payload = HookEventPayload {
+                                workspace_name: config.workspace.name.clone(),
+                                project_root: project_root.to_path_buf(),
+                                agent_name: agent.name.clone(),
+                                runtime: agent
+                                    .resolved_runtime(&config.defaults)
+                                    .unwrap_or_else(|| "—".to_string()),
+                                session_name: session.clone(),
+                                reason: "manual".to_string(),
+                            };
+                            if let Err(e) = HookDispatcher::dispatch_agent_stop(&config, &payload) {
+                                eprintln!(
+                                    "  {} hook dispatch for {}: {e}",
+                                    "warn".yellow(),
+                                    agent.name
+                                );
+                                ws_hook_errors.push(format!("{}:{}: {e}", ws.name, agent.name));
+                            }
+                        }
+
                         if clean {
                             let _ = worktree::remove_worktree(project_root, &agent.name);
                         }
@@ -114,6 +171,12 @@ fn run_all(clean: bool) -> Result<()> {
 
                 if ws_stopped > 0 {
                     println!("{}: stopped {ws_stopped} agent(s)", ws.name);
+                }
+                if !ws_hook_errors.is_empty() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "hook failures: {}",
+                        ws_hook_errors.join("; ")
+                    )));
                 }
             }
             Err(_) => continue,

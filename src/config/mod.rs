@@ -14,6 +14,10 @@ pub struct TuttiConfig {
     pub defaults: DefaultsConfig,
     #[serde(default, rename = "agent")]
     pub agents: Vec<AgentConfig>,
+    #[serde(default, rename = "workflow")]
+    pub workflows: Vec<WorkflowConfig>,
+    #[serde(default, rename = "hook")]
+    pub hooks: Vec<HookConfig>,
     #[serde(default)]
     pub handoff: Option<HandoffConfig>,
     #[serde(default)]
@@ -76,6 +80,70 @@ pub struct AgentConfig {
     /// Agent-level environment variables (override workspace env).
     #[serde(default)]
     pub env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowConfig {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, rename = "step")]
+    pub steps: Vec<WorkflowStepConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkflowStepConfig {
+    Prompt {
+        agent: String,
+        text: String,
+    },
+    Command {
+        run: String,
+        #[serde(default)]
+        cwd: Option<WorkflowCommandCwd>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+        #[serde(default)]
+        fail_mode: Option<WorkflowFailMode>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCommandCwd {
+    Workspace,
+    AgentWorktree,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowFailMode {
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookConfig {
+    pub event: HookEvent,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub workflow: Option<String>,
+    #[serde(default)]
+    pub run: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub fail_mode: Option<WorkflowFailMode>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    AgentStop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +317,101 @@ impl TuttiConfig {
                     "agent '{}' uses unknown runtime '{rt}'",
                     agent.name
                 )));
+            }
+        }
+
+        self.validate_automation()?;
+
+        Ok(())
+    }
+
+    fn validate_automation(&self) -> Result<()> {
+        let agent_names: std::collections::HashSet<&str> =
+            self.agents.iter().map(|a| a.name.as_str()).collect();
+
+        let mut workflow_names = std::collections::HashSet::new();
+        for workflow in &self.workflows {
+            if workflow.name.trim().is_empty() {
+                return Err(TuttiError::ConfigValidation(
+                    "workflow name cannot be empty".to_string(),
+                ));
+            }
+            if !workflow_names.insert(workflow.name.as_str()) {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "duplicate workflow name: '{}'",
+                    workflow.name
+                )));
+            }
+            if workflow.steps.is_empty() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "workflow '{}' must have at least one step",
+                    workflow.name
+                )));
+            }
+
+            for (idx, step) in workflow.steps.iter().enumerate() {
+                match step {
+                    WorkflowStepConfig::Prompt { agent, text } => {
+                        if !agent_names.contains(agent.as_str()) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} references unknown agent '{}'",
+                                workflow.name,
+                                idx + 1,
+                                agent
+                            )));
+                        }
+                        if text.trim().is_empty() {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} has empty prompt text",
+                                workflow.name,
+                                idx + 1
+                            )));
+                        }
+                    }
+                    WorkflowStepConfig::Command { run, .. } => {
+                        if run.trim().is_empty() {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} has empty command",
+                                workflow.name,
+                                idx + 1
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        for hook in &self.hooks {
+            if let Some(agent) = hook.agent.as_deref()
+                && !agent_names.contains(agent)
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "hook references unknown agent '{}'",
+                    agent
+                )));
+            }
+
+            let workflow_set = hook.workflow.as_ref().is_some();
+            let run_set = hook.run.as_ref().is_some();
+            if workflow_set == run_set {
+                return Err(TuttiError::ConfigValidation(
+                    "hook must specify exactly one of 'workflow' or 'run'".to_string(),
+                ));
+            }
+            if let Some(workflow_name) = hook.workflow.as_deref()
+                && !workflow_names.contains(workflow_name)
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "hook references unknown workflow '{}'",
+                    workflow_name
+                )));
+            }
+            if let Some(cmd) = hook.run.as_deref()
+                && cmd.trim().is_empty()
+            {
+                return Err(TuttiError::ConfigValidation(
+                    "hook run command cannot be empty".to_string(),
+                ));
             }
         }
 
@@ -482,6 +645,45 @@ persistent = true
     }
 
     #[test]
+    fn parse_workflows_and_hooks() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+description = "Run checks"
+
+[[workflow.step]]
+type = "prompt"
+agent = "backend"
+text = "Check recent changes."
+
+[[workflow.step]]
+type = "command"
+run = "cargo test --quiet"
+cwd = "workspace"
+fail_mode = "closed"
+timeout_secs = 1200
+
+[[hook]]
+event = "agent_stop"
+agent = "backend"
+workflow = "verify"
+fail_mode = "open"
+"#;
+
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.workflows.len(), 1);
+        assert_eq!(config.hooks.len(), 1);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn parse_global_config() {
         let toml_str = r#"
 [user]
@@ -637,6 +839,53 @@ runtime = "invalid-runtime"
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("unknown runtime"));
+    }
+
+    #[test]
+    fn validate_rejects_hook_without_action() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[hook]]
+event = "agent_stop"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exactly one of 'workflow' or 'run'")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_unknown_hook_workflow() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "command"
+run = "echo ok"
+
+[[hook]]
+event = "agent_stop"
+workflow = "missing"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown workflow"));
     }
 
     #[test]

@@ -15,6 +15,30 @@ pub struct AgentState {
     pub stopped_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationRunRecord {
+    pub workflow_name: String,
+    pub timestamp: DateTime<Utc>,
+    pub trigger: String,
+    pub success: bool,
+    pub strict: bool,
+    pub failed_steps: Vec<usize>,
+    pub warning_count: usize,
+    pub agent_scope: Option<String>,
+    pub hook_event: Option<String>,
+    pub hook_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyLastSummary {
+    pub workflow_name: String,
+    pub timestamp: DateTime<Utc>,
+    pub success: bool,
+    pub failed_steps: Vec<usize>,
+    pub strict: bool,
+    pub agent_scope: Option<String>,
+}
+
 /// Ensure the .tutti/ directory structure exists.
 pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
     let tutti_dir = project_root.join(".tutti");
@@ -53,6 +77,47 @@ pub fn load_agent_state(project_root: &Path, agent_name: &str) -> Result<Option<
     let state: AgentState =
         serde_json::from_str(&contents).map_err(|e| TuttiError::State(e.to_string()))?;
     Ok(Some(state))
+}
+
+/// Append a workflow/hook execution record to .tutti/state/automation-runs.jsonl.
+pub fn append_automation_run(project_root: &Path, record: &AutomationRunRecord) -> Result<()> {
+    let state_dir = project_root.join(".tutti").join("state");
+    std::fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join("automation-runs.jsonl");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = serde_json::to_string(record)?;
+    use std::io::Write;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+/// Save latest verification summary to .tutti/state/verify-last.json.
+pub fn save_verify_last_summary(project_root: &Path, summary: &VerifyLastSummary) -> Result<()> {
+    let state_dir = project_root.join(".tutti").join("state");
+    std::fs::create_dir_all(&state_dir)?;
+    let path = state_dir.join("verify-last.json");
+    let json = serde_json::to_string_pretty(summary)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+/// Load latest verification summary.
+#[allow(dead_code)]
+pub fn load_verify_last_summary(project_root: &Path) -> Result<Option<VerifyLastSummary>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("verify-last.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(path)?;
+    let summary: VerifyLastSummary =
+        serde_json::from_str(&contents).map_err(|e| TuttiError::State(e.to_string()))?;
+    Ok(Some(summary))
 }
 
 /// Load all agent states from .tutti/state/.
@@ -194,6 +259,63 @@ mod tests {
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn automation_runs_jsonl_is_appended() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-automation-state-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let record = AutomationRunRecord {
+            workflow_name: "verify".to_string(),
+            timestamp: Utc::now(),
+            trigger: "run".to_string(),
+            success: true,
+            strict: false,
+            failed_steps: vec![],
+            warning_count: 1,
+            agent_scope: Some("backend".to_string()),
+            hook_event: None,
+            hook_agent: None,
+        };
+        append_automation_run(&dir, &record).unwrap();
+        append_automation_run(&dir, &record).unwrap();
+
+        let path = dir
+            .join(".tutti")
+            .join("state")
+            .join("automation-runs.jsonl");
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert_eq!(contents.lines().count(), 2);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn verify_last_summary_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-verify-state-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let summary = VerifyLastSummary {
+            workflow_name: "verify".to_string(),
+            timestamp: Utc::now(),
+            success: false,
+            failed_steps: vec![2],
+            strict: true,
+            agent_scope: Some("backend".to_string()),
+        };
+
+        save_verify_last_summary(&dir, &summary).unwrap();
+        let loaded = load_verify_last_summary(&dir).unwrap().unwrap();
+        assert_eq!(loaded.workflow_name, "verify");
+        assert_eq!(loaded.failed_steps, vec![2]);
+        assert!(loaded.strict);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

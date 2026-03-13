@@ -12,6 +12,8 @@ tt status                # see what every agent is doing right now
 tt usage --by-workspace  # inspect API-profile token usage + plan %
 tt watch                 # interactive terminal status dashboard
 tt switch                # fuzzy-pick a running agent and attach
+tt run verify-app        # run reusable workflow steps (prompt + commands)
+tt verify                # run verification workflow + persist summary
 tt logs backend -f       # follow captured output for an agent
 ```
 
@@ -71,7 +73,7 @@ source ~/.zshrc
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -257,7 +259,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter

@@ -1,3 +1,4 @@
+mod automation;
 mod cli;
 mod config;
 mod error;
@@ -40,6 +41,17 @@ fn main() {
             follow,
         } => cli::logs::run(agent, lines, follow),
         Commands::Switch => cli::switch::run(),
+        Commands::Run {
+            ref workflow,
+            ref agent,
+            strict,
+            dry_run,
+        } => cli::run::run(workflow, agent.as_deref(), strict, dry_run),
+        Commands::Verify {
+            ref workflow,
+            ref agent,
+            strict,
+        } => cli::verify::run(workflow.as_deref(), agent.as_deref(), strict),
         Commands::Usage {
             ref profile,
             by_workspace,

@@ -597,6 +597,8 @@ mod tests {
                 runtime: Some("claude-code".to_string()),
             },
             agents: vec![],
+            workflows: vec![],
+            hooks: vec![],
             handoff: None,
             observe: None,
         };
@@ -626,6 +628,8 @@ mod tests {
                 runtime: Some("claude-code".to_string()),
             },
             agents: vec![],
+            workflows: vec![],
+            hooks: vec![],
             handoff: None,
             observe: None,
         };
@@ -656,6 +660,8 @@ mod tests {
                 runtime: Some("claude-code".to_string()),
             },
             agents: vec![],
+            workflows: vec![],
+            hooks: vec![],
             handoff: None,
             observe: None,
         };
@@ -698,6 +704,8 @@ mod tests {
                 runtime: Some("claude-code".to_string()),
             },
             agents: vec![],
+            workflows: vec![],
+            hooks: vec![],
             handoff: None,
             observe: None,
         };

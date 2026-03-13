@@ -24,7 +24,8 @@ Use these surfaces, in this order of preference:
 
 1. Tutti CLI commands for lifecycle actions.
 2. `.tutti/state/*.json` files for machine-readable per-agent runtime state.
-3. `.tutti/logs/*.log` (when enabled) for historical output analysis.
+3. `.tutti/state/automation-runs.jsonl` and `.tutti/state/verify-last.json` for automation outcomes.
+4. `.tutti/logs/*.log` (when enabled) for historical output analysis.
 
 Avoid:
 - Parsing pretty tables from `tt status` as your primary machine interface.
@@ -86,6 +87,20 @@ Use `peek` for automation. Use `attach` for operator handoff.
 - Stop all registered workspaces:
   - `tt down --all`
 
+### 6) Workflow automation
+
+- Run a named workflow:
+  - `tt run <workflow>`
+- Dry-run resolution:
+  - `tt run <workflow> --dry-run`
+- Run verification workflow:
+  - `tt verify`
+  - `tt verify --workflow <name>`
+
+Hook behavior in v1:
+- `agent_stop` hooks fire from explicit stop paths (`tt down`, `tt down --all`).
+- Hook defaults are fail-open unless configured fail-closed.
+
 ## Machine-Readable State Contract
 
 State files are written under:
@@ -110,6 +125,10 @@ Integration guidance:
 - Treat unknown `status` values as non-fatal; fallback to `Unknown`.
 - Do not assume strict enum-only values (auth failure strings may include details).
 - Use timestamps to detect stale/crashed behavior heuristically.
+
+Automation state files:
+- `.tutti/state/automation-runs.jsonl`: append-only execution records (workflow/hook runs).
+- `.tutti/state/verify-last.json`: last verification summary (`workflow_name`, `success`, `failed_steps`, `strict`, `agent_scope`).
 
 ## Failure Handling Contract
 

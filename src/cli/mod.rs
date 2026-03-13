@@ -5,11 +5,13 @@ pub mod down;
 pub mod init;
 pub mod logs;
 pub mod peek;
+pub mod run;
 pub mod snapshot;
 pub mod status;
 pub mod switch;
 pub mod up;
 pub mod usage;
+pub mod verify;
 pub mod watch;
 pub mod workspaces;
 
@@ -114,6 +116,39 @@ pub enum Commands {
 
     /// Fuzzy picker for running agents; attach with Enter
     Switch,
+
+    /// Run a reusable workflow (prompt + command steps)
+    Run {
+        /// Workflow name
+        workflow: String,
+
+        /// Override target agent for agent-scoped steps
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Force fail-closed behavior for command steps
+        #[arg(long)]
+        strict: bool,
+
+        /// Print resolved steps without executing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Run verification workflow and persist latest summary
+    Verify {
+        /// Workflow name (default: verify)
+        #[arg(long)]
+        workflow: Option<String>,
+
+        /// Override target agent for agent-scoped steps
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Fail on any step error
+        #[arg(long)]
+        strict: bool,
+    },
 
     /// Show API-profile capacity and token usage
     Usage {

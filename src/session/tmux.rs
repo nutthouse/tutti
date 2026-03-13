@@ -100,6 +100,47 @@ impl TmuxSession {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Send text to a running session and press Enter.
+    pub fn send_text(session: &str, text: &str) -> Result<()> {
+        if !Self::session_exists(session) {
+            return Err(TuttiError::TmuxError(format!(
+                "session '{}' is not running",
+                session
+            )));
+        }
+
+        // Preserve line boundaries: each line is sent literally, then Enter.
+        let lines: Vec<&str> = if text.is_empty() {
+            vec![""]
+        } else {
+            text.lines().collect()
+        };
+
+        for line in lines {
+            let out = Command::new("tmux")
+                .args(["send-keys", "-t", session, "-l", line])
+                .output()?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return Err(TuttiError::TmuxError(format!(
+                    "failed to send text to '{session}': {stderr}"
+                )));
+            }
+
+            let out = Command::new("tmux")
+                .args(["send-keys", "-t", session, "Enter"])
+                .output()?;
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return Err(TuttiError::TmuxError(format!(
+                    "failed to send Enter to '{session}': {stderr}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// List all tutti-prefixed tmux sessions.
     #[allow(dead_code)]
     pub fn list_tutti_sessions() -> Result<Vec<String>> {
