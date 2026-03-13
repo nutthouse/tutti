@@ -82,6 +82,10 @@ struct WorkflowListItem {
 
 fn print_workflow_list(config: &TuttiConfig, as_json: bool) -> Result<()> {
     if config.workflows.is_empty() {
+        if as_json {
+            println!("[]");
+            return Ok(());
+        }
         println!("No workflows configured.");
         println!("Add [[workflow]] entries to tutti.toml.");
         return Ok(());

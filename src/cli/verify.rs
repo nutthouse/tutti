@@ -3,9 +3,10 @@ use crate::automation::{
 };
 use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
-use crate::state::load_verify_last_summary;
+use crate::state::{VerifyLastSummary, load_verify_last_summary};
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
+use serde::Serialize;
 
 pub fn run(
     last: bool,
@@ -60,15 +61,23 @@ pub fn run(
 }
 
 fn print_last_summary(project_root: &std::path::Path, as_json: bool) -> Result<()> {
-    let Some(summary) = load_verify_last_summary(project_root)? else {
+    let summary = load_verify_last_summary(project_root)?;
+
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&VerifyLastResponse {
+                found: summary.is_some(),
+                summary,
+            })?
+        );
+        return Ok(());
+    }
+
+    let Some(summary) = summary else {
         println!("No verify summary found yet (.tutti/state/verify-last.json).");
         return Ok(());
     };
-
-    if as_json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-        return Ok(());
-    }
 
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
@@ -105,6 +114,12 @@ fn print_last_summary(project_root: &std::path::Path, as_json: bool) -> Result<(
 
     println!("{table}");
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyLastResponse {
+    found: bool,
+    summary: Option<VerifyLastSummary>,
 }
 
 fn format_failed_steps(steps: &[usize]) -> String {
