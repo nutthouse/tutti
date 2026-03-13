@@ -75,7 +75,7 @@ fn render_claude_export(policy: &PermissionsConfig) -> Result<String> {
     let allow: Vec<String> = policy
         .allow
         .iter()
-        .map(|entry| normalize(entry))
+        .map(normalize)
         .filter(|entry| !entry.is_empty())
         .map(|entry| format!("Bash({entry})"))
         .collect();

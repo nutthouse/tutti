@@ -1032,12 +1032,15 @@ max_concurrent = 5
 
     #[test]
     fn aggregated_usage_merge() {
-        let mut a = AggregatedUsage::default();
-        a.total = TokenUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_creation_input_tokens: 10,
-            cache_read_input_tokens: 5,
+        let mut a = AggregatedUsage {
+            total: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: 10,
+                cache_read_input_tokens: 5,
+            },
+            session_count: 1,
+            ..Default::default()
         };
         a.by_model.insert(
             "sonnet".to_string(),
@@ -1048,14 +1051,16 @@ max_concurrent = 5
                 cache_read_input_tokens: 5,
             },
         );
-        a.session_count = 1;
 
-        let mut b = AggregatedUsage::default();
-        b.total = TokenUsage {
-            input_tokens: 200,
-            output_tokens: 100,
-            cache_creation_input_tokens: 20,
-            cache_read_input_tokens: 10,
+        let mut b = AggregatedUsage {
+            total: TokenUsage {
+                input_tokens: 200,
+                output_tokens: 100,
+                cache_creation_input_tokens: 20,
+                cache_read_input_tokens: 10,
+            },
+            session_count: 2,
+            ..Default::default()
         };
         b.by_model.insert(
             "sonnet".to_string(),
@@ -1075,7 +1080,6 @@ max_concurrent = 5
                 cache_read_input_tokens: 2,
             },
         );
-        b.session_count = 2;
 
         a.merge(&b);
 

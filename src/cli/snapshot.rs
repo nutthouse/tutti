@@ -67,25 +67,25 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             (None, None)
         };
 
-        snapshots.push(build_snapshot(
-            &config.workspace.name,
-            &agent.name,
-            runtime_name,
+        snapshots.push(build_snapshot(SnapshotBuildArgs {
+            workspace_name: &config.workspace.name,
+            agent_name: &agent.name,
+            runtime: runtime_name,
             session,
             running,
-            detected,
+            detected_status: detected,
             ctx_pct,
-            tail,
+            tail_lines: tail,
             tail_error,
-        ));
+        }));
     }
 
     snapshots
 }
 
-fn build_snapshot(
-    workspace_name: &str,
-    agent_name: &str,
+struct SnapshotBuildArgs<'a> {
+    workspace_name: &'a str,
+    agent_name: &'a str,
     runtime: String,
     session: String,
     running: bool,
@@ -93,12 +93,14 @@ fn build_snapshot(
     ctx_pct: Option<u8>,
     tail_lines: Option<Vec<String>>,
     tail_error: Option<String>,
-) -> AgentSnapshot {
-    if !running {
+}
+
+fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
+    if !args.running {
         return AgentSnapshot {
-            workspace_name: workspace_name.to_string(),
-            agent_name: agent_name.to_string(),
-            runtime,
+            workspace_name: args.workspace_name.to_string(),
+            agent_name: args.agent_name.to_string(),
+            runtime: args.runtime,
             status_display: "Stopped".dimmed().to_string(),
             status_raw: "Stopped".to_string(),
             session_name: "—".to_string(),
@@ -109,19 +111,19 @@ fn build_snapshot(
         };
     }
 
-    let status = detected_status.unwrap_or(AgentStatus::Unknown);
+    let status = args.detected_status.unwrap_or(AgentStatus::Unknown);
 
     AgentSnapshot {
-        workspace_name: workspace_name.to_string(),
-        agent_name: agent_name.to_string(),
-        runtime,
+        workspace_name: args.workspace_name.to_string(),
+        agent_name: args.agent_name.to_string(),
+        runtime: args.runtime,
         status_display: format_status(&status),
         status_raw: status.to_string(),
-        session_name: session,
+        session_name: args.session,
         running: true,
-        ctx_pct,
-        tail_lines,
-        tail_error,
+        ctx_pct: args.ctx_pct,
+        tail_lines: args.tail_lines,
+        tail_error: args.tail_error,
     }
 }
 
@@ -254,17 +256,17 @@ mod tests {
 
     #[test]
     fn build_snapshot_running_uses_detected_status_and_session() {
-        let snapshot = build_snapshot(
-            "ws",
-            "backend",
-            "claude-code".to_string(),
-            "tutti-ws-backend".to_string(),
-            true,
-            Some(AgentStatus::Working),
-            Some(67),
-            Some(vec!["line".to_string()]),
-            None,
-        );
+        let snapshot = build_snapshot(SnapshotBuildArgs {
+            workspace_name: "ws",
+            agent_name: "backend",
+            runtime: "claude-code".to_string(),
+            session: "tutti-ws-backend".to_string(),
+            running: true,
+            detected_status: Some(AgentStatus::Working),
+            ctx_pct: Some(67),
+            tail_lines: Some(vec!["line".to_string()]),
+            tail_error: None,
+        });
 
         assert_eq!(snapshot.workspace_name, "ws");
         assert_eq!(snapshot.agent_name, "backend");
@@ -277,17 +279,17 @@ mod tests {
 
     #[test]
     fn build_snapshot_stopped_sets_stopped_defaults() {
-        let snapshot = build_snapshot(
-            "ws",
-            "frontend",
-            "codex".to_string(),
-            "tutti-ws-frontend".to_string(),
-            false,
-            Some(AgentStatus::Working),
-            Some(52),
-            Some(vec!["ignored".to_string()]),
-            Some("ignored".to_string()),
-        );
+        let snapshot = build_snapshot(SnapshotBuildArgs {
+            workspace_name: "ws",
+            agent_name: "frontend",
+            runtime: "codex".to_string(),
+            session: "tutti-ws-frontend".to_string(),
+            running: false,
+            detected_status: Some(AgentStatus::Working),
+            ctx_pct: Some(52),
+            tail_lines: Some(vec!["ignored".to_string()]),
+            tail_error: Some("ignored".to_string()),
+        });
 
         assert_eq!(snapshot.workspace_name, "ws");
         assert_eq!(snapshot.agent_name, "frontend");
