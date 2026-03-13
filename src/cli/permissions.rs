@@ -1,8 +1,8 @@
 use crate::cli::PermissionsSubcommand;
 use crate::config::{GlobalConfig, PermissionsConfig, global_config_path};
 use crate::error::{Result, TuttiError};
+use crate::permissions::{normalize, render_claude_settings};
 use serde::Serialize;
-use serde_json::json;
 use std::path::Path;
 
 pub fn run(command: PermissionsSubcommand) -> Result<()> {
@@ -106,30 +106,12 @@ fn run_export(runtime: &str, output: Option<&Path>) -> Result<()> {
 
 fn render_export(runtime: &str, policy: &PermissionsConfig) -> Result<String> {
     match normalize(runtime).to_ascii_lowercase().as_str() {
-        "claude" | "claude-code" => render_claude_export(policy),
+        "claude" | "claude-code" => render_claude_settings(policy),
         other => Err(TuttiError::ConfigValidation(format!(
             "unsupported runtime '{}'; supported: claude",
             other
         ))),
     }
-}
-
-fn render_claude_export(policy: &PermissionsConfig) -> Result<String> {
-    let allow: Vec<String> = policy
-        .allow
-        .iter()
-        .map(normalize)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| format!("Bash({entry})"))
-        .collect();
-
-    let payload = json!({
-        "permissions": {
-            "allow": allow
-        }
-    });
-
-    serde_json::to_string_pretty(&payload).map_err(Into::into)
 }
 
 fn matching_allow_rule<'a>(policy: &'a PermissionsConfig, command_line: &str) -> Option<&'a str> {
@@ -162,14 +144,6 @@ fn matching_allow_rule<'a>(policy: &'a PermissionsConfig, command_line: &str) ->
     }
 
     None
-}
-
-fn normalize<S: AsRef<str>>(input: S) -> String {
-    input
-        .as_ref()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]
@@ -212,11 +186,11 @@ mod tests {
     }
 
     #[test]
-    fn render_claude_export_wraps_allow_entries_as_bash_permissions() {
+    fn render_claude_settings_wraps_allow_entries_as_bash_permissions() {
         let policy = PermissionsConfig {
             allow: vec!["git status".to_string(), "cargo test --quiet".to_string()],
         };
-        let rendered = render_claude_export(&policy).expect("render should succeed");
+        let rendered = render_claude_settings(&policy).expect("render should succeed");
         assert!(rendered.contains("Bash(git status)"));
         assert!(rendered.contains("Bash(cargo test --quiet)"));
     }

@@ -21,6 +21,16 @@ description = "My project workspace"
 worktree = true           # git worktree isolation per agent
 runtime = "claude-code"   # default runtime for agents
 
+# Launch autonomy settings (optional)
+# [launch]
+# mode = "auto"            # safe | auto | unattended
+# policy = "constrained"   # constrained | bypass
+#
+# Notes:
+# - mode = "auto" runs non-interactive and policy-constrained (best default for agent autonomy).
+# - constrained mode requires [permissions] in ~/.config/tutti/config.toml.
+# - mode = "unattended" + policy = "bypass" is highest autonomy and highest risk.
+
 # Define your agents — each gets its own terminal session
 [[agent]]
 name = "backend"

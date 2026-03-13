@@ -331,7 +331,8 @@ fn detect_and_handle_crashes(
                 if can_attempt {
                     last_restart_attempt.insert(snapshot.agent_name.clone(), Instant::now());
                     ui.suspend()?;
-                    let restart_result = super::up::run(Some(&snapshot.agent_name), None, false);
+                    let restart_result =
+                        super::up::run(Some(&snapshot.agent_name), None, false, None, None);
                     ui.resume()?;
 
                     latest_event = Some(match restart_result {
@@ -559,6 +560,7 @@ mod tests {
                 }),
             },
             defaults: DefaultsConfig::default(),
+            launch: None,
             agents: agents
                 .iter()
                 .map(|name| AgentConfig {

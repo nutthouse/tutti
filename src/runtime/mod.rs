@@ -42,8 +42,13 @@ pub trait RuntimeAdapter {
     /// Check if the runtime CLI is available on PATH.
     fn is_available(&self) -> bool;
 
+    /// Build the shell command string to spawn this runtime with additional pre-args.
+    fn build_spawn_command_with_args(&self, pre_args: &[String], prompt: Option<&str>) -> String;
+
     /// Build the shell command string to spawn this runtime.
-    fn build_spawn_command(&self, prompt: Option<&str>) -> String;
+    fn build_spawn_command(&self, prompt: Option<&str>) -> String {
+        self.build_spawn_command_with_args(&[], prompt)
+    }
 
     /// Detect agent status from captured terminal output.
     fn detect_status(&self, terminal_output: &str) -> AgentStatus;
@@ -79,15 +84,30 @@ impl RuntimeAdapter for CommonAdapter {
         which::which(self.command_name()).is_ok()
     }
 
-    fn build_spawn_command(&self, prompt: Option<&str>) -> String {
+    fn build_spawn_command_with_args(&self, pre_args: &[String], prompt: Option<&str>) -> String {
         let cmd = self.command_name();
+        let mut command = cmd.to_string();
+
+        for arg in pre_args {
+            command.push(' ');
+            command.push_str(&shell_escape(arg));
+        }
+
         match prompt {
             Some(p) if self.config.prompt_flag.is_empty() => {
-                format!("{cmd} {}", shell_escape(p))
+                command.push(' ');
+                command.push_str(&shell_escape(p));
             }
-            Some(p) => format!("{cmd} {} {}", self.config.prompt_flag, shell_escape(p)),
-            None => cmd.to_string(),
+            Some(p) => {
+                command.push(' ');
+                command.push_str(self.config.prompt_flag);
+                command.push(' ');
+                command.push_str(&shell_escape(p));
+            }
+            None => {}
         }
+
+        command
     }
 
     fn detect_status(&self, terminal_output: &str) -> AgentStatus {
@@ -378,5 +398,21 @@ mod tests {
             compatible_command_override("claude-code", Some("openai"), Some("codex")),
             None
         );
+    }
+
+    #[test]
+    fn spawn_command_with_pre_args_quotes_values() {
+        let a = adapter("claude-code");
+        let args = vec![
+            "--permission-mode".to_string(),
+            "dontAsk".to_string(),
+            "--settings".to_string(),
+            "/tmp/my settings.json".to_string(),
+        ];
+        let cmd = a.build_spawn_command_with_args(&args, Some("hello"));
+        assert!(cmd.contains("'--permission-mode'"));
+        assert!(cmd.contains("'dontAsk'"));
+        assert!(cmd.contains("'/tmp/my settings.json'"));
+        assert!(cmd.ends_with("'hello'"));
     }
 }

@@ -42,7 +42,13 @@ pub struct VerifyLastSummary {
 /// Ensure the .tutti/ directory structure exists.
 pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
     let tutti_dir = project_root.join(".tutti");
-    let subdirs = ["state", "worktrees", "handoffs", "logs"];
+    let subdirs = [
+        "state",
+        "state/runtime-settings",
+        "worktrees",
+        "handoffs",
+        "logs",
+    ];
 
     for subdir in &subdirs {
         std::fs::create_dir_all(tutti_dir.join(subdir))?;
@@ -256,6 +262,7 @@ mod tests {
         ensure_tutti_dir(&dir).unwrap();
 
         assert!(dir.join(".tutti/state").exists());
+        assert!(dir.join(".tutti/state/runtime-settings").exists());
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());

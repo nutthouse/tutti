@@ -2,6 +2,7 @@ mod automation;
 mod cli;
 mod config;
 mod error;
+mod permissions;
 mod runtime;
 mod session;
 mod state;
@@ -21,7 +22,9 @@ fn main() {
             ref agent,
             ref workspace,
             all,
-        } => cli::up::run(agent.as_deref(), workspace.as_deref(), all),
+            mode,
+            policy,
+        } => cli::up::run(agent.as_deref(), workspace.as_deref(), all, mode, policy),
         Commands::Down {
             ref agent,
             ref workspace,

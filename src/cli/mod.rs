@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 pub mod attach;
 pub mod doctor;
@@ -43,6 +43,14 @@ pub enum Commands {
         /// Launch all agents in all registered workspaces
         #[arg(long)]
         all: bool,
+
+        /// Launch behavior for permission handling
+        #[arg(long, value_enum)]
+        mode: Option<UpLaunchMode>,
+
+        /// Policy behavior when mode is unattended
+        #[arg(long, value_enum)]
+        policy: Option<UpLaunchPolicy>,
     },
 
     /// Stop agent sessions
@@ -222,6 +230,19 @@ pub enum Commands {
 pub enum WorkspacesSubcommand {
     /// Show status overview of all workspaces
     Status,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum UpLaunchMode {
+    Safe,
+    Auto,
+    Unattended,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum UpLaunchPolicy {
+    Constrained,
+    Bypass,
 }
 
 #[derive(Subcommand)]

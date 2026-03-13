@@ -1,5 +1,6 @@
-use crate::config::{GlobalConfig, ToolPackConfig, TuttiConfig};
+use crate::config::{GlobalConfig, LaunchMode, LaunchPolicyMode, ToolPackConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
+use crate::permissions::has_configured_policy;
 use crate::runtime;
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
@@ -80,6 +81,7 @@ fn evaluate_checks(
     env_exists: &dyn Fn(&str) -> bool,
 ) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
+    let launch_settings = resolve_launch_settings(config);
 
     checks.push(if command_exists("tmux") {
         DoctorCheck {
@@ -141,6 +143,53 @@ fn evaluate_checks(
         }),
     }
 
+    let launch_targets_supported_runtime = config.agents.iter().any(|agent| {
+        agent
+            .resolved_runtime(&config.defaults)
+            .as_deref()
+            .is_some_and(|rt| matches!(rt, "claude-code" | "codex"))
+    });
+    let policy_configured = has_configured_policy(global);
+    if launch_requires_constrained_policy(launch_settings) && launch_targets_supported_runtime {
+        if policy_configured {
+            checks.push(DoctorCheck {
+                check: "launch policy".to_string(),
+                status: DoctorStatus::Pass,
+                detail: "constrained non-interactive launch policy is configured".to_string(),
+            });
+        } else {
+            checks.push(DoctorCheck {
+                check: "launch policy".to_string(),
+                status: DoctorStatus::Fail,
+                detail: "launch mode requires [permissions] allow rules for constrained non-interactive runs".to_string(),
+            });
+        }
+    }
+
+    if launch_uses_bypass(launch_settings) && launch_targets_supported_runtime {
+        checks.push(DoctorCheck {
+            check: "launch policy".to_string(),
+            status: DoctorStatus::Warn,
+            detail: "bypass launch mode disables approval prompts for supported runtimes"
+                .to_string(),
+        });
+    }
+
+    if launch_requires_constrained_policy(launch_settings)
+        && config.agents.iter().any(|agent| {
+            agent
+                .resolved_runtime(&config.defaults)
+                .as_deref()
+                .is_some_and(|rt| rt == "codex")
+        })
+    {
+        checks.push(DoctorCheck {
+            check: "launch/codex".to_string(),
+            status: DoctorStatus::Warn,
+            detail: "codex constrained mode is best-effort; hard allowlist enforcement is currently Claude-only".to_string(),
+        });
+    }
+
     for agent in &config.agents {
         let Some(runtime_name) = agent.resolved_runtime(&config.defaults) else {
             checks.push(DoctorCheck {
@@ -196,6 +245,37 @@ fn evaluate_checks(
     }
 
     checks
+}
+
+fn resolve_launch_settings(config: &TuttiConfig) -> (LaunchMode, LaunchPolicyMode) {
+    let mode = config
+        .launch
+        .as_ref()
+        .map(|launch| launch.mode)
+        .unwrap_or(LaunchMode::Auto);
+    let policy = config
+        .launch
+        .as_ref()
+        .map(|launch| launch.policy)
+        .unwrap_or(LaunchPolicyMode::Constrained);
+    (mode, policy)
+}
+
+fn launch_requires_constrained_policy(settings: (LaunchMode, LaunchPolicyMode)) -> bool {
+    let (mode, policy) = settings;
+    if mode == LaunchMode::Safe {
+        return false;
+    }
+    match mode {
+        LaunchMode::Auto => true,
+        LaunchMode::Unattended => policy == LaunchPolicyMode::Constrained,
+        LaunchMode::Safe => false,
+    }
+}
+
+fn launch_uses_bypass(settings: (LaunchMode, LaunchPolicyMode)) -> bool {
+    let (mode, policy) = settings;
+    mode == LaunchMode::Unattended && policy == LaunchPolicyMode::Bypass
 }
 
 fn check_tool_packs(
@@ -305,6 +385,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            launch: None,
             agents: vec![AgentConfig {
                 name: "backend".to_string(),
                 runtime: None,
@@ -464,5 +545,39 @@ mod tests {
         assert_eq!(report.summary.pass, 1);
         assert_eq!(report.summary.warn, 1);
         assert_eq!(report.summary.fail, 1);
+    }
+
+    #[test]
+    fn fails_when_launch_requires_policy_but_permissions_missing() {
+        let config = sample_config(None);
+        let global = GlobalConfig::default();
+        let checks = evaluate_checks(&config, &global, &|_| true, &|_| true);
+
+        assert!(checks.iter().any(|c| {
+            c.check == "launch policy"
+                && c.status == DoctorStatus::Fail
+                && c.detail.contains("[permissions]")
+        }));
+    }
+
+    #[test]
+    fn warns_when_bypass_launch_mode_selected() {
+        let mut config = sample_config(None);
+        config.launch = Some(crate::config::LaunchConfig {
+            mode: crate::config::LaunchMode::Unattended,
+            policy: crate::config::LaunchPolicyMode::Bypass,
+        });
+        let checks = evaluate_checks(
+            &config,
+            &GlobalConfig::default(),
+            &|cmd| cmd == "tmux" || cmd == "claude",
+            &|_| true,
+        );
+
+        assert!(checks.iter().any(|c| {
+            c.check == "launch policy"
+                && c.status == DoctorStatus::Warn
+                && c.detail.contains("bypass")
+        }));
     }
 }

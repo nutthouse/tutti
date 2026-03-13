@@ -52,12 +52,17 @@ Avoid:
 
 - Start all configured agents:
   - `tt up`
+- Override launch autonomy mode:
+  - `tt up --mode safe`
+  - `tt up --mode auto`
+  - `tt up --mode unattended --policy constrained|bypass`
 - Start a single agent:
   - `tt up <agent>`
 
 Expected behavior:
 - Idempotent for already-running sessions (skips instead of hard-failing).
 - Non-zero exit when runtime/config constraints fail.
+- In constrained non-interactive mode, `tt up` fails fast when `[permissions]` is missing.
 
 ### 3) Observe
 
@@ -117,6 +122,9 @@ Hook behavior in v1:
 Policy notes:
 - Policy is opt-in via `[permissions]` in `~/.config/tutti/config.toml`.
 - When policy is absent, Tutti allows commands and reports that policy is not configured.
+- `tt up` launch integration:
+  - Claude constrained mode: auto-generates a runtime settings file and launches with `--permission-mode dontAsk`.
+  - Codex constrained mode: uses non-interactive flags (`-a never -s workspace-write`) plus policy guidance prompt (best-effort).
 
 ## Machine-Readable State Contract
 

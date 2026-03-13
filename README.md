@@ -8,6 +8,9 @@ No new subscriptions. No API keys. No vendor lock-in. Bring your own agents.
 
 ```
 tt up                    # launch your agent team from a tutti.toml
+tt up --mode safe        # keep interactive permission prompts
+tt up --mode unattended --policy bypass
+                         # max autonomy (highest risk)
 tt status                # see what every agent is doing right now
 tt usage --by-workspace  # inspect API-profile token usage + plan %
 tt watch                 # interactive terminal status dashboard
@@ -131,6 +134,10 @@ default_profile = "claude-personal" # profile from ~/.config/tutti/config.toml
 worktree = true
 runtime = "claude-code"
 
+[launch]
+mode = "auto"            # safe | auto | unattended
+policy = "constrained"   # constrained | bypass
+
 [[agent]]
 name = "backend"
 runtime = "claude-code"          # or "codex", "aider", "gemini-cli", etc.
@@ -166,6 +173,7 @@ weekly_hours = 45.0
 
 `tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
+With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
 
 Optional tool packs can be declared per workspace and validated with `tt doctor`:
 
@@ -235,6 +243,9 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Team-shared command allowlist in `~/.config/tutti/config.toml` under `[permissions]`
 - `tt permissions check <command...>` evaluates command prefixes against policy
 - `tt permissions export --runtime claude` emits a Claude settings scaffold
+- `tt up` auto-wires constrained non-interactive policy for Claude sessions
+- Codex constrained mode is best-effort (prompt-level policy guidance + non-interactive flags)
+- If constrained non-interactive launch is selected without policy, `tt up` fails with guidance
 
 ### Tool Packs (Built, Opt-in)
 - Declarative `[[tool_pack]]` blocks in `tutti.toml` (`required_commands`, `required_env`)

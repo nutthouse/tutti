@@ -652,6 +652,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            launch: None,
             agents: vec![AgentConfig {
                 name: "backend".to_string(),
                 runtime: Some("claude-code".to_string()),

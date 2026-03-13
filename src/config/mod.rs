@@ -12,6 +12,8 @@ pub struct TuttiConfig {
     pub workspace: WorkspaceConfig,
     #[serde(default)]
     pub defaults: DefaultsConfig,
+    #[serde(default)]
+    pub launch: Option<LaunchConfig>,
     #[serde(default, rename = "agent")]
     pub agents: Vec<AgentConfig>,
     #[serde(default, rename = "tool_pack")]
@@ -60,6 +62,29 @@ pub struct DefaultsConfig {
     pub worktree: bool,
     #[serde(default)]
     pub runtime: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchMode {
+    Safe,
+    Auto,
+    Unattended,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchPolicyMode {
+    Constrained,
+    Bypass,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchConfig {
+    #[serde(default = "default_launch_mode")]
+    pub mode: LaunchMode,
+    #[serde(default = "default_launch_policy_mode")]
+    pub policy: LaunchPolicyMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +285,14 @@ fn default_true() -> bool {
 
 fn default_threshold() -> f64 {
     0.2
+}
+
+fn default_launch_mode() -> LaunchMode {
+    LaunchMode::Auto
+}
+
+fn default_launch_policy_mode() -> LaunchPolicyMode {
+    LaunchPolicyMode::Constrained
 }
 
 fn default_port() -> u16 {
@@ -683,6 +716,44 @@ track_cost = true
         assert_eq!(config.agents[2].depends_on, vec!["site", "pipeline"]);
         assert!(config.handoff.unwrap().auto);
         assert_eq!(config.observe.unwrap().port, 4040);
+    }
+
+    #[test]
+    fn parse_launch_config() {
+        let toml_str = r#"
+[workspace]
+name = "test-project"
+
+[launch]
+mode = "unattended"
+policy = "bypass"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let launch = config.launch.expect("launch config should parse");
+        assert_eq!(launch.mode, LaunchMode::Unattended);
+        assert_eq!(launch.policy, LaunchPolicyMode::Bypass);
+    }
+
+    #[test]
+    fn parse_launch_defaults_when_fields_missing() {
+        let toml_str = r#"
+[workspace]
+name = "test-project"
+
+[launch]
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let launch = config.launch.expect("launch config should parse");
+        assert_eq!(launch.mode, LaunchMode::Auto);
+        assert_eq!(launch.policy, LaunchPolicyMode::Constrained);
     }
 
     #[test]

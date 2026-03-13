@@ -1,5 +1,9 @@
-use crate::config::{GlobalConfig, TuttiConfig, topological_sort};
+use crate::config::{
+    GlobalConfig, LaunchMode, LaunchPolicyMode, PermissionsConfig, TuttiConfig, global_config_path,
+    topological_sort,
+};
 use crate::error::{Result, TuttiError};
+use crate::permissions::{has_configured_policy, normalize, render_claude_settings};
 use crate::runtime;
 use crate::session::TmuxSession;
 use crate::state;
@@ -15,11 +19,46 @@ struct ProfileLimit {
     max_concurrent: u32,
 }
 
-pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LaunchSettings {
+    mode: LaunchMode,
+    policy: LaunchPolicyMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LaunchCommandWarnings {
+    codex_constrained_best_effort: bool,
+    bypass_mode: bool,
+}
+
+impl LaunchSettings {
+    fn effective_policy(self) -> LaunchPolicyMode {
+        match self.mode {
+            LaunchMode::Auto => LaunchPolicyMode::Constrained,
+            _ => self.policy,
+        }
+    }
+
+    fn requires_constrained_policy(self) -> bool {
+        self.effective_policy() == LaunchPolicyMode::Constrained && self.mode != LaunchMode::Safe
+    }
+
+    fn is_bypass(self) -> bool {
+        self.effective_policy() == LaunchPolicyMode::Bypass && self.mode != LaunchMode::Safe
+    }
+}
+
+pub fn run(
+    agent_filter: Option<&str>,
+    workspace_name: Option<&str>,
+    all: bool,
+    mode_override: Option<super::UpLaunchMode>,
+    policy_override: Option<super::UpLaunchPolicy>,
+) -> Result<()> {
     crate::session::tmux::check_tmux()?;
 
     if all {
-        return run_all();
+        return run_all(mode_override, policy_override);
     }
 
     let (config, config_path) = if let Some(ws) = workspace_name {
@@ -29,6 +68,7 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
         TuttiConfig::load(&cwd)?
     };
     config.validate()?;
+    let launch_settings = resolve_launch_settings(&config, mode_override, policy_override);
 
     let project_root = config_path.parent().unwrap();
     state::ensure_tutti_dir(project_root)?;
@@ -68,9 +108,13 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
         // Use topological sort for dependency ordering
         topological_sort(&config.agents)?
     };
+    let permissions_policy =
+        resolve_launch_permissions(global.as_ref(), &config, &agents, launch_settings)?;
 
     let mut launched = Vec::new();
     let mut refused_by_limit = false;
+    let mut warned_codex_constrained = false;
+    let mut warned_bypass = false;
 
     for agent in &agents {
         let runtime_name = agent.resolved_runtime(&config.defaults).ok_or_else(|| {
@@ -140,7 +184,29 @@ pub fn run(agent_filter: Option<&str>, workspace_name: Option<&str>, all: bool) 
             env.insert(k.clone(), v.clone());
         }
 
-        let cmd = adapter.build_spawn_command(agent.prompt.as_deref());
+        let (cmd, warnings) = build_launch_command(
+            adapter.as_ref(),
+            &runtime_name,
+            launch_settings,
+            permissions_policy,
+            project_root,
+            &agent.name,
+            agent.prompt.as_deref(),
+        )?;
+        if warnings.codex_constrained_best_effort && !warned_codex_constrained {
+            eprintln!(
+                "  {} codex constrained mode is best-effort; hard allowlist enforcement is currently Claude-only",
+                "warn".yellow()
+            );
+            warned_codex_constrained = true;
+        }
+        if warnings.bypass_mode && !warned_bypass {
+            eprintln!(
+                "  {} launch policy is bypass; commands may run without permission prompts",
+                "warn".yellow()
+            );
+            warned_bypass = true;
+        }
         TmuxSession::create_session(&session, &working_dir, &cmd, &env)?;
 
         // Save state
@@ -215,6 +281,221 @@ fn build_workspace_env(config: &TuttiConfig) -> HashMap<String, String> {
     }
 
     env
+}
+
+fn resolve_launch_settings(
+    config: &TuttiConfig,
+    mode_override: Option<super::UpLaunchMode>,
+    policy_override: Option<super::UpLaunchPolicy>,
+) -> LaunchSettings {
+    let mode = mode_override
+        .map(map_mode_override)
+        .or(config.launch.as_ref().map(|launch| launch.mode))
+        .unwrap_or(LaunchMode::Auto);
+
+    let policy = policy_override
+        .map(map_policy_override)
+        .or(config.launch.as_ref().map(|launch| launch.policy))
+        .unwrap_or(LaunchPolicyMode::Constrained);
+
+    LaunchSettings { mode, policy }
+}
+
+fn map_mode_override(mode: super::UpLaunchMode) -> LaunchMode {
+    match mode {
+        super::UpLaunchMode::Safe => LaunchMode::Safe,
+        super::UpLaunchMode::Auto => LaunchMode::Auto,
+        super::UpLaunchMode::Unattended => LaunchMode::Unattended,
+    }
+}
+
+fn map_policy_override(policy: super::UpLaunchPolicy) -> LaunchPolicyMode {
+    match policy {
+        super::UpLaunchPolicy::Constrained => LaunchPolicyMode::Constrained,
+        super::UpLaunchPolicy::Bypass => LaunchPolicyMode::Bypass,
+    }
+}
+
+fn resolve_launch_permissions<'a>(
+    global: Option<&'a GlobalConfig>,
+    config: &TuttiConfig,
+    agents: &[&crate::config::AgentConfig],
+    launch_settings: LaunchSettings,
+) -> Result<Option<&'a PermissionsConfig>> {
+    let policy = global.and_then(|g| {
+        if has_configured_policy(g) {
+            g.permissions.as_ref()
+        } else {
+            None
+        }
+    });
+
+    if !launch_settings.requires_constrained_policy() {
+        return Ok(policy);
+    }
+
+    let needs_supported_runtime_policy = agents.iter().any(|agent| {
+        agent
+            .resolved_runtime(&config.defaults)
+            .as_deref()
+            .is_some_and(runtime_supports_policy_constrained_no_prompt)
+    });
+    if !needs_supported_runtime_policy {
+        return Ok(policy);
+    }
+
+    if policy.is_some() {
+        return Ok(policy);
+    }
+
+    let path = global_config_path();
+    Err(TuttiError::ConfigValidation(format!(
+        "launch mode requires [permissions] allow rules in {} for constrained non-interactive runs. Configure [permissions], or run `tt up --mode safe`, or run `tt up --mode unattended --policy bypass`",
+        path.display()
+    )))
+}
+
+fn runtime_supports_policy_constrained_no_prompt(runtime_name: &str) -> bool {
+    matches!(runtime_name, "claude-code" | "codex")
+}
+
+fn build_launch_command(
+    adapter: &dyn runtime::RuntimeAdapter,
+    runtime_name: &str,
+    launch_settings: LaunchSettings,
+    permissions_policy: Option<&PermissionsConfig>,
+    project_root: &Path,
+    agent_name: &str,
+    base_prompt: Option<&str>,
+) -> Result<(String, LaunchCommandWarnings)> {
+    if launch_settings.mode == LaunchMode::Safe {
+        return Ok((
+            adapter.build_spawn_command(base_prompt),
+            LaunchCommandWarnings {
+                codex_constrained_best_effort: false,
+                bypass_mode: false,
+            },
+        ));
+    }
+
+    if launch_settings.is_bypass() {
+        let pre_args = match runtime_name {
+            "claude-code" => vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
+            "codex" => vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
+            _ => vec![],
+        };
+        let cmd = adapter.build_spawn_command_with_args(&pre_args, base_prompt);
+        return Ok((
+            cmd,
+            LaunchCommandWarnings {
+                codex_constrained_best_effort: false,
+                bypass_mode: !pre_args.is_empty(),
+            },
+        ));
+    }
+
+    match runtime_name {
+        "claude-code" => {
+            let policy = permissions_policy.ok_or_else(|| {
+                TuttiError::ConfigValidation(
+                    "claude constrained launch requires configured [permissions] policy"
+                        .to_string(),
+                )
+            })?;
+            let settings_path = write_claude_settings_file(project_root, agent_name, policy)?;
+            let pre_args = vec![
+                "--permission-mode".to_string(),
+                "dontAsk".to_string(),
+                "--settings".to_string(),
+                settings_path.display().to_string(),
+            ];
+            Ok((
+                adapter.build_spawn_command_with_args(&pre_args, base_prompt),
+                LaunchCommandWarnings {
+                    codex_constrained_best_effort: false,
+                    bypass_mode: false,
+                },
+            ))
+        }
+        "codex" => {
+            let policy = permissions_policy.ok_or_else(|| {
+                TuttiError::ConfigValidation(
+                    "codex constrained launch requires configured [permissions] policy".to_string(),
+                )
+            })?;
+            let policy_appendix = codex_policy_appendix(policy);
+            let prompt = append_policy_prompt(base_prompt, &policy_appendix);
+            let pre_args = vec![
+                "-a".to_string(),
+                "never".to_string(),
+                "-s".to_string(),
+                "workspace-write".to_string(),
+            ];
+            Ok((
+                adapter.build_spawn_command_with_args(&pre_args, prompt.as_deref()),
+                LaunchCommandWarnings {
+                    codex_constrained_best_effort: true,
+                    bypass_mode: false,
+                },
+            ))
+        }
+        _ => Ok((
+            adapter.build_spawn_command(base_prompt),
+            LaunchCommandWarnings {
+                codex_constrained_best_effort: false,
+                bypass_mode: false,
+            },
+        )),
+    }
+}
+
+fn write_claude_settings_file(
+    project_root: &Path,
+    agent_name: &str,
+    policy: &PermissionsConfig,
+) -> Result<std::path::PathBuf> {
+    let settings_dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("runtime-settings");
+    std::fs::create_dir_all(&settings_dir)?;
+    let settings_path = settings_dir.join(format!("{agent_name}-claude-settings.json"));
+    let rendered = render_claude_settings(policy)?;
+    std::fs::write(&settings_path, format!("{rendered}\n"))?;
+    Ok(settings_path)
+}
+
+fn codex_policy_appendix(policy: &PermissionsConfig) -> String {
+    let rules: Vec<String> = policy
+        .allow
+        .iter()
+        .map(normalize)
+        .filter(|entry| !entry.is_empty())
+        .collect();
+
+    let mut out = String::from(
+        "Tutti policy constraints (best-effort for Codex):\n\
+         Only execute Bash commands matching one of these allow rules:\n",
+    );
+    for rule in &rules {
+        out.push_str("- ");
+        out.push_str(rule);
+        out.push('\n');
+    }
+    out.push_str(
+        "If a required command is outside policy, do not run it. Report the blocked command and why.",
+    );
+    out
+}
+
+fn append_policy_prompt(base_prompt: Option<&str>, appendix: &str) -> Option<String> {
+    match base_prompt.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(base) => Some(format!("{base}\n\n{appendix}")),
+        None => Some(appendix.to_string()),
+    }
 }
 
 /// Resolve a runtime-compatible command override from the workspace profile.
@@ -386,7 +667,10 @@ pub fn load_workspace_by_name(ws_name: &str) -> Result<(TuttiConfig, std::path::
 }
 
 /// Launch all agents in all registered workspaces.
-fn run_all() -> Result<()> {
+fn run_all(
+    mode_override: Option<super::UpLaunchMode>,
+    policy_override: Option<super::UpLaunchPolicy>,
+) -> Result<()> {
     let global = crate::config::GlobalConfig::load()?;
     if global.registered_workspaces.is_empty() {
         println!("No registered workspaces. Run `tt init` in your projects first.");
@@ -413,6 +697,8 @@ fn run_all() -> Result<()> {
                     eprintln!("  Skipping {} (invalid config): {e}", ws.name);
                     continue;
                 }
+                let launch_settings =
+                    resolve_launch_settings(&config, mode_override, policy_override);
                 let project_root = config_path.parent().unwrap();
                 state::ensure_tutti_dir(project_root)?;
 
@@ -427,6 +713,10 @@ fn run_all() -> Result<()> {
                         continue;
                     }
                 };
+                let permissions_policy =
+                    resolve_launch_permissions(Some(&global), &config, &sorted, launch_settings)?;
+                let mut warned_codex_constrained = false;
+                let mut warned_bypass = false;
 
                 for agent in sorted {
                     let runtime_name = match agent.resolved_runtime(&config.defaults) {
@@ -480,7 +770,35 @@ fn run_all() -> Result<()> {
                     }
 
                     let working_dir = project_root.to_str().unwrap().to_string();
-                    let cmd = adapter.build_spawn_command(agent.prompt.as_deref());
+                    let (cmd, warnings) = match build_launch_command(
+                        adapter.as_ref(),
+                        &runtime_name,
+                        launch_settings,
+                        permissions_policy,
+                        project_root,
+                        &agent.name,
+                        agent.prompt.as_deref(),
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("  Failed to prepare launch for {}: {e}", agent.name);
+                            continue;
+                        }
+                    };
+                    if warnings.codex_constrained_best_effort && !warned_codex_constrained {
+                        eprintln!(
+                            "  {} codex constrained mode is best-effort; hard allowlist enforcement is currently Claude-only",
+                            "warn".yellow()
+                        );
+                        warned_codex_constrained = true;
+                    }
+                    if warnings.bypass_mode && !warned_bypass {
+                        eprintln!(
+                            "  {} launch policy is bypass; commands may run without permission prompts",
+                            "warn".yellow()
+                        );
+                        warned_bypass = true;
+                    }
                     if let Err(e) = TmuxSession::create_session(&session, &working_dir, &cmd, &env)
                     {
                         eprintln!("  Failed to launch {}: {e}", agent.name);
@@ -519,7 +837,10 @@ fn run_all() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentConfig, DefaultsConfig, GlobalConfig, ProfileConfig, WorkspaceAuth};
+    use crate::config::{
+        AgentConfig, DefaultsConfig, GlobalConfig, LaunchConfig, LaunchMode, LaunchPolicyMode,
+        PermissionsConfig, ProfileConfig, WorkspaceAuth, WorkspaceConfig,
+    };
 
     fn make_agent(name: &str, deps: Vec<&str>) -> AgentConfig {
         AgentConfig {
@@ -608,6 +929,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            launch: None,
             agents: vec![],
             tool_packs: vec![],
             workflows: vec![],
@@ -640,6 +962,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            launch: None,
             agents: vec![],
             tool_packs: vec![],
             workflows: vec![],
@@ -673,6 +996,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            launch: None,
             agents: vec![],
             tool_packs: vec![],
             workflows: vec![],
@@ -719,6 +1043,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            launch: None,
             agents: vec![],
             tool_packs: vec![],
             workflows: vec![],
@@ -777,6 +1102,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("codex".to_string()),
             },
+            launch: None,
             agents: vec![],
             tool_packs: vec![],
             workflows: vec![],
@@ -824,6 +1150,7 @@ mod tests {
                 worktree: true,
                 runtime: Some("codex".to_string()),
             },
+            launch: None,
             agents: vec![],
             tool_packs: vec![],
             workflows: vec![],
@@ -854,5 +1181,106 @@ mod tests {
             resolve_profile_command_for_runtime(&config, Some(&global), "codex").as_deref(),
             Some("/opt/bin/codex-prod")
         );
+    }
+
+    #[test]
+    fn resolve_launch_settings_prefers_cli_over_workspace_config() {
+        let config = TuttiConfig {
+            workspace: WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: None,
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("claude-code".to_string()),
+            },
+            launch: Some(LaunchConfig {
+                mode: LaunchMode::Safe,
+                policy: LaunchPolicyMode::Bypass,
+            }),
+            agents: vec![],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+        };
+
+        let resolved = resolve_launch_settings(
+            &config,
+            Some(super::super::UpLaunchMode::Unattended),
+            Some(super::super::UpLaunchPolicy::Constrained),
+        );
+        assert_eq!(resolved.mode, LaunchMode::Unattended);
+        assert_eq!(resolved.policy, LaunchPolicyMode::Constrained);
+    }
+
+    #[test]
+    fn resolve_launch_permissions_requires_policy_for_constrained_supported_runtimes() {
+        let config = TuttiConfig {
+            workspace: WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: None,
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("claude-code".to_string()),
+            },
+            launch: None,
+            agents: vec![make_agent("backend", vec![])],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+        };
+        let launch_settings = LaunchSettings {
+            mode: LaunchMode::Auto,
+            policy: LaunchPolicyMode::Constrained,
+        };
+        let agents = topological_sort(&config.agents).expect("agents should sort");
+        let err = resolve_launch_permissions(
+            Some(&GlobalConfig::default()),
+            &config,
+            &agents,
+            launch_settings,
+        )
+        .expect_err("constrained launch should require policy");
+        assert!(err.to_string().contains("[permissions]"));
+    }
+
+    #[test]
+    fn build_launch_command_codex_constrained_adds_flags_and_policy_prompt() {
+        let adapter = runtime::get_adapter("codex", None).expect("codex adapter");
+        let dir = std::env::temp_dir().join(format!("tutti-test-up-codex-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let policy = PermissionsConfig {
+            allow: vec!["git status".to_string(), "cargo test".to_string()],
+        };
+
+        let (cmd, warnings) = build_launch_command(
+            adapter.as_ref(),
+            "codex",
+            LaunchSettings {
+                mode: LaunchMode::Auto,
+                policy: LaunchPolicyMode::Constrained,
+            },
+            Some(&policy),
+            &dir,
+            "backend",
+            Some("You own tests."),
+        )
+        .expect("command should build");
+
+        assert!(cmd.contains("'-a' 'never' '-s' 'workspace-write'"));
+        assert!(cmd.contains("--prompt"));
+        assert!(cmd.contains("Tutti policy constraints"));
+        assert!(warnings.codex_constrained_best_effort);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
