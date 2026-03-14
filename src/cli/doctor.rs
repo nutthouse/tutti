@@ -485,6 +485,7 @@ mod tests {
                 prompt: None,
                 depends_on: vec![],
                 worktree: None,
+                fresh_worktree: None,
                 branch: None,
                 persistent: false,
                 env: HashMap::new(),

@@ -8,6 +8,7 @@ No new subscriptions. No API keys. No vendor lock-in. Bring your own agents.
 
 ```
 tt up                    # launch your agent team from a tutti.toml
+tt up --fresh-worktree   # recreate agent worktrees from current HEAD before launch
 tt up --mode safe        # keep interactive permission prompts
 tt up --mode unattended --policy bypass
                          # max autonomy (highest risk)
@@ -166,6 +167,7 @@ name = "backend"
 runtime = "claude-code"          # or "codex", "aider", "gemini-cli", etc.
 scope = "src/api/**"
 prompt = "You own the API layer. Use existing patterns. Track work in bd."
+fresh_worktree = true            # optional: reset this agent worktree on each tt up
 
 [[agent]]
 name = "frontend"

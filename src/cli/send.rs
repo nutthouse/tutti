@@ -51,6 +51,7 @@ pub fn run(
             Some(agent_name.as_str()),
             workspace_selector.as_deref(),
             false,
+            false,
             None,
             None,
         )?;

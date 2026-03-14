@@ -302,10 +302,14 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
     match action {
         "up" => {
             let agent = body.get("agent").and_then(Value::as_str);
+            let fresh_worktree = body
+                .get("fresh_worktree")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             with_project_root(&target.project_root, || {
-                super::up::run(agent, None, false, None, None)
+                super::up::run(agent, None, false, fresh_worktree, None, None)
             })?;
-            Ok(json!({"workspace": target.name, "agent": agent}))
+            Ok(json!({"workspace": target.name, "agent": agent, "fresh_worktree": fresh_worktree}))
         }
         "down" => {
             let agent = body.get("agent").and_then(Value::as_str);

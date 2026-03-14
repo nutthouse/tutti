@@ -2,14 +2,18 @@ use crate::error::{Result, TuttiError};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorktreeSnapshot {
+    pub exists: bool,
+    pub dirty: bool,
+    pub at_project_head: bool,
+}
+
 /// Ensure a git worktree exists for the given agent.
 /// Creates the branch and worktree if they don't exist.
 /// Returns the path to the worktree directory.
 pub fn ensure_worktree(project_root: &Path, agent_name: &str, branch: &str) -> Result<PathBuf> {
-    let worktree_dir = project_root
-        .join(".tutti")
-        .join("worktrees")
-        .join(agent_name);
+    let worktree_dir = worktree_path(project_root, agent_name);
 
     if worktree_dir.exists() {
         return Ok(worktree_dir);
@@ -64,12 +68,53 @@ pub fn ensure_worktree(project_root: &Path, agent_name: &str, branch: &str) -> R
     Ok(worktree_dir)
 }
 
+/// Recreate a worktree from the current project HEAD.
+/// If the branch already exists, it is reset to HEAD.
+pub fn ensure_fresh_worktree(
+    project_root: &Path,
+    agent_name: &str,
+    branch: &str,
+) -> Result<PathBuf> {
+    let worktree_dir = worktree_path(project_root, agent_name);
+
+    // Remove existing linked worktree first (if present).
+    remove_worktree(project_root, agent_name)?;
+
+    // Clean up stray directory if git worktree remove left anything behind.
+    if worktree_dir.exists() {
+        std::fs::remove_dir_all(&worktree_dir)?;
+    }
+
+    if let Some(parent) = worktree_dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "--force",
+            "-B",
+            branch,
+            worktree_dir.to_str().unwrap(),
+            "HEAD",
+        ])
+        .current_dir(project_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::Worktree(format!(
+            "failed to recreate fresh worktree for '{agent_name}': {stderr}"
+        )));
+    }
+
+    Ok(worktree_dir)
+}
+
 /// Remove a git worktree for the given agent.
 pub fn remove_worktree(project_root: &Path, agent_name: &str) -> Result<()> {
-    let worktree_dir = project_root
-        .join(".tutti")
-        .join("worktrees")
-        .join(agent_name);
+    let worktree_dir = worktree_path(project_root, agent_name);
 
     if !worktree_dir.exists() {
         return Ok(());
@@ -93,4 +138,57 @@ pub fn remove_worktree(project_root: &Path, agent_name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Inspect whether an existing worktree is dirty and/or diverged from workspace HEAD.
+pub fn inspect_worktree(project_root: &Path, agent_name: &str) -> Result<WorktreeSnapshot> {
+    let worktree_dir = worktree_path(project_root, agent_name);
+    if !worktree_dir.exists() {
+        return Ok(WorktreeSnapshot::default());
+    }
+
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&worktree_dir)
+        .output()?;
+    if !status_output.status.success() {
+        let stderr = String::from_utf8_lossy(&status_output.stderr);
+        return Err(TuttiError::Worktree(format!(
+            "failed to inspect worktree status for '{agent_name}': {stderr}"
+        )));
+    }
+    let dirty = !String::from_utf8_lossy(&status_output.stdout)
+        .trim()
+        .is_empty();
+
+    let root_head = git_rev_parse(project_root)?;
+    let worktree_head = git_rev_parse(&worktree_dir)?;
+
+    Ok(WorktreeSnapshot {
+        exists: true,
+        dirty,
+        at_project_head: root_head == worktree_head,
+    })
+}
+
+fn worktree_path(project_root: &Path, agent_name: &str) -> PathBuf {
+    project_root
+        .join(".tutti")
+        .join("worktrees")
+        .join(agent_name)
+}
+
+fn git_rev_parse(path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::Worktree(format!(
+            "failed to resolve HEAD at '{}': {stderr}",
+            path.display()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

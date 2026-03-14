@@ -50,6 +50,10 @@ pub enum Commands {
         #[arg(long)]
         all: bool,
 
+        /// Recreate agent worktree(s) from current workspace HEAD before launch
+        #[arg(long)]
+        fresh_worktree: bool,
+
         /// Launch behavior for permission handling
         #[arg(long, value_enum)]
         mode: Option<UpLaunchMode>,

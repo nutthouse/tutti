@@ -1,6 +1,6 @@
 use crate::config::{
-    GlobalConfig, LaunchMode, LaunchPolicyMode, PermissionsConfig, TuttiConfig, global_config_path,
-    topological_sort,
+    AgentConfig, DefaultsConfig, GlobalConfig, LaunchMode, LaunchPolicyMode, PermissionsConfig,
+    TuttiConfig, global_config_path, topological_sort,
 };
 use crate::error::{Result, TuttiError};
 use crate::permissions::{has_configured_policy, normalize, render_claude_settings};
@@ -55,13 +55,14 @@ pub fn run(
     agent_filter: Option<&str>,
     workspace_name: Option<&str>,
     all: bool,
+    fresh_worktree: bool,
     mode_override: Option<super::UpLaunchMode>,
     policy_override: Option<super::UpLaunchPolicy>,
 ) -> Result<()> {
     crate::session::tmux::check_tmux()?;
 
     if all {
-        return run_all(mode_override, policy_override);
+        return run_all(fresh_worktree, mode_override, policy_override);
     }
 
     let (config, config_path) = if let Some(ws) = workspace_name {
@@ -164,27 +165,8 @@ pub fn run(
         }
 
         // Set up worktree if enabled
-        let (working_dir, worktree_path, branch) = if agent.resolved_worktree(&config.defaults) {
-            let branch = agent.resolved_branch();
-            match worktree::ensure_worktree(project_root, &agent.name, &branch) {
-                Ok(wt_path) => {
-                    let dir = wt_path.to_str().unwrap().to_string();
-                    (dir, Some(wt_path), Some(branch))
-                }
-                Err(e) => {
-                    eprintln!(
-                        "  {} worktree for {}: {e} (using project root)",
-                        "warn".yellow(),
-                        agent.name
-                    );
-                    let dir = project_root.to_str().unwrap().to_string();
-                    (dir, None, None)
-                }
-            }
-        } else {
-            let dir = project_root.to_str().unwrap().to_string();
-            (dir, None, None)
-        };
+        let (working_dir, worktree_path, branch) =
+            prepare_agent_working_dir(project_root, &config.defaults, agent, fresh_worktree);
 
         // Merge workspace env with agent-level env (agent overrides workspace)
         let mut env = workspace_env.clone();
@@ -324,6 +306,62 @@ fn build_workspace_env(config: &TuttiConfig) -> HashMap<String, String> {
     }
 
     env
+}
+
+fn prepare_agent_working_dir(
+    project_root: &Path,
+    defaults: &DefaultsConfig,
+    agent: &AgentConfig,
+    fresh_worktree: bool,
+) -> (String, Option<std::path::PathBuf>, Option<String>) {
+    if !agent.resolved_worktree(defaults) {
+        return (project_root.to_string_lossy().to_string(), None, None);
+    }
+
+    let branch = agent.resolved_branch();
+    let use_fresh = fresh_worktree || agent.resolved_fresh_worktree();
+
+    if !use_fresh
+        && let Ok(snapshot) = worktree::inspect_worktree(project_root, &agent.name)
+        && snapshot.exists
+    {
+        if snapshot.dirty {
+            eprintln!(
+                "  {} {} worktree has uncommitted changes; reusing existing state",
+                "warn".yellow(),
+                agent.name
+            );
+        }
+        if !snapshot.at_project_head {
+            eprintln!(
+                "  {} {} worktree is not at current HEAD; pass --fresh-worktree to reset",
+                "warn".yellow(),
+                agent.name
+            );
+        }
+    }
+
+    let ensure_result = if use_fresh {
+        worktree::ensure_fresh_worktree(project_root, &agent.name, &branch)
+    } else {
+        worktree::ensure_worktree(project_root, &agent.name, &branch)
+    };
+
+    match ensure_result {
+        Ok(wt_path) => (
+            wt_path.to_string_lossy().to_string(),
+            Some(wt_path),
+            Some(branch),
+        ),
+        Err(e) => {
+            eprintln!(
+                "  {} worktree for {}: {e} (using project root)",
+                "warn".yellow(),
+                agent.name
+            );
+            (project_root.to_string_lossy().to_string(), None, None)
+        }
+    }
 }
 
 fn resolve_launch_settings(
@@ -816,6 +854,7 @@ pub fn load_workspace_by_name(ws_name: &str) -> Result<(TuttiConfig, std::path::
 
 /// Launch all agents in all registered workspaces.
 fn run_all(
+    fresh_worktree: bool,
     mode_override: Option<super::UpLaunchMode>,
     policy_override: Option<super::UpLaunchPolicy>,
 ) -> Result<()> {
@@ -926,7 +965,12 @@ fn run_all(
                         env.insert(k.clone(), v.clone());
                     }
 
-                    let working_dir = project_root.to_str().unwrap().to_string();
+                    let (working_dir, worktree_path, branch) = prepare_agent_working_dir(
+                        project_root,
+                        &config.defaults,
+                        agent,
+                        fresh_worktree,
+                    );
                     let (cmd, warnings) = match build_launch_command(
                         adapter.as_ref(),
                         &runtime_name,
@@ -987,8 +1031,8 @@ fn run_all(
                         name: agent.name.clone(),
                         runtime: runtime_name,
                         session_name: session,
-                        worktree_path: None,
-                        branch: None,
+                        worktree_path,
+                        branch,
                         status: "Working".to_string(),
                         started_at: Utc::now(),
                         stopped_at: None,
@@ -1046,6 +1090,7 @@ mod tests {
             prompt: None,
             depends_on: deps.into_iter().map(|s| s.to_string()).collect(),
             worktree: None,
+            fresh_worktree: None,
             branch: None,
             persistent: false,
             env: HashMap::new(),

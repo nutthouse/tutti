@@ -52,6 +52,7 @@ Avoid:
 
 - Start all configured agents:
   - `tt up`
+  - `tt up --fresh-worktree`
 - Override launch autonomy mode:
   - `tt up --mode safe`
   - `tt up --mode auto`
@@ -133,6 +134,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - Stream event types include: `agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, `handoff.generated`, `handoff.applied`
   - Budget control events may be emitted when configured: `budget.threshold`, `budget.blocked`
   - `POST /v1/actions/up|down|send|run|verify|review|land`
+  - `up` action supports optional payload flag: `"fresh_worktree": true`
   - API envelope: `ok/action/error/data`
   - `send` action includes structured completion payload in `data.send` (`waited`, `completion_source`, `captured_output`)
   - Mutating idempotency: `Idempotency-Key` header (or `idempotency_key` request field)

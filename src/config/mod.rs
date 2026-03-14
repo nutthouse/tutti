@@ -103,6 +103,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub worktree: Option<bool>,
     #[serde(default)]
+    pub fresh_worktree: Option<bool>,
+    #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
     pub persistent: bool,
@@ -485,6 +487,10 @@ impl AgentConfig {
 
     pub fn resolved_worktree(&self, defaults: &DefaultsConfig) -> bool {
         self.worktree.unwrap_or(defaults.worktree)
+    }
+
+    pub fn resolved_fresh_worktree(&self) -> bool {
+        self.fresh_worktree.unwrap_or(false)
     }
 
     pub fn resolved_branch(&self) -> String {
@@ -1875,6 +1881,7 @@ workflow_source = "run"
             prompt: None,
             depends_on: vec![],
             worktree: None,
+            fresh_worktree: None,
             branch: None,
             persistent: false,
             env: HashMap::new(),
@@ -1894,11 +1901,31 @@ workflow_source = "run"
             prompt: None,
             depends_on: vec![],
             worktree: None,
+            fresh_worktree: None,
             branch: None,
             persistent: false,
             env: HashMap::new(),
         };
         assert_eq!(agent.resolved_branch(), "tutti/backend");
+    }
+
+    #[test]
+    fn resolved_fresh_worktree_defaults_false() {
+        let mut agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: None,
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            env: HashMap::new(),
+        };
+        assert!(!agent.resolved_fresh_worktree());
+        agent.fresh_worktree = Some(true);
+        assert!(agent.resolved_fresh_worktree());
     }
 
     #[test]

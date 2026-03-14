@@ -70,6 +70,7 @@ prompt = "You own the UI. Follow existing component patterns."
 # runtime = "claude-code"
 # prompt = "Monitor open PRs. Check CI status."
 # persistent = true          # keeps running, doesn't "finish"
+# fresh_worktree = true      # reset this agent worktree to current HEAD on each tt up
 
 # Reusable automation workflows (opt-in)
 # [[workflow]]

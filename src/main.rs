@@ -25,9 +25,17 @@ fn main() {
             ref agent,
             ref workspace,
             all,
+            fresh_worktree,
             mode,
             policy,
-        } => cli::up::run(agent.as_deref(), workspace.as_deref(), all, mode, policy),
+        } => cli::up::run(
+            agent.as_deref(),
+            workspace.as_deref(),
+            all,
+            fresh_worktree,
+            mode,
+            policy,
+        ),
         Commands::Down {
             ref agent,
             ref workspace,

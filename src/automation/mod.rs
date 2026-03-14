@@ -1117,7 +1117,7 @@ impl<'a> WorkflowExecutor<'a> {
                         }
 
                         match with_project_root(self.project_root, || {
-                            crate::cli::up::run(Some(agent), None, false, None, None)
+                            crate::cli::up::run(Some(agent), None, false, false, None, None)
                         }) {
                             Ok(()) => {
                                 step_results.push(StepResult {
@@ -2461,7 +2461,7 @@ fn ensure_agent_session_running(
         return Ok(());
     }
     with_project_root(project_root, || {
-        crate::cli::up::run(Some(agent), None, false, None, None)
+        crate::cli::up::run(Some(agent), None, false, false, None, None)
     })
 }
 
@@ -2537,6 +2537,7 @@ mod tests {
                 prompt: None,
                 depends_on: vec![],
                 worktree: None,
+                fresh_worktree: None,
                 branch: None,
                 persistent: false,
                 env: HashMap::new(),
@@ -3211,6 +3212,7 @@ mod tests {
                     prompt: None,
                     depends_on: vec![],
                     worktree: None,
+                    fresh_worktree: None,
                     branch: None,
                     persistent: false,
                     env: HashMap::new(),
@@ -3222,6 +3224,7 @@ mod tests {
                     prompt: None,
                     depends_on: vec![],
                     worktree: None,
+                    fresh_worktree: None,
                     branch: None,
                     persistent: false,
                     env: HashMap::new(),

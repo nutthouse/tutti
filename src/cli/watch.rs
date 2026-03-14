@@ -332,7 +332,7 @@ fn detect_and_handle_crashes(
                     last_restart_attempt.insert(snapshot.agent_name.clone(), Instant::now());
                     ui.suspend()?;
                     let restart_result =
-                        super::up::run(Some(&snapshot.agent_name), None, false, None, None);
+                        super::up::run(Some(&snapshot.agent_name), None, false, false, None, None);
                     ui.resume()?;
 
                     latest_event = Some(match restart_result {
@@ -570,6 +570,7 @@ mod tests {
                     prompt: None,
                     depends_on: vec![],
                     worktree: None,
+                    fresh_worktree: None,
                     branch: None,
                     persistent: false,
                     env: HashMap::new(),
