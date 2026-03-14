@@ -1403,7 +1403,14 @@ impl<'a> WorkflowExecutor<'a> {
                         if let Some(intent) = prior_unsuccessful_intent.as_ref() {
                             let branch = agent_branch(self.config, agent)
                                 .unwrap_or_else(|| format!("tutti/{agent}"));
-                            if is_branch_merged(self.project_root, &branch).unwrap_or(false) {
+                            let merged =
+                                is_branch_merged(self.project_root, &branch).unwrap_or(false);
+                            let divergent =
+                                branch_has_divergent_commits(self.project_root, &branch)
+                                    .unwrap_or(false);
+                            let dirty_worktree =
+                                worktree_has_changes(self.project_root, agent).unwrap_or(true);
+                            if merged && divergent && !dirty_worktree {
                                 step_results.push(StepResult {
                                     index: step_index,
                                     step_type: "land".to_string(),
@@ -1412,7 +1419,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     exit_code: Some(0),
                                     timed_out: false,
                                     message: Some(format!(
-                                        "resume guard: '{}' already merged (branch '{}') after prior attempt at {}; skipping replay",
+                                        "resume guard: '{}' already merged (branch '{}') with no pending worktree changes after prior attempt at {}; skipping replay",
                                         agent,
                                         branch,
                                         intent.planned_at.to_rfc3339()
@@ -1644,14 +1651,18 @@ impl<'a> WorkflowExecutor<'a> {
             if let Some(step) = workflow.steps.get(step_index.saturating_sub(1))
                 && let Some(step_result) =
                     result.step_results.iter().find(|s| s.index == step_index)
-            {
-                let _ = record_step_outcome(
+                && let Err(err) = record_step_outcome(
                     self.project_root,
                     &result.run_id,
                     &workflow.name,
                     step_index,
                     step,
                     step_result,
+                )
+            {
+                eprintln!(
+                    "warn: failed to persist workflow step outcome for run '{}' step {}: {}",
+                    result.run_id, step_index, err
                 );
             }
         }
@@ -1981,16 +1992,22 @@ fn record_step_intent(
     step: &ResolvedStep,
 ) -> Result<()> {
     let step_id = step_file_key(step, step_index);
-    let attempt = load_workflow_intent(project_root, run_id, &step_id)?
-        .map(|existing| existing.attempt.saturating_add(1))
+    let existing = load_workflow_intent(project_root, run_id, &step_id)?;
+    let attempt = existing
+        .as_ref()
+        .map(|record| record.attempt.saturating_add(1))
         .unwrap_or(1);
+    let planned_at = existing
+        .as_ref()
+        .map(|record| record.planned_at)
+        .unwrap_or_else(Utc::now);
     let record = WorkflowStepIntentRecord {
         run_id: run_id.to_string(),
         workflow_name: workflow_name.to_string(),
         step_index,
         step_id: step_id.clone(),
         step_type: step_type_name(step).to_string(),
-        planned_at: Utc::now(),
+        planned_at,
         intent: step_intent_payload(step),
         attempt,
         outcome: None,
@@ -2137,6 +2154,38 @@ fn is_branch_merged(project_root: &Path, branch: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+fn branch_has_divergent_commits(project_root: &Path, branch: &str) -> Result<bool> {
+    let head_sha = git_output_for_automation(project_root, &["rev-parse", "HEAD"])?;
+    let branch_sha = git_output_for_automation(project_root, &["rev-parse", branch])?;
+    Ok(head_sha != branch_sha)
+}
+
+fn worktree_has_changes(project_root: &Path, agent: &str) -> Result<bool> {
+    let worktree_path = project_root.join(".tutti").join("worktrees").join(agent);
+    if !worktree_path.exists() {
+        return Ok(false);
+    }
+    let status = git_output_for_automation(&worktree_path, &["status", "--porcelain"])?;
+    Ok(!status.trim().is_empty())
+}
+
+fn git_output_for_automation(project_root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(project_root)
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(TuttiError::Git(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr
+        )))
+    }
+}
+
 pub fn build_resume_compensator_plan(
     config: &TuttiConfig,
     project_root: &Path,
@@ -2168,13 +2217,16 @@ pub fn build_resume_compensator_plan(
     match step {
         ResolvedStep::Land { agent, .. } => {
             let branch = agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
-            if is_branch_merged(project_root, &branch).unwrap_or(false) {
+            let merged = is_branch_merged(project_root, &branch).unwrap_or(false);
+            let divergent = branch_has_divergent_commits(project_root, &branch).unwrap_or(false);
+            let dirty_worktree = worktree_has_changes(project_root, agent).unwrap_or(true);
+            if merged && divergent && !dirty_worktree {
                 plan.push(format!(
-                    "Detected branch '{branch}' already merged into HEAD; replay will be skipped by idempotency guard."
+                    "Detected branch '{branch}' already merged into HEAD with no pending worktree changes; replay will be skipped by idempotency guard."
                 ));
             } else {
                 plan.push(format!(
-                    "Branch '{branch}' is not merged into HEAD; replay will re-attempt `land`."
+                    "Branch '{branch}' is not safely idempotent yet (merged={merged}, divergent={divergent}, worktree_dirty={dirty_worktree}); replay will re-attempt `land`."
                 ));
             }
         }
@@ -2434,7 +2486,23 @@ fn execute_control_step(
     let started = std::time::Instant::now();
     let prior_unsuccessful_intent =
         load_unsuccessful_step_intent(project_root, run_id, step, step_index)?;
-    record_step_intent(project_root, run_id, workflow_name, step_index, step)?;
+    if let Err(err) = record_step_intent(project_root, run_id, workflow_name, step_index, step) {
+        return Ok(ControlStepOutcome {
+            index: step_index,
+            result: StepResult {
+                index: step_index,
+                step_type: step_type_name(step).to_string(),
+                status: StepStatus::Failed,
+                duration_ms: started.elapsed().as_millis() as u64,
+                exit_code: None,
+                timed_out: false,
+                message: Some(format!("failed to write step intent: {err}")),
+                stdout: None,
+                stderr: None,
+            },
+            hard_fail: true,
+        });
+    }
     match step {
         ResolvedStep::EnsureRunning {
             agent,
@@ -2594,7 +2662,11 @@ fn execute_control_step(
             if let Some(intent) = prior_unsuccessful_intent.as_ref() {
                 let branch =
                     agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
-                if is_branch_merged(project_root, &branch).unwrap_or(false) {
+                let merged = is_branch_merged(project_root, &branch).unwrap_or(false);
+                let divergent =
+                    branch_has_divergent_commits(project_root, &branch).unwrap_or(false);
+                let dirty_worktree = worktree_has_changes(project_root, agent).unwrap_or(true);
+                if merged && divergent && !dirty_worktree {
                     return Ok(ControlStepOutcome {
                         index: step_index,
                         result: StepResult {
@@ -2605,7 +2677,7 @@ fn execute_control_step(
                             exit_code: Some(0),
                             timed_out: false,
                             message: Some(format!(
-                                "resume guard: '{}' already merged (branch '{}') after prior attempt at {}; skipping replay",
+                                "resume guard: '{}' already merged (branch '{}') with no pending worktree changes after prior attempt at {}; skipping replay",
                                 agent,
                                 branch,
                                 intent.planned_at.to_rfc3339()
@@ -3148,25 +3220,41 @@ mod tests {
     }
 
     fn init_git_repo(dir: &Path) {
-        let run = |args: &[&str]| {
-            let output = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
-        run(&["init"]);
-        run(&["config", "user.email", "tutti-tests@example.com"]);
-        run(&["config", "user.name", "Tutti Tests"]);
+        git_run(dir, &["init"]);
+        git_run(dir, &["config", "user.email", "tutti-tests@example.com"]);
+        git_run(dir, &["config", "user.name", "Tutti Tests"]);
         std::fs::write(dir.join("README.md"), "ok\n").unwrap();
-        run(&["add", "README.md"]);
-        run(&["commit", "-m", "init"]);
+        git_run(dir, &["add", "README.md"]);
+        git_run(dir, &["commit", "-m", "init"]);
+    }
+
+    fn git_run(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     #[test]
@@ -3829,6 +3917,79 @@ mod tests {
     }
 
     #[test]
+    fn record_step_intent_preserves_original_planned_at() {
+        let dir = std::env::temp_dir().join("tutti-test-intent-preserve-planned-at");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let step = ResolvedStep::Command {
+            step_id: None,
+            depends_on: vec![],
+            run: "echo ok".to_string(),
+            cwd: dir.clone(),
+            agent: None,
+            timeout_secs: 30,
+            fail_mode: WorkflowFailMode::Closed,
+            output_json: None,
+        };
+
+        record_step_intent(&dir, "run1", "verify", 1, &step).unwrap();
+        let first = crate::state::load_workflow_intent(&dir, "run1", "001-command")
+            .unwrap()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        record_step_intent(&dir, "run1", "verify", 1, &step).unwrap();
+        let second = crate::state::load_workflow_intent(&dir, "run1", "001-command")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(second.planned_at, first.planned_at);
+        assert_eq!(second.attempt, first.attempt + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_control_step_reports_intent_write_failure_as_failed_result() {
+        let dir = std::env::temp_dir().join("tutti-test-dag-intent-failure");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Force intent persistence to fail (`.tutti` is a file, not a directory).
+        std::fs::write(dir.join(".tutti"), "not-a-dir\n").unwrap();
+
+        let workflow = WorkflowConfig {
+            name: "autofix".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::EnsureRunning {
+                depends_on: vec![],
+                agent: "backend".to_string(),
+                fail_mode: Some(WorkflowFailMode::Closed),
+            }],
+        };
+        let config = sample_config(workflow, vec![]);
+        let step = ResolvedStep::EnsureRunning {
+            depends_on: vec![],
+            agent: "backend".to_string(),
+            session_name: "tutti-ws-backend".to_string(),
+            fail_mode: WorkflowFailMode::Closed,
+        };
+
+        let outcome = execute_control_step(&config, &dir, "run-fail", "autofix", &step, 1).unwrap();
+        assert_eq!(outcome.result.status, StepStatus::Failed);
+        assert!(outcome.hard_fail);
+        assert!(
+            outcome
+                .result
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("failed to write step intent"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn build_resume_compensator_plan_warns_for_command_step() {
         let workflow = WorkflowConfig {
             name: "verify".to_string(),
@@ -3920,11 +4081,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         init_git_repo(&dir);
-        Command::new("git")
-            .args(["branch", "tutti/backend"])
-            .current_dir(&dir)
-            .status()
-            .unwrap();
+        let default_branch = git_stdout(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        git_run(&dir, &["checkout", "-b", "tutti/backend"]);
+        std::fs::write(dir.join("feature.txt"), "hello\n").unwrap();
+        git_run(&dir, &["add", "feature.txt"]);
+        git_run(&dir, &["commit", "-m", "feature"]);
+        git_run(&dir, &["checkout", &default_branch]);
+        git_run(
+            &dir,
+            &["merge", "--no-ff", "-m", "merge backend", "tutti/backend"],
+        );
         crate::state::ensure_tutti_dir(&dir).unwrap();
 
         let config = sample_config(workflow, vec![]);
@@ -3971,6 +4137,80 @@ mod tests {
             .unwrap();
         let plan = build_resume_compensator_plan(&config, &dir, &resolved, &resume).unwrap();
         assert!(plan.iter().any(|line| line.contains("already merged")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_resume_compensator_plan_land_fresh_branch_is_not_skipped() {
+        let workflow = WorkflowConfig {
+            name: "autoland".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Land {
+                depends_on: vec![],
+                agent: "backend".to_string(),
+                pr: Some(false),
+                force: Some(false),
+                fail_mode: Some(WorkflowFailMode::Closed),
+            }],
+        };
+        let dir = std::env::temp_dir().join("tutti-test-resume-plan-land-fresh");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        git_run(&dir, &["branch", "tutti/backend"]);
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let checkpoint = serde_json::json!({
+            "run_id": "run-land-fresh",
+            "workflow_name": "autoland",
+            "strict": false,
+            "origin": "run",
+            "agent_scope": "backend",
+            "started_at": Utc::now(),
+            "finished_at": Utc::now(),
+            "success": false,
+            "failed_steps": [1],
+            "step_results": [],
+            "output_files": {}
+        });
+        crate::state::save_workflow_checkpoint(&dir, "run-land-fresh", &checkpoint).unwrap();
+
+        let intent = WorkflowStepIntentRecord {
+            run_id: "run-land-fresh".to_string(),
+            workflow_name: "autoland".to_string(),
+            step_index: 1,
+            step_id: "001-land".to_string(),
+            step_type: "land".to_string(),
+            planned_at: Utc::now(),
+            intent: serde_json::json!({"agent":"backend","pr":false,"force":false}),
+            attempt: 1,
+            outcome: None,
+        };
+        crate::state::save_workflow_intent(&dir, "run-land-fresh", "001-land", &intent).unwrap();
+
+        let resume = load_resume_context(&dir, "run-land-fresh")
+            .unwrap()
+            .unwrap();
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("autoland", None, &opts)
+            .unwrap();
+        let plan = build_resume_compensator_plan(&config, &dir, &resolved, &resume).unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("not safely idempotent"))
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
