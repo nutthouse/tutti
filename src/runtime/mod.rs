@@ -2,6 +2,7 @@ pub mod aider;
 pub mod claude_code;
 pub mod codex;
 pub mod openclaw;
+use crate::error::{Result, TuttiError};
 use serde::{Deserialize, Serialize};
 
 /// Status of an agent as detected from terminal output.
@@ -190,6 +191,18 @@ fn recent_window(terminal_output: &str, max_lines: usize) -> String {
         .join("\n")
 }
 
+fn trailing_non_empty_window(text: &str, max_lines: usize) -> String {
+    text.lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn detect_pattern_ci(haystack_lower: &str, patterns: &[&str]) -> Option<String> {
     patterns
         .iter()
@@ -225,16 +238,22 @@ fn weighted_pattern_score(matches: usize) -> f32 {
 }
 
 fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> DetectionDiagnostics {
-    let full_lower = terminal_output.to_lowercase();
     let recent = recent_window(terminal_output, 40);
     let recent_lower = recent.to_lowercase();
+    let trailing = trailing_non_empty_window(&recent, 4);
+    let trailing_lower = trailing.to_lowercase();
+    let completion_haystack_lower = if trailing_lower.is_empty() {
+        &recent_lower
+    } else {
+        &trailing_lower
+    };
 
-    let auth_match = detect_pattern_ci(&full_lower, config.auth_patterns);
-    let rate_limit_match = detect_pattern_ci(&full_lower, config.rate_limit_patterns);
-    let provider_down_match = detect_pattern_ci(&full_lower, config.provider_down_patterns);
-    let completion_match = detect_pattern_ci(&recent_lower, config.completion_patterns);
+    let auth_match = detect_pattern_ci(&recent_lower, config.auth_patterns);
+    let rate_limit_match = detect_pattern_ci(&recent_lower, config.rate_limit_patterns);
+    let provider_down_match = detect_pattern_ci(&recent_lower, config.provider_down_patterns);
+    let completion_match = detect_pattern_ci(completion_haystack_lower, config.completion_patterns);
     let working_matches = collect_pattern_matches(&recent_lower, config.working_patterns);
-    let idle_matches = collect_pattern_matches(&recent_lower, config.idle_patterns);
+    let idle_matches = collect_pattern_matches(completion_haystack_lower, config.idle_patterns);
 
     if let Some(reason) = auth_match.clone() {
         return DetectionDiagnostics {
@@ -314,9 +333,10 @@ pub fn diagnose_output(
     runtime: &str,
     terminal_output: &str,
     command_override: Option<&str>,
-) -> Option<DetectionDiagnostics> {
-    let adapter = get_adapter(runtime, command_override)?;
-    Some(adapter.diagnose(terminal_output))
+) -> Result<DetectionDiagnostics> {
+    let adapter = get_adapter(runtime, command_override)
+        .ok_or_else(|| TuttiError::RuntimeUnknown(runtime.to_string()))?;
+    Ok(adapter.diagnose(terminal_output))
 }
 
 /// Return a profile command override only when it is compatible with the agent runtime.
@@ -751,12 +771,15 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_tie_breaker_returns_unknown_in_ambiguous_case() {
+    fn diagnostics_prefers_idle_when_completion_marker_present() {
         let output = "Generating...\nWhat would you like to do?\n";
         let diagnostics = diagnose_output("codex", output, None).unwrap();
-        assert!(matches!(
-            diagnostics.status,
-            AgentStatus::Unknown | AgentStatus::Idle
-        ));
+        assert_eq!(diagnostics.status, AgentStatus::Idle);
+    }
+
+    #[test]
+    fn diagnose_output_returns_runtime_error_for_unknown_runtime() {
+        let err = diagnose_output("unknown", "anything", None).unwrap_err();
+        assert!(matches!(err, TuttiError::RuntimeUnknown(runtime) if runtime == "unknown"));
     }
 }
