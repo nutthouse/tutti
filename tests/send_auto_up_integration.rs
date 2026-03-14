@@ -123,7 +123,11 @@ fn send_auto_up_wait_output_preserves_long_prompt() {
         );
     }
 
-    let peek = run_tt(&workspace, &config_home, &["peek", "etl", "--lines", "5000"]);
+    let peek = run_tt(
+        &workspace,
+        &config_home,
+        &["peek", "etl", "--lines", "5000"],
+    );
     if !peek.status.success() {
         panic!(
             "tt peek failed\nstdout:\n{}\nstderr:\n{}",
