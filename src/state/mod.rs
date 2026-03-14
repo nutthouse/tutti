@@ -41,6 +41,35 @@ pub struct VerifyLastSummary {
     pub agent_scope: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStepIntentRecord {
+    pub run_id: String,
+    pub workflow_name: String,
+    pub step_index: usize,
+    pub step_id: String,
+    pub step_type: String,
+    pub planned_at: DateTime<Utc>,
+    pub intent: Value,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub outcome: Option<WorkflowStepOutcomeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStepOutcomeRecord {
+    pub completed_at: DateTime<Utc>,
+    pub status: String,
+    pub success: bool,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub side_effects: Option<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityState {
@@ -113,6 +142,7 @@ pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
         "state/runtime-settings",
         "state/health",
         "state/workflow-checkpoints",
+        "state/workflow-intents",
         "state/workflow-outputs",
         "worktrees",
         "handoffs",
@@ -314,6 +344,43 @@ pub fn load_workflow_checkpoint(
     let body = std::fs::read_to_string(path)?;
     let value = serde_json::from_str(&body).map_err(|e| TuttiError::State(e.to_string()))?;
     Ok(Some(value))
+}
+
+pub fn save_workflow_intent(
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+    record: &WorkflowStepIntentRecord,
+) -> Result<PathBuf> {
+    let dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-intents")
+        .join(run_id);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{step_id}.json"));
+    let body = serde_json::to_string_pretty(record)?;
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+pub fn load_workflow_intent(
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+) -> Result<Option<WorkflowStepIntentRecord>> {
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-intents")
+        .join(run_id)
+        .join(format!("{step_id}.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = std::fs::read_to_string(path)?;
+    let record = serde_json::from_str(&body).map_err(|e| TuttiError::State(e.to_string()))?;
+    Ok(Some(record))
 }
 
 pub fn append_control_event(project_root: &Path, event: &ControlEvent) -> Result<()> {
@@ -518,6 +585,7 @@ mod tests {
         assert!(dir.join(".tutti/state").exists());
         assert!(dir.join(".tutti/state/runtime-settings").exists());
         assert!(dir.join(".tutti/state/workflow-checkpoints").exists());
+        assert!(dir.join(".tutti/state/workflow-intents").exists());
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());
@@ -661,6 +729,43 @@ mod tests {
             loaded.get("workflow_name").and_then(|v| v.as_str()),
             Some("verify")
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn workflow_intent_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-workflow-intent-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let record = WorkflowStepIntentRecord {
+            run_id: "run123".to_string(),
+            workflow_name: "verify".to_string(),
+            step_index: 1,
+            step_id: "step-001".to_string(),
+            step_type: "command".to_string(),
+            planned_at: Utc::now(),
+            intent: serde_json::json!({"run":"echo ok"}),
+            attempt: 1,
+            outcome: Some(WorkflowStepOutcomeRecord {
+                completed_at: Utc::now(),
+                status: "success".to_string(),
+                success: true,
+                exit_code: Some(0),
+                timed_out: false,
+                message: None,
+                side_effects: None,
+            }),
+        };
+        let path = save_workflow_intent(&dir, "run123", "step-001", &record).unwrap();
+        assert!(path.exists());
+        let loaded = load_workflow_intent(&dir, "run123", "step-001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.workflow_name, "verify");
+        assert_eq!(loaded.step_type, "command");
+        assert!(loaded.outcome.as_ref().is_some_and(|o| o.success));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
