@@ -79,7 +79,7 @@ jobs:
           plan = "max"
 
           [permissions]
-          allow = ["Read", "Edit", "Write"]
+          allow = ["Read", "Edit", "Write", "mkdir -p .tutti/state"]
           EOF
 
       - name: Prepare smoke workspace
