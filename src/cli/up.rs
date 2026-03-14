@@ -3,7 +3,9 @@ use crate::config::{
     TuttiConfig, global_config_path, topological_sort,
 };
 use crate::error::{Result, TuttiError};
-use crate::permissions::{has_configured_policy, normalize, render_claude_settings};
+use crate::permissions::{
+    has_configured_policy, normalize, render_claude_settings, shell_command_allow_rules,
+};
 use crate::runtime;
 use crate::session::TmuxSession;
 use crate::state;
@@ -13,6 +15,8 @@ use crate::{budget, budget::BudgetGuardOutcome};
 use chrono::Utc;
 use colored::Colorize;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -29,7 +33,7 @@ pub(crate) struct LaunchSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LaunchCommandWarnings {
-    constrained_best_effort: bool,
+    constrained_policy_via_shim: bool,
     unsupported_constrained_runtime: bool,
     bypass_mode: bool,
 }
@@ -117,7 +121,7 @@ pub fn run(
 
     let mut launched = Vec::new();
     let mut refused_by_limit = false;
-    let mut warned_best_effort = false;
+    let mut warned_shim_enforced = false;
     let mut warned_unsupported_constrained = false;
     let mut warned_bypass = false;
 
@@ -183,13 +187,13 @@ pub fn run(
             &agent.name,
             agent.prompt.as_deref(),
         )?;
-        if warnings.constrained_best_effort && !warned_best_effort {
+        if warnings.constrained_policy_via_shim && !warned_shim_enforced {
             eprintln!(
-                "  {} constrained mode is best-effort for {}; hard allowlist enforcement is currently Claude-only",
+                "  {} constrained policy for {} is hard-enforced via Tutti shell shim allowlist",
                 "warn".yellow(),
                 runtime_name
             );
-            warned_best_effort = true;
+            warned_shim_enforced = true;
         }
         if warnings.unsupported_constrained_runtime && !warned_unsupported_constrained {
             eprintln!(
@@ -453,7 +457,7 @@ fn build_launch_command(
         return Ok((
             adapter.build_spawn_command(base_prompt),
             LaunchCommandWarnings {
-                constrained_best_effort: false,
+                constrained_policy_via_shim: false,
                 unsupported_constrained_runtime: false,
                 bypass_mode: false,
             },
@@ -473,7 +477,7 @@ fn build_launch_command(
         return Ok((
             cmd,
             LaunchCommandWarnings {
-                constrained_best_effort: false,
+                constrained_policy_via_shim: false,
                 unsupported_constrained_runtime: false,
                 bypass_mode: true,
             },
@@ -498,7 +502,7 @@ fn build_launch_command(
             Ok((
                 adapter.build_spawn_command_with_args(&pre_args, base_prompt),
                 LaunchCommandWarnings {
-                    constrained_best_effort: false,
+                    constrained_policy_via_shim: false,
                     unsupported_constrained_runtime: false,
                     bypass_mode: false,
                 },
@@ -510,7 +514,8 @@ fn build_launch_command(
                     "codex constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let policy_appendix = best_effort_policy_appendix("Codex", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
+            let policy_appendix = runtime_policy_appendix("Codex", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let pre_args = vec![
                 "-a".to_string(),
@@ -518,10 +523,11 @@ fn build_launch_command(
                 "-s".to_string(),
                 "workspace-write".to_string(),
             ];
+            let cmd = adapter.build_spawn_command_with_args(&pre_args, prompt.as_deref());
             Ok((
-                adapter.build_spawn_command_with_args(&pre_args, prompt.as_deref()),
+                wrap_launch_command_with_shim_path(&cmd, &shim_path),
                 LaunchCommandWarnings {
-                    constrained_best_effort: true,
+                    constrained_policy_via_shim: true,
                     unsupported_constrained_runtime: false,
                     bypass_mode: false,
                 },
@@ -534,12 +540,14 @@ fn build_launch_command(
                         .to_string(),
                 )
             })?;
-            let policy_appendix = best_effort_policy_appendix("OpenClaw", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
+            let policy_appendix = runtime_policy_appendix("OpenClaw", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
+            let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((
-                adapter.build_spawn_command(prompt.as_deref()),
+                wrap_launch_command_with_shim_path(&cmd, &shim_path),
                 LaunchCommandWarnings {
-                    constrained_best_effort: true,
+                    constrained_policy_via_shim: true,
                     unsupported_constrained_runtime: false,
                     bypass_mode: false,
                 },
@@ -551,12 +559,14 @@ fn build_launch_command(
                     "aider constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let policy_appendix = best_effort_policy_appendix("Aider", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
+            let policy_appendix = runtime_policy_appendix("Aider", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
+            let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((
-                adapter.build_spawn_command(prompt.as_deref()),
+                wrap_launch_command_with_shim_path(&cmd, &shim_path),
                 LaunchCommandWarnings {
-                    constrained_best_effort: true,
+                    constrained_policy_via_shim: true,
                     unsupported_constrained_runtime: false,
                     bypass_mode: false,
                 },
@@ -565,7 +575,7 @@ fn build_launch_command(
         _ => Ok((
             adapter.build_spawn_command(base_prompt),
             LaunchCommandWarnings {
-                constrained_best_effort: false,
+                constrained_policy_via_shim: false,
                 unsupported_constrained_runtime: true,
                 bypass_mode: false,
             },
@@ -589,7 +599,121 @@ fn write_claude_settings_file(
     Ok(settings_path)
 }
 
-fn best_effort_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) -> String {
+fn write_shell_policy_shims(
+    project_root: &Path,
+    agent_name: &str,
+    policy: &PermissionsConfig,
+) -> Result<std::path::PathBuf> {
+    let rules = shell_command_allow_rules(policy);
+    if rules.is_empty() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "{} constrained launch requires shell command allow rules in [permissions].allow",
+            agent_name
+        )));
+    }
+
+    let shim_dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("runtime-shims")
+        .join(agent_name);
+    fs::create_dir_all(&shim_dir)?;
+
+    let rules_path = shim_dir.join("allow.rules");
+    fs::write(&rules_path, format!("{}\n", rules.join("\n")))?;
+
+    let mut wrote_any = false;
+    for (name, real_shell) in [
+        ("bash", "/bin/bash"),
+        ("sh", "/bin/sh"),
+        ("zsh", "/bin/zsh"),
+    ] {
+        if !Path::new(real_shell).exists() {
+            continue;
+        }
+        let wrapper_path = shim_dir.join(name);
+        let script = render_shell_policy_wrapper_script(real_shell, &rules_path);
+        fs::write(&wrapper_path, script)?;
+        let mut perms = fs::metadata(&wrapper_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, perms)?;
+        wrote_any = true;
+    }
+
+    if !wrote_any {
+        return Err(TuttiError::ConfigValidation(
+            "no supported shells found for constrained runtime policy shims".to_string(),
+        ));
+    }
+
+    Ok(shim_dir)
+}
+
+fn render_shell_policy_wrapper_script(real_shell: &str, rules_path: &Path) -> String {
+    format!(
+        "#!/bin/sh\n\
+set -eu\n\
+POLICY_FILE={}\n\
+REAL_SHELL={}\n\
+normalize() {{\n\
+  printf '%s' \"$1\" | tr '\\n' ' ' | awk '{{ $1=$1; print }}'\n\
+}}\n\
+extract_command() {{\n\
+  prev=''\n\
+  for arg in \"$@\"; do\n\
+    if [ \"$prev\" = \"-c\" ] || [ \"$prev\" = \"-lc\" ]; then\n\
+      printf '%s' \"$arg\"\n\
+      return 0\n\
+    fi\n\
+    prev=\"$arg\"\n\
+  done\n\
+  return 1\n\
+}}\n\
+allowed() {{\n\
+  cmd_norm=\"$(normalize \"$1\")\"\n\
+  [ -z \"$cmd_norm\" ] && return 0\n\
+  while IFS= read -r raw_rule || [ -n \"$raw_rule\" ]; do\n\
+    rule=\"$(normalize \"$raw_rule\")\"\n\
+    [ -z \"$rule\" ] && continue\n\
+    case \"$rule\" in\n\
+      *\\*)\n\
+        prefix=\"${{rule%\\*}}\"\n\
+        [ -n \"$prefix\" ] || continue\n\
+        case \"$cmd_norm\" in\n\
+          \"$prefix\"*) return 0 ;;\n\
+        esac\n\
+        ;;\n\
+      *)\n\
+        [ \"$cmd_norm\" = \"$rule\" ] && return 0\n\
+        case \"$cmd_norm\" in\n\
+          \"$rule \"*) return 0 ;;\n\
+        esac\n\
+        ;;\n\
+    esac\n\
+  done < \"$POLICY_FILE\"\n\
+  return 1\n\
+}}\n\
+if cmd=\"$(extract_command \"$@\" 2>/dev/null)\"; then\n\
+  if ! allowed \"$cmd\"; then\n\
+    echo \"tutti policy blocked command: $(normalize \"$cmd\")\" >&2\n\
+    exit 126\n\
+  fi\n\
+fi\n\
+exec \"$REAL_SHELL\" \"$@\"\n",
+        shell_escape_value(&rules_path.to_string_lossy()),
+        shell_escape_value(real_shell),
+    )
+}
+
+fn wrap_launch_command_with_shim_path(command: &str, shim_dir: &Path) -> String {
+    format!(
+        "PATH={}:$PATH {}",
+        shell_escape_value(&shim_dir.to_string_lossy()),
+        command
+    )
+}
+
+fn runtime_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) -> String {
     let rules: Vec<String> = policy
         .allow
         .iter()
@@ -598,7 +722,7 @@ fn best_effort_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) 
         .collect();
 
     let mut out = format!(
-        "Tutti policy constraints (best-effort for {runtime_label}):\n\
+        "Tutti policy constraints for {runtime_label}:\n\
          Only execute Bash commands matching one of these allow rules:\n"
     );
     for rule in &rules {
@@ -606,9 +730,7 @@ fn best_effort_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) 
         out.push_str(rule);
         out.push('\n');
     }
-    out.push_str(
-        "If a required command is outside policy, do not run it. Report the blocked command and why.",
-    );
+    out.push_str("Commands outside policy are blocked by Tutti shell shims.");
     out
 }
 
@@ -617,6 +739,10 @@ fn append_policy_prompt(base_prompt: Option<&str>, appendix: &str) -> Option<Str
         Some(base) => Some(format!("{base}\n\n{appendix}")),
         None => Some(appendix.to_string()),
     }
+}
+
+fn shell_escape_value(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn launch_mode_label(settings: LaunchSettings) -> &'static str {
@@ -661,11 +787,11 @@ fn launch_policy_record(
             "allow".to_string(),
             Some("runtime does not support constrained no-prompt policy".to_string()),
         )
-    } else if warnings.constrained_best_effort {
+    } else if warnings.constrained_policy_via_shim {
         (
-            "best_effort".to_string(),
+            "hard_shim".to_string(),
             "allow".to_string(),
-            Some("constrained policy guidance only (not hard-enforced)".to_string()),
+            Some("constrained policy is hard-enforced by Tutti shell shims".to_string()),
         )
     } else {
         (
@@ -902,7 +1028,7 @@ fn run_all(
                 };
                 let permissions_policy =
                     resolve_launch_permissions(Some(&global), &config, &sorted, launch_settings)?;
-                let mut warned_best_effort = false;
+                let mut warned_shim_enforced = false;
                 let mut warned_unsupported_constrained = false;
                 let mut warned_bypass = false;
 
@@ -986,13 +1112,13 @@ fn run_all(
                             continue;
                         }
                     };
-                    if warnings.constrained_best_effort && !warned_best_effort {
+                    if warnings.constrained_policy_via_shim && !warned_shim_enforced {
                         eprintln!(
-                            "  {} constrained mode is best-effort for {}; hard allowlist enforcement is currently Claude-only",
+                            "  {} constrained policy for {} is hard-enforced via Tutti shell shim allowlist",
                             "warn".yellow(),
                             runtime_name
                         );
-                        warned_best_effort = true;
+                        warned_shim_enforced = true;
                     }
                     if warnings.unsupported_constrained_runtime && !warned_unsupported_constrained {
                         eprintln!(
@@ -1528,7 +1654,8 @@ mod tests {
         assert!(cmd.contains("'-a' 'never' '-s' 'workspace-write'"));
         assert!(cmd.contains("--prompt"));
         assert!(cmd.contains("Tutti policy constraints"));
-        assert!(warnings.constrained_best_effort);
+        assert!(cmd.contains("PATH='"));
+        assert!(warnings.constrained_policy_via_shim);
         assert!(!warnings.unsupported_constrained_runtime);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1560,7 +1687,8 @@ mod tests {
 
         assert!(cmd.contains("--prompt"));
         assert!(cmd.contains("Tutti policy constraints"));
-        assert!(warnings.constrained_best_effort);
+        assert!(cmd.contains("PATH='"));
+        assert!(warnings.constrained_policy_via_shim);
         assert!(!warnings.unsupported_constrained_runtime);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1591,7 +1719,8 @@ mod tests {
 
         assert!(cmd.contains("--message"));
         assert!(cmd.contains("Tutti policy constraints"));
-        assert!(warnings.constrained_best_effort);
+        assert!(cmd.contains("PATH='"));
+        assert!(warnings.constrained_policy_via_shim);
         assert!(!warnings.unsupported_constrained_runtime);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1621,6 +1750,22 @@ mod tests {
         .expect("command should build");
 
         assert!(warnings.bypass_mode);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_shell_policy_shims_rejects_tool_only_policy() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-up-tool-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let policy = PermissionsConfig {
+            allow: vec!["Read".to_string(), "Edit".to_string()],
+        };
+
+        let err = write_shell_policy_shims(&dir, "backend", &policy)
+            .expect_err("tool-only policy should fail");
+        assert!(err.to_string().contains("shell command allow rules"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

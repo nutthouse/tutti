@@ -344,7 +344,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `tt permissions check <command...>` evaluates command prefixes against policy
 - `tt permissions export --runtime claude` emits a Claude settings scaffold
 - `tt up` auto-wires constrained non-interactive policy for Claude sessions
-- Codex/OpenClaw/Aider constrained mode is best-effort (prompt-level policy guidance; Codex also uses non-interactive flags)
+- Codex/OpenClaw/Aider constrained mode is hard-enforced via Tutti shell-policy shims plus runtime flags/prompt guidance
 - If constrained non-interactive launch is selected without policy, `tt up` fails with guidance
 - Launch policy decisions are persisted to `.tutti/state/policy-decisions.jsonl` and exposed via `/v1/policy-decisions`
 

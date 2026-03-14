@@ -177,6 +177,7 @@ fn evaluate_checks(
     }
 
     if launch_requires_constrained_policy(launch_settings)
+        && policy_configured
         && config.agents.iter().any(|agent| {
             agent
                 .resolved_runtime(&config.defaults)
@@ -185,9 +186,9 @@ fn evaluate_checks(
         })
     {
         checks.push(DoctorCheck {
-            check: "launch/best_effort".to_string(),
-            status: DoctorStatus::Warn,
-            detail: "codex/openclaw/aider constrained mode is best-effort; hard allowlist enforcement is currently Claude-only".to_string(),
+            check: "launch/policy_parity".to_string(),
+            status: DoctorStatus::Pass,
+            detail: "codex/openclaw/aider constrained mode uses Tutti shell shims for hard allowlist enforcement".to_string(),
         });
     }
 
@@ -410,9 +411,6 @@ fn suggestion_for_check(check: &DoctorCheck) -> Option<&'static str> {
         ),
         "launch policy" if check.status == DoctorStatus::Warn => {
             Some("Prefer constrained mode for safer unattended runs")
-        }
-        "launch/best_effort" => {
-            Some("Use claude-code for hard allowlist enforcement in constrained mode")
         }
         check_name if check_name.starts_with("auth/") && check.status == DoctorStatus::Fail => {
             Some("Re-authenticate runtime account and re-run doctor")

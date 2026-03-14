@@ -97,6 +97,14 @@ pub fn normalize<S: AsRef<str>>(input: S) -> String {
         .join(" ")
 }
 
+pub fn shell_command_allow_rules(policy: &PermissionsConfig) -> Vec<String> {
+    policy
+        .allow
+        .iter()
+        .filter_map(|entry| extract_shell_rule(entry))
+        .collect()
+}
+
 pub fn matching_allow_rule<'a>(
     policy: &'a PermissionsConfig,
     command_line: &str,
@@ -138,6 +146,26 @@ fn claude_permission_entry(entry: &str) -> String {
     } else {
         format!("Bash({entry})")
     }
+}
+
+fn extract_shell_rule(entry: &str) -> Option<String> {
+    let normalized = normalize(entry);
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if is_claude_tool_permission(&normalized) {
+        if let Some(inner) = normalized
+            .strip_prefix("Bash(")
+            .and_then(|s| s.strip_suffix(')'))
+        {
+            let cmd = normalize(inner);
+            return (!cmd.is_empty()).then_some(cmd);
+        }
+        return None;
+    }
+
+    Some(normalized)
 }
 
 fn is_claude_tool_permission(entry: &str) -> bool {
@@ -230,5 +258,23 @@ mod tests {
         assert!(decision.allowed);
         assert!(decision.policy_configured);
         assert_eq!(decision.matched_rule.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn shell_command_allow_rules_extracts_bash_and_plain_rules() {
+        let policy = PermissionsConfig {
+            allow: vec![
+                "Read".to_string(),
+                "Edit".to_string(),
+                "Bash(git status)".to_string(),
+                "cargo test *".to_string(),
+                "   ".to_string(),
+            ],
+        };
+        let rules = shell_command_allow_rules(&policy);
+        assert_eq!(
+            rules,
+            vec!["git status".to_string(), "cargo test *".to_string()]
+        );
     }
 }
