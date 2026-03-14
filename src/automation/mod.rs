@@ -1400,35 +1400,26 @@ impl<'a> WorkflowExecutor<'a> {
                         ..
                     } => {
                         let started = std::time::Instant::now();
-                        if let Some(intent) = prior_unsuccessful_intent.as_ref() {
-                            let branch = agent_branch(self.config, agent)
-                                .unwrap_or_else(|| format!("tutti/{agent}"));
-                            let merged =
-                                is_branch_merged(self.project_root, &branch).unwrap_or(false);
-                            let divergent =
-                                branch_has_divergent_commits(self.project_root, &branch)
-                                    .unwrap_or(false);
-                            let dirty_worktree =
-                                worktree_has_changes(self.project_root, agent).unwrap_or(true);
-                            if merged && divergent && !dirty_worktree {
-                                step_results.push(StepResult {
-                                    index: step_index,
-                                    step_type: "land".to_string(),
-                                    status: StepStatus::Success,
-                                    duration_ms: started.elapsed().as_millis() as u64,
-                                    exit_code: Some(0),
-                                    timed_out: false,
-                                    message: Some(format!(
-                                        "resume guard: '{}' already merged (branch '{}') with no pending worktree changes after prior attempt at {}; skipping replay",
-                                        agent,
-                                        branch,
-                                        intent.planned_at.to_rfc3339()
-                                    )),
-                                    stdout: None,
-                                    stderr: None,
-                                });
-                                continue;
-                            }
+                        if let Some(intent) = prior_unsuccessful_intent.as_ref()
+                            && let Some(message) = should_skip_land_replay(
+                                self.config,
+                                self.project_root,
+                                agent,
+                                intent,
+                            )
+                        {
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "land".to_string(),
+                                status: StepStatus::Success,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(0),
+                                timed_out: false,
+                                message: Some(message),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            continue;
                         }
                         if let Err(e) =
                             ensure_agent_session_running(self.config, self.project_root, agent)
@@ -2154,36 +2145,41 @@ fn is_branch_merged(project_root: &Path, branch: &str) -> Result<bool> {
     Ok(status.success())
 }
 
-fn branch_has_divergent_commits(project_root: &Path, branch: &str) -> Result<bool> {
-    let head_sha = git_output_for_automation(project_root, &["rev-parse", "HEAD"])?;
-    let branch_sha = git_output_for_automation(project_root, &["rev-parse", branch])?;
-    Ok(head_sha != branch_sha)
-}
-
 fn worktree_has_changes(project_root: &Path, agent: &str) -> Result<bool> {
-    let worktree_path = project_root.join(".tutti").join("worktrees").join(agent);
-    if !worktree_path.exists() {
-        return Ok(false);
-    }
-    let status = git_output_for_automation(&worktree_path, &["status", "--porcelain"])?;
-    Ok(!status.trim().is_empty())
+    let snapshot = crate::worktree::inspect_worktree(project_root, agent)?;
+    Ok(snapshot.exists && snapshot.dirty)
 }
 
-fn git_output_for_automation(project_root: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(project_root)
-        .output()?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+fn should_skip_land_replay(
+    config: &TuttiConfig,
+    project_root: &Path,
+    agent: &str,
+    intent: &WorkflowStepIntentRecord,
+) -> Option<String> {
+    let branch = agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
+    let merged = is_branch_merged(project_root, &branch).unwrap_or(false);
+    let dirty_worktree = worktree_has_changes(project_root, agent).unwrap_or(true);
+    if merged && !dirty_worktree {
+        Some(format!(
+            "resume guard: '{}' already merged (branch '{}') with no pending worktree changes after prior attempt at {}; skipping replay",
+            agent,
+            branch,
+            intent.planned_at.to_rfc3339()
+        ))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(TuttiError::Git(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            stderr
-        )))
+        None
     }
+}
+
+fn land_replay_diagnostics(
+    config: &TuttiConfig,
+    project_root: &Path,
+    agent: &str,
+) -> (String, bool, bool) {
+    let branch = agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
+    let merged = is_branch_merged(project_root, &branch).unwrap_or(false);
+    let dirty_worktree = worktree_has_changes(project_root, agent).unwrap_or(true);
+    (branch, merged, dirty_worktree)
 }
 
 pub fn build_resume_compensator_plan(
@@ -2216,17 +2212,15 @@ pub fn build_resume_compensator_plan(
 
     match step {
         ResolvedStep::Land { agent, .. } => {
-            let branch = agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
-            let merged = is_branch_merged(project_root, &branch).unwrap_or(false);
-            let divergent = branch_has_divergent_commits(project_root, &branch).unwrap_or(false);
-            let dirty_worktree = worktree_has_changes(project_root, agent).unwrap_or(true);
-            if merged && divergent && !dirty_worktree {
+            let (branch, merged, dirty_worktree) =
+                land_replay_diagnostics(config, project_root, agent);
+            if merged && !dirty_worktree {
                 plan.push(format!(
                     "Detected branch '{branch}' already merged into HEAD with no pending worktree changes; replay will be skipped by idempotency guard."
                 ));
             } else {
                 plan.push(format!(
-                    "Branch '{branch}' is not safely idempotent yet (merged={merged}, divergent={divergent}, worktree_dirty={dirty_worktree}); replay will re-attempt `land`."
+                    "Branch '{branch}' is not safely idempotent yet (merged={merged}, worktree_dirty={dirty_worktree}); replay will re-attempt `land`."
                 ));
             }
         }
@@ -2659,35 +2653,24 @@ fn execute_control_step(
             fail_mode,
             ..
         } => {
-            if let Some(intent) = prior_unsuccessful_intent.as_ref() {
-                let branch =
-                    agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
-                let merged = is_branch_merged(project_root, &branch).unwrap_or(false);
-                let divergent =
-                    branch_has_divergent_commits(project_root, &branch).unwrap_or(false);
-                let dirty_worktree = worktree_has_changes(project_root, agent).unwrap_or(true);
-                if merged && divergent && !dirty_worktree {
-                    return Ok(ControlStepOutcome {
+            if let Some(intent) = prior_unsuccessful_intent.as_ref()
+                && let Some(message) = should_skip_land_replay(config, project_root, agent, intent)
+            {
+                return Ok(ControlStepOutcome {
+                    index: step_index,
+                    result: StepResult {
                         index: step_index,
-                        result: StepResult {
-                            index: step_index,
-                            step_type: "land".to_string(),
-                            status: StepStatus::Success,
-                            duration_ms: started.elapsed().as_millis() as u64,
-                            exit_code: Some(0),
-                            timed_out: false,
-                            message: Some(format!(
-                                "resume guard: '{}' already merged (branch '{}') with no pending worktree changes after prior attempt at {}; skipping replay",
-                                agent,
-                                branch,
-                                intent.planned_at.to_rfc3339()
-                            )),
-                            stdout: None,
-                            stderr: None,
-                        },
-                        hard_fail: false,
-                    });
-                }
+                        step_type: "land".to_string(),
+                        status: StepStatus::Success,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        exit_code: Some(0),
+                        timed_out: false,
+                        message: Some(message),
+                        stdout: None,
+                        stderr: None,
+                    },
+                    hard_fail: false,
+                });
             }
             let agent_session = TmuxSession::session_name(&config.workspace.name, agent);
             if !TmuxSession::session_exists(&agent_session)
@@ -4161,6 +4144,17 @@ mod tests {
         init_git_repo(&dir);
         git_run(&dir, &["branch", "tutti/backend"]);
         crate::state::ensure_tutti_dir(&dir).unwrap();
+        let worktree_path = dir.join(".tutti").join("worktrees").join("backend");
+        git_run(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "tutti/backend",
+            ],
+        );
+        std::fs::write(worktree_path.join("dirty.txt"), "pending\n").unwrap();
 
         let config = sample_config(workflow, vec![]);
         let checkpoint = serde_json::json!({
