@@ -124,3 +124,61 @@ jobs:
           cd "$RUNNER_TEMP/smoke-ws"
           cargo run --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -- doctor --strict
           cargo run --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -- run smoke-check --strict --json
+
+      - name: Recovery trigger smoke (auth + rate limit + provider down)
+        run: |
+          mkdir -p "$RUNNER_TEMP/recovery-ws"
+          cat > "$RUNNER_TEMP/recovery-ws/tutti.toml" <<'EOF'
+          [workspace]
+          name = "ci-recovery"
+
+          [defaults]
+          worktree = false
+
+          [[agent]]
+          name = "auth"
+          runtime = "claude-code"
+          prompt = "auth smoke"
+
+          [[agent]]
+          name = "rate"
+          runtime = "codex"
+          prompt = "rate smoke"
+
+          [[agent]]
+          name = "provider"
+          runtime = "codex"
+          prompt = "provider smoke"
+          EOF
+
+          cd "$RUNNER_TEMP/recovery-ws"
+
+          tmux new-session -d -s "tutti-ci-recovery-auth" -c "$RUNNER_TEMP/recovery-ws"
+          tmux new-session -d -s "tutti-ci-recovery-rate" -c "$RUNNER_TEMP/recovery-ws"
+          tmux new-session -d -s "tutti-ci-recovery-provider" -c "$RUNNER_TEMP/recovery-ws"
+
+          tmux send-keys -t "tutti-ci-recovery-auth" "echo ready" C-m
+          tmux send-keys -t "tutti-ci-recovery-rate" "echo ready" C-m
+          tmux send-keys -t "tutti-ci-recovery-provider" "echo ready" C-m
+          sleep 1
+
+          cargo run --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -- health --json >/tmp/tutti-health-initial.json
+
+          tmux send-keys -t "tutti-ci-recovery-auth" "echo invalid_api_key" C-m
+          tmux send-keys -t "tutti-ci-recovery-rate" "echo rate_limit_exceeded" C-m
+          tmux send-keys -t "tutti-ci-recovery-provider" "echo service unavailable" C-m
+          sleep 1
+
+          cargo run --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" -- health --json >/tmp/tutti-health-failure.json
+
+          grep -q "invalid_api_key" ".tutti/state/health/auth.json"
+          grep -q "rate_limit:" ".tutti/state/health/rate.json"
+          grep -q "provider_down:" ".tutti/state/health/provider.json"
+
+          grep -q '"event":"agent.auth_failed"' ".tutti/state/events.jsonl"
+          grep -q '"event":"agent.rate_limited"' ".tutti/state/events.jsonl"
+          grep -q '"event":"agent.provider_down"' ".tutti/state/events.jsonl"
+
+          tmux kill-session -t "tutti-ci-recovery-auth" || true
+          tmux kill-session -t "tutti-ci-recovery-rate" || true
+          tmux kill-session -t "tutti-ci-recovery-provider" || true
