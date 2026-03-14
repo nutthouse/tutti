@@ -270,7 +270,8 @@ fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> Detect
     let mut working_score = weighted_pattern_score(working_matches.len());
     let mut idle_score = weighted_pattern_score(idle_matches.len());
 
-    if contains_spinner_glyph(&recent) {
+    let spinner_match = contains_spinner_glyph(&recent);
+    if spinner_match {
         working_score = working_score.max(0.70);
     }
     if completion_match.is_some() {
@@ -284,6 +285,9 @@ fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> Detect
             .iter()
             .map(|pattern| format!("working:{pattern}")),
     );
+    if spinner_match {
+        matched_patterns.push("working:spinner".to_string());
+    }
     matched_patterns.extend(idle_matches.iter().map(|pattern| format!("idle:{pattern}")));
     if let Some(pattern) = completion_match.as_deref() {
         matched_patterns.push(format!("completion:{pattern}"));
@@ -767,6 +771,19 @@ mod tests {
                 .matched_patterns
                 .iter()
                 .any(|entry| entry.starts_with("working:"))
+        );
+    }
+
+    #[test]
+    fn diagnostics_records_spinner_signal_when_spinner_present() {
+        let output = "⠋\n";
+        let diagnostics = diagnose_output("codex", output, None).unwrap();
+        assert_eq!(diagnostics.status, AgentStatus::Working);
+        assert!(
+            diagnostics
+                .matched_patterns
+                .iter()
+                .any(|entry| entry == "working:spinner")
         );
     }
 
