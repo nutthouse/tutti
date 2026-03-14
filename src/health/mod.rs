@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 const DEFAULT_CAPTURE_LINES: u32 = 200;
+const RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER: u32 = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub enum WaitCompletionSource {
@@ -33,10 +34,14 @@ pub struct WaitForIdleResult {
 
 impl WaitForIdleResult {
     pub fn completed(source: WaitCompletionSource) -> Self {
+        Self::completed_with_detail(source, None)
+    }
+
+    pub fn completed_with_detail(source: WaitCompletionSource, detail: Option<String>) -> Self {
         Self {
             completion_source: Some(source),
             failure_reason: None,
-            detail: None,
+            detail,
         }
     }
 
@@ -142,10 +147,17 @@ pub fn wait_for_agent_idle(
     idle_stability: Duration,
 ) -> Result<WaitForIdleResult> {
     let adapter = runtime::get_adapter(runtime_name, None);
+    let runtime_prefers_signal = adapter
+        .as_ref()
+        .is_some_and(|adapter| adapter.supports_completion_signal());
     let start = Instant::now();
     let mut saw_activity = false;
     let mut last_hash: Option<u64> = None;
     let mut idle_since: Option<Instant> = None;
+    let mut runtime_fallback_since: Option<Instant> = None;
+    let runtime_fallback_grace = idle_stability
+        .checked_mul(RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER)
+        .unwrap_or(idle_stability);
 
     while start.elapsed() < timeout {
         if !TmuxSession::session_exists(session_name) {
@@ -185,12 +197,29 @@ pub fn wait_for_agent_idle(
         {
             saw_activity = true;
             idle_since = None;
+            runtime_fallback_since = None;
         } else if saw_activity {
             if let Some(since) = idle_since {
                 if since.elapsed() >= idle_stability {
-                    return Ok(WaitForIdleResult::completed(
-                        WaitCompletionSource::HeuristicIdleStable,
-                    ));
+                    if runtime_prefers_signal {
+                        if let Some(fallback_since) = runtime_fallback_since {
+                            if fallback_since.elapsed() >= runtime_fallback_grace {
+                                return Ok(WaitForIdleResult::completed_with_detail(
+                                    WaitCompletionSource::HeuristicIdleStable,
+                                    Some(
+                                        "runtime_signal_not_observed_after_activity_fallback"
+                                            .to_string(),
+                                    ),
+                                ));
+                            }
+                        } else {
+                            runtime_fallback_since = Some(Instant::now());
+                        }
+                    } else {
+                        return Ok(WaitForIdleResult::completed(
+                            WaitCompletionSource::HeuristicIdleStable,
+                        ));
+                    }
                 }
             } else {
                 idle_since = Some(Instant::now());

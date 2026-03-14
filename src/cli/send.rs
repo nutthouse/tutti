@@ -19,6 +19,7 @@ pub struct SendExecutionResult {
     pub agent: String,
     pub waited: bool,
     pub completion_source: Option<String>,
+    pub completion_detail: Option<String>,
     pub captured_output: Option<String>,
 }
 
@@ -80,6 +81,7 @@ pub fn run(
 
     TmuxSession::send_text(&session, &prompt)?;
     let mut completion_source = None;
+    let mut completion_detail = None;
     if options.wait {
         let outcome = health::wait_for_agent_idle(
             &runtime_name,
@@ -114,7 +116,16 @@ pub fn run(
             None => "unknown",
         };
         completion_source = Some(source.to_string());
-        println!("sent prompt to {agent_name} ({workspace_name}) and wait completed ({source})");
+        completion_detail = outcome.detail.clone();
+        if let Some(detail) = completion_detail.as_deref() {
+            println!(
+                "sent prompt to {agent_name} ({workspace_name}) and wait completed ({source}; {detail})"
+            );
+        } else {
+            println!(
+                "sent prompt to {agent_name} ({workspace_name}) and wait completed ({source})"
+            );
+        }
     } else {
         println!("sent prompt to {agent_name} ({workspace_name})");
     }
@@ -136,6 +147,7 @@ pub fn run(
         agent: agent_name,
         waited: options.wait,
         completion_source,
+        completion_detail,
         captured_output,
     })
 }

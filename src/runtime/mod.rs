@@ -56,6 +56,9 @@ pub trait RuntimeAdapter {
 
     /// Detect explicit runtime completion markers (preferred over heuristic idle detection).
     fn detect_completion_signal(&self, terminal_output: &str) -> Option<CompletionSignal>;
+
+    /// Whether this runtime exposes explicit completion signals.
+    fn supports_completion_signal(&self) -> bool;
 }
 
 /// Shared configuration that drives the default RuntimeAdapter implementation.
@@ -174,6 +177,10 @@ impl RuntimeAdapter for CommonAdapter {
         }
         None
     }
+
+    fn supports_completion_signal(&self) -> bool {
+        !self.config.completion_patterns.is_empty()
+    }
 }
 
 fn shell_escape(s: &str) -> String {
@@ -264,6 +271,7 @@ mod tests {
             a.detect_completion_signal("Done.\n\nWhat would you like to do?")
                 .is_some()
         );
+        assert!(a.supports_completion_signal());
     }
 
     #[test]
@@ -333,6 +341,7 @@ mod tests {
             a.detect_completion_signal("Done.\n\nWhat would you like to do?")
                 .is_some()
         );
+        assert!(a.supports_completion_signal());
     }
 
     #[test]
@@ -388,6 +397,7 @@ mod tests {
     fn aider_detect_completion_signal() {
         let a = adapter("aider");
         assert!(a.detect_completion_signal("Done.\n\naider> ").is_some());
+        assert!(a.supports_completion_signal());
     }
 
     #[test]
@@ -449,6 +459,7 @@ mod tests {
             a.detect_completion_signal("Done.\n\nWhat would you like to do?")
                 .is_some()
         );
+        assert!(a.supports_completion_signal());
     }
 
     #[test]
