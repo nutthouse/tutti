@@ -1,6 +1,6 @@
 use crate::config::{
-    HookConfig, HookEvent, HookWorkflowSource, PermissionsConfig, TuttiConfig, WorkflowCommandCwd,
-    WorkflowConfig, WorkflowFailMode, WorkflowStepConfig,
+    HookConfig, HookEvent, HookWorkflowSource, PermissionsConfig, ResilienceConfig, TuttiConfig,
+    WorkflowCommandCwd, WorkflowConfig, WorkflowFailMode, WorkflowStepConfig,
 };
 use crate::error::{Result, TuttiError};
 use crate::health;
@@ -51,9 +51,41 @@ pub struct ExecuteOptions {
     pub strict: bool,
     pub force_open_commands: bool,
     pub command_policy: Option<PermissionsConfig>,
+    pub retry_policy: Option<RetryPolicy>,
     pub origin: ExecutionOrigin,
     pub hook_event: Option<String>,
     pub hook_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+}
+
+impl RetryPolicy {
+    fn normalized(max_attempts: u32, initial_backoff_ms: u64, max_backoff_ms: u64) -> Option<Self> {
+        let attempts = max_attempts.max(1);
+        if attempts <= 1 {
+            return None;
+        }
+        let initial = initial_backoff_ms.max(1);
+        let max_backoff = max_backoff_ms.max(initial);
+        Some(Self {
+            max_attempts: attempts,
+            initial_backoff_ms: initial,
+            max_backoff_ms: max_backoff,
+        })
+    }
+}
+
+pub fn retry_policy_from_resilience(resilience: Option<&ResilienceConfig>) -> Option<RetryPolicy> {
+    let resilience = resilience?;
+    let max_attempts = resilience.retry_max_attempts.unwrap_or(1);
+    let initial_backoff_ms = resilience.retry_initial_backoff_ms.unwrap_or(500);
+    let max_backoff_ms = resilience.retry_max_backoff_ms.unwrap_or(5_000);
+    RetryPolicy::normalized(max_attempts, initial_backoff_ms, max_backoff_ms)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -943,14 +975,20 @@ impl<'a> WorkflowExecutor<'a> {
                             }
                         }
 
-                        let cmd_result = run_shell_command(&rendered, cwd, *timeout_secs);
+                        let cmd_result = run_shell_command_with_retry(
+                            &rendered,
+                            cwd,
+                            *timeout_secs,
+                            options.retry_policy.as_ref(),
+                        );
 
                         match cmd_result {
-                            Ok(outcome) => {
+                            Ok(cmd_outcome) => {
+                                let outcome = cmd_outcome.outcome;
                                 let failed =
                                     outcome.timed_out || outcome.exit_code.unwrap_or(1) != 0;
                                 if failed {
-                                    let message = if outcome.timed_out {
+                                    let base_message = if outcome.timed_out {
                                         format!(
                                             "command timed out after {}s: {}",
                                             timeout_secs, rendered
@@ -961,6 +999,14 @@ impl<'a> WorkflowExecutor<'a> {
                                             outcome.exit_code.unwrap_or(-1),
                                             rendered
                                         )
+                                    };
+                                    let message = if cmd_outcome.attempts > 1 {
+                                        format!(
+                                            "{base_message} (after {} attempts)",
+                                            cmd_outcome.attempts
+                                        )
+                                    } else {
+                                        base_message
                                     };
 
                                     match fail_mode {
@@ -1177,6 +1223,7 @@ impl<'a> WorkflowExecutor<'a> {
                             strict: *strict,
                             force_open_commands: options.force_open_commands,
                             command_policy: options.command_policy.clone(),
+                            retry_policy: options.retry_policy,
                             origin: options.origin,
                             hook_event: options.hook_event.clone(),
                             hook_agent: options.hook_agent.clone(),
@@ -1589,6 +1636,47 @@ fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<Com
         stderr: stderr_buf,
         timed_out,
     })
+}
+
+#[derive(Debug)]
+struct CommandRunOutcome {
+    outcome: CommandOutcome,
+    attempts: u32,
+}
+
+fn run_shell_command_with_retry(
+    command: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+    retry_policy: Option<&RetryPolicy>,
+) -> Result<CommandRunOutcome> {
+    let max_attempts = retry_policy.map_or(1, |p| p.max_attempts.max(1));
+    let mut attempt = 1;
+    loop {
+        let outcome = run_shell_command(command, cwd, timeout_secs)?;
+        let failed = outcome.timed_out || outcome.exit_code.unwrap_or(1) != 0;
+        if !failed || attempt >= max_attempts {
+            return Ok(CommandRunOutcome {
+                outcome,
+                attempts: attempt,
+            });
+        }
+
+        if let Some(policy) = retry_policy {
+            let backoff_ms = retry_backoff_ms(*policy, attempt);
+            std::thread::sleep(Duration::from_millis(backoff_ms));
+        }
+        attempt += 1;
+    }
+}
+
+fn retry_backoff_ms(policy: RetryPolicy, attempt: u32) -> u64 {
+    let mut backoff = policy.initial_backoff_ms.max(1);
+    let cap = policy.max_backoff_ms.max(backoff);
+    for _ in 1..attempt {
+        backoff = backoff.saturating_mul(2).min(cap);
+    }
+    backoff
 }
 
 struct WorkflowCommandPolicyContext<'a> {
@@ -2205,6 +2293,7 @@ fn dispatch_agent_stop_hook(
         strict: false,
         force_open_commands: false,
         command_policy: load_command_policy(),
+        retry_policy: load_retry_policy(),
         origin: ExecutionOrigin::HookAgentStop,
         hook_event: Some("agent_stop".to_string()),
         hook_agent: Some(payload.agent_name.clone()),
@@ -2281,6 +2370,7 @@ fn dispatch_workflow_complete_hook(
         strict: false,
         force_open_commands: false,
         command_policy: load_command_policy(),
+        retry_policy: load_retry_policy(),
         origin: ExecutionOrigin::HookWorkflowComplete,
         hook_event: Some("workflow_complete".to_string()),
         hook_agent: payload.agent_scope.clone(),
@@ -2378,6 +2468,12 @@ fn load_command_policy() -> Option<PermissionsConfig> {
     crate::config::GlobalConfig::load()
         .ok()
         .and_then(|global| global.permissions)
+}
+
+fn load_retry_policy() -> Option<RetryPolicy> {
+    crate::config::GlobalConfig::load()
+        .ok()
+        .and_then(|global| retry_policy_from_resilience(global.resilience.as_ref()))
 }
 
 pub fn execute_workflow_with_hooks(
@@ -2604,6 +2700,7 @@ mod tests {
             strict: false,
             force_open_commands: false,
             command_policy: None,
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2673,6 +2770,7 @@ mod tests {
             strict: false,
             force_open_commands: false,
             command_policy: None,
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2718,6 +2816,7 @@ mod tests {
             strict: true,
             force_open_commands: false,
             command_policy: None,
+            retry_policy: None,
             origin: ExecutionOrigin::Verify,
             hook_event: None,
             hook_agent: None,
@@ -2763,6 +2862,7 @@ mod tests {
             command_policy: Some(PermissionsConfig {
                 allow: vec!["git status".to_string()],
             }),
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2836,6 +2936,7 @@ mod tests {
             command_policy: Some(PermissionsConfig {
                 allow: vec!["git status".to_string()],
             }),
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2892,6 +2993,7 @@ mod tests {
             strict: false,
             force_open_commands: false,
             command_policy: None,
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -2988,6 +3090,38 @@ mod tests {
             err.to_string()
                 .contains("unresolved workflow output template")
         );
+    }
+
+    #[test]
+    fn retry_policy_requires_more_than_one_attempt() {
+        let resilience = ResilienceConfig {
+            provider_down_strategy: None,
+            save_state_on_failure: false,
+            rate_limit_strategy: None,
+            retry_max_attempts: Some(1),
+            retry_initial_backoff_ms: Some(50),
+            retry_max_backoff_ms: Some(200),
+        };
+        assert!(retry_policy_from_resilience(Some(&resilience)).is_none());
+    }
+
+    #[test]
+    fn run_shell_command_with_retry_retries_until_success() {
+        let dir = std::env::temp_dir().join("tutti-test-command-retry");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 5,
+        };
+        let command = "n=$(cat .retry-count 2>/dev/null || echo 0); n=$((n+1)); echo \"$n\" > .retry-count; if [ \"$n\" -lt 2 ]; then exit 1; fi";
+        let outcome = run_shell_command_with_retry(command, &dir, 30, Some(&policy)).unwrap();
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.outcome.exit_code, Some(0));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3144,6 +3278,7 @@ mod tests {
             strict: false,
             force_open_commands: false,
             command_policy: None,
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,
@@ -3295,6 +3430,7 @@ mod tests {
             strict: false,
             force_open_commands: false,
             command_policy: None,
+            retry_policy: None,
             origin: ExecutionOrigin::Run,
             hook_event: None,
             hook_agent: None,

@@ -372,6 +372,12 @@ pub struct ResilienceConfig {
     pub save_state_on_failure: bool,
     #[serde(default)]
     pub rate_limit_strategy: Option<String>,
+    #[serde(default)]
+    pub retry_max_attempts: Option<u32>,
+    #[serde(default)]
+    pub retry_initial_backoff_ms: Option<u64>,
+    #[serde(default)]
+    pub retry_max_backoff_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

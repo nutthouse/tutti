@@ -1,6 +1,7 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, ExecutionResult, ResolvedStep, ResolvedWorkflow, StepStatus,
     WorkflowResolver, execute_workflow_with_hooks, load_resume_context,
+    retry_policy_from_resilience,
 };
 use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
@@ -55,14 +56,17 @@ pub fn run(
     print_budget_warnings(&budget_outcome);
 
     let effective_strict = strict || resume_context.as_ref().is_some_and(|r| r.strict);
-    let command_policy = GlobalConfig::load()
-        .ok()
-        .and_then(|global| global.permissions);
+    let global = GlobalConfig::load().ok();
+    let command_policy = global.as_ref().and_then(|g| g.permissions.clone());
+    let retry_policy = global
+        .as_ref()
+        .and_then(|g| retry_policy_from_resilience(g.resilience.as_ref()));
 
     let options = ExecuteOptions {
         strict: effective_strict,
         force_open_commands: false,
         command_policy,
+        retry_policy,
         origin: ExecutionOrigin::Run,
         hook_event: None,
         hook_agent: None,

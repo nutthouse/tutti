@@ -1,5 +1,6 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, WorkflowResolver, execute_workflow_with_hooks,
+    retry_policy_from_resilience,
 };
 use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::Result;
@@ -25,6 +26,11 @@ pub fn run_due_workflows_for_workspace(
     let mut events = Vec::new();
     let mut last_runs = state::load_scheduler_last_runs(project_root)?;
     let resolver = WorkflowResolver::new(config, project_root);
+    let global = GlobalConfig::load().ok();
+    let command_policy = global.as_ref().and_then(|g| g.permissions.clone());
+    let retry_policy = global
+        .as_ref()
+        .and_then(|g| retry_policy_from_resilience(g.resilience.as_ref()));
     let now = Utc::now();
 
     for workflow in config.workflows.iter().filter(|w| w.schedule.is_some()) {
@@ -54,13 +60,11 @@ pub fn run_due_workflows_for_workspace(
         }
 
         in_flight.insert(key.clone());
-        let command_policy = GlobalConfig::load()
-            .ok()
-            .and_then(|global| global.permissions);
         let options = ExecuteOptions {
             strict: false,
             force_open_commands: false,
-            command_policy,
+            command_policy: command_policy.clone(),
+            retry_policy,
             origin: ExecutionOrigin::ObserveCycle,
             hook_event: None,
             hook_agent: None,

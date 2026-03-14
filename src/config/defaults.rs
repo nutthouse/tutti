@@ -195,6 +195,9 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 # [resilience]
 # provider_down_strategy = "pause"
 # save_state_on_failure = true
+# retry_max_attempts = 3        # command-step retries for run/verify/scheduler
+# retry_initial_backoff_ms = 500
+# retry_max_backoff_ms = 5000
 #
 # Team-shared command allowlist policy (opt-in)
 # [permissions]

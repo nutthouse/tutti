@@ -1,6 +1,6 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, WorkflowResolver, execute_workflow_with_hooks,
-    save_verify_summary,
+    retry_policy_from_resilience, save_verify_summary,
 };
 use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
@@ -33,14 +33,17 @@ pub fn run(
     print_budget_warnings(&budget_outcome);
 
     let workflow_name = workflow.unwrap_or("verify");
-    let command_policy = GlobalConfig::load()
-        .ok()
-        .and_then(|global| global.permissions);
+    let global = GlobalConfig::load().ok();
+    let command_policy = global.as_ref().and_then(|g| g.permissions.clone());
+    let retry_policy = global
+        .as_ref()
+        .and_then(|g| retry_policy_from_resilience(g.resilience.as_ref()));
     let options = ExecuteOptions {
         strict,
         // Verify defaults to lenient unless strict is explicitly requested.
         force_open_commands: !strict,
         command_policy,
+        retry_policy,
         origin: ExecutionOrigin::Verify,
         hook_event: None,
         hook_agent: None,
