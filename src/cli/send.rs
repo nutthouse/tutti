@@ -2,11 +2,16 @@ use crate::config::TuttiConfig;
 use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::health::{WaitCompletionSource, WaitFailureReason};
+use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
 use crate::{budget, budget::BudgetGuardOutcome};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const AUTO_UP_READY_TIMEOUT_SECS: u64 = 45;
+const AUTO_UP_READY_STABLE_MS: u64 = 750;
+const AUTO_UP_READY_POLL_MS: u64 = 250;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SendExecutionResult {
@@ -43,6 +48,7 @@ pub fn run(
     print_budget_warnings(&budget_outcome);
     let session = TmuxSession::session_name(&workspace_name, &agent_name);
 
+    let mut launched_via_auto_up = false;
     if !TmuxSession::session_exists(&session) {
         if !options.auto_up {
             return Err(TuttiError::AgentNotRunning(agent_name.to_string()));
@@ -55,9 +61,14 @@ pub fn run(
             None,
             None,
         )?;
+        launched_via_auto_up = true;
         if !TmuxSession::session_exists(&session) {
             return Err(TuttiError::AgentNotRunning(agent_name.to_string()));
         }
+    }
+
+    if launched_via_auto_up {
+        wait_for_runtime_ready(&runtime_name, &session, &agent_name)?;
     }
 
     let capture_lines = options.output_lines.max(20);
@@ -220,6 +231,52 @@ fn pane_delta(before: &str, after: &str) -> String {
     }
 
     after_lines[overlap..].join("\n").trim_end().to_string()
+}
+
+fn wait_for_runtime_ready(runtime_name: &str, session: &str, agent_name: &str) -> Result<()> {
+    let Some(adapter) = runtime::get_adapter(runtime_name, None) else {
+        std::thread::sleep(Duration::from_millis(500));
+        return Ok(());
+    };
+
+    let timeout = Duration::from_secs(AUTO_UP_READY_TIMEOUT_SECS);
+    let mut idle_since: Option<Instant> = None;
+    let start = Instant::now();
+
+    while start.elapsed() < timeout {
+        if !TmuxSession::session_exists(session) {
+            return Err(TuttiError::AgentNotRunning(agent_name.to_string()));
+        }
+
+        let output = TmuxSession::capture_pane(session, 200).unwrap_or_default();
+        if let Some(reason) = adapter.detect_auth_failure(&output) {
+            return Err(TuttiError::ConfigValidation(format!(
+                "agent '{}' failed auth while starting: {}",
+                agent_name, reason
+            )));
+        }
+
+        let ready = adapter.detect_completion_signal(&output).is_some()
+            || matches!(adapter.detect_status(&output), AgentStatus::Idle);
+        if ready {
+            if let Some(since) = idle_since {
+                if since.elapsed() >= Duration::from_millis(AUTO_UP_READY_STABLE_MS) {
+                    return Ok(());
+                }
+            } else {
+                idle_since = Some(Instant::now());
+            }
+        } else {
+            idle_since = None;
+        }
+
+        std::thread::sleep(Duration::from_millis(AUTO_UP_READY_POLL_MS));
+    }
+
+    Err(TuttiError::ConfigValidation(format!(
+        "agent '{}' did not become ready after auto-up within {}s; run `tt up {}` first, then retry `tt send`",
+        agent_name, AUTO_UP_READY_TIMEOUT_SECS, agent_name
+    )))
 }
 
 fn print_budget_warnings(outcome: &BudgetGuardOutcome) {

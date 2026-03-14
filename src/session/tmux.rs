@@ -1,6 +1,8 @@
 use crate::error::{Result, TuttiError};
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BLOCKED_INHERITED_ENV_VARS: &[&str] = &["CLAUDECODE"];
 
@@ -123,14 +125,8 @@ impl TmuxSession {
         };
 
         for line in lines {
-            let out = Command::new("tmux")
-                .args(["send-keys", "-t", session, "-l", "--", line])
-                .output()?;
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return Err(TuttiError::TmuxError(format!(
-                    "failed to send text to '{session}': {stderr}"
-                )));
+            if !line.is_empty() {
+                send_line_via_tmux_buffer(session, line)?;
             }
 
             let out = Command::new("tmux")
@@ -192,6 +188,44 @@ impl TmuxSession {
 /// Shell-escape a value for use in `env KEY=VALUE` commands.
 fn shell_escape_value(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn send_line_via_tmux_buffer(session: &str, line: &str) -> Result<()> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let buffer_name = format!("tutti-send-{}-{nanos}", std::process::id());
+
+    let mut child = Command::new("tmux")
+        .args(["load-buffer", "-b", &buffer_name, "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(line.as_bytes())?;
+    }
+    let load_output = child.wait_with_output()?;
+    if !load_output.status.success() {
+        let stderr = String::from_utf8_lossy(&load_output.stderr);
+        return Err(TuttiError::TmuxError(format!(
+            "failed to load tmux buffer for '{session}': {stderr}"
+        )));
+    }
+
+    let paste_output = Command::new("tmux")
+        .args(["paste-buffer", "-d", "-b", &buffer_name, "-t", session])
+        .output()?;
+    if !paste_output.status.success() {
+        let stderr = String::from_utf8_lossy(&paste_output.stderr);
+        return Err(TuttiError::TmuxError(format!(
+            "failed to paste text to '{session}': {stderr}"
+        )));
+    }
+
+    Ok(())
 }
 
 fn should_strip_inherited_env_var(key: &str) -> bool {
