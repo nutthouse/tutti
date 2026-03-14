@@ -69,9 +69,9 @@ That doesn't scale. Tutti does.
 
 **Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
 
-**Resilience (partially built).** Tutti detects auth failures, captures emergency state, retries workflow commands, and can rotate launch profiles when configured. Full outage orchestration is still in progress.
+**Resilience (partially built).** Tutti detects auth failures, captures emergency state, retries workflow commands, and can rotate launch profiles when configured. Auth-failed session auto-recovery now runs in `tt serve` and `tt watch`; broader outage orchestration is still in progress.
 
-**Multi-subscription aware (partially built).** Profile configuration, capacity tracking, and launch-time fallback profile rotation are built. Full runtime/session-level failover is still planned.
+**Multi-subscription aware (partially built).** Profile configuration, capacity tracking, and profile rotation/failover are built for launch and auth-recovery paths. Broader provider outage orchestration remains planned.
 
 ## What Tutti Is Not
 

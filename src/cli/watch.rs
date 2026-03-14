@@ -1,4 +1,4 @@
-use crate::config::TuttiConfig;
+use crate::config::{ResilienceConfig, TuttiConfig};
 use crate::error::Result;
 use crate::session::TmuxSession;
 use crate::state;
@@ -50,9 +50,16 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
     let log_capture_lines: u32 = 200;
     let refresh_interval = Duration::from_secs(interval.max(1));
     let restart_cooldown = Duration::from_secs(20);
+    let auth_recovery_cooldown = Duration::from_secs(90);
     let plan_cache = build_plan_cache(&config);
-    let mut previous_running = HashMap::<String, bool>::new();
-    let mut last_restart_attempt = HashMap::<String, Instant>::new();
+    let global = crate::config::GlobalConfig::load().ok();
+    let failure_policy = SessionFailurePolicy {
+        restart_persistent,
+        restart_cooldown,
+        auth_recovery_cooldown,
+        resilience: global.as_ref().and_then(|g| g.resilience.as_ref()),
+    };
+    let mut failure_state = SessionFailureState::default();
     let mut last_logged_snapshot = HashMap::<String, String>::new();
     let mut last_handoff_generated = HashMap::<String, Instant>::new();
     let mut last_event: Option<String> = None;
@@ -104,13 +111,11 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
         )? {
             last_event = Some(event);
         }
-        if let Some(event) = detect_and_handle_crashes(
+        if let Some(event) = detect_and_handle_session_failures(
             &config,
             &snapshots,
-            restart_persistent,
-            restart_cooldown,
-            &mut previous_running,
-            &mut last_restart_attempt,
+            &failure_policy,
+            &mut failure_state,
             &mut ui,
         )? {
             last_event = Some(event);
@@ -304,35 +309,52 @@ fn format_plan_label(plan: Option<&str>) -> String {
     }
 }
 
-fn detect_and_handle_crashes(
-    config: &TuttiConfig,
-    snapshots: &[AgentSnapshot],
+#[derive(Default)]
+struct SessionFailureState {
+    previous_running: HashMap<String, bool>,
+    last_restart_attempt: HashMap<String, Instant>,
+    last_auth_recovery_attempt: HashMap<String, Instant>,
+}
+
+struct SessionFailurePolicy<'a> {
     restart_persistent: bool,
     restart_cooldown: Duration,
-    previous_running: &mut HashMap<String, bool>,
-    last_restart_attempt: &mut HashMap<String, Instant>,
+    auth_recovery_cooldown: Duration,
+    resilience: Option<&'a ResilienceConfig>,
+}
+
+fn detect_and_handle_session_failures(
+    config: &TuttiConfig,
+    snapshots: &[AgentSnapshot],
+    policy: &SessionFailurePolicy<'_>,
+    state: &mut SessionFailureState,
     ui: &mut WatchTerminal,
 ) -> Result<Option<String>> {
     let mut latest_event = None;
+    let auth_rotation_enabled = profile_rotation_enabled(policy.resilience);
+    let strategy = rotation_strategy_label(policy.resilience).unwrap_or("rotate_profile");
 
     for snapshot in snapshots {
-        let was_running = previous_running
+        let was_running = state
+            .previous_running
             .get(&snapshot.agent_name)
             .copied()
             .unwrap_or(snapshot.running);
         let now_running = snapshot.running;
 
         if was_running && !now_running {
-            if restart_persistent && is_persistent_agent(config, &snapshot.agent_name) {
-                let can_attempt = last_restart_attempt
+            if policy.restart_persistent && is_persistent_agent(config, &snapshot.agent_name) {
+                let can_attempt = state
+                    .last_restart_attempt
                     .get(&snapshot.agent_name)
-                    .is_none_or(|last| last.elapsed() >= restart_cooldown);
+                    .is_none_or(|last| last.elapsed() >= policy.restart_cooldown);
 
                 if can_attempt {
-                    last_restart_attempt.insert(snapshot.agent_name.clone(), Instant::now());
+                    state
+                        .last_restart_attempt
+                        .insert(snapshot.agent_name.clone(), Instant::now());
                     ui.suspend()?;
-                    let restart_result =
-                        super::up::run(Some(&snapshot.agent_name), None, false, false, None, None);
+                    let restart_result = restart_agent(config, &snapshot.agent_name);
                     ui.resume()?;
 
                     latest_event = Some(match restart_result {
@@ -348,12 +370,83 @@ fn detect_and_handle_crashes(
             } else {
                 latest_event = Some(format!("{} crashed", snapshot.agent_name));
             }
+        } else if now_running
+            && auth_rotation_enabled
+            && is_auth_failed_status(&snapshot.status_raw)
+        {
+            let can_attempt = state
+                .last_auth_recovery_attempt
+                .get(&snapshot.agent_name)
+                .is_none_or(|last| last.elapsed() >= policy.auth_recovery_cooldown);
+            if can_attempt {
+                state
+                    .last_auth_recovery_attempt
+                    .insert(snapshot.agent_name.clone(), Instant::now());
+                ui.suspend()?;
+                let recovery_result = restart_agent(config, &snapshot.agent_name);
+                ui.resume()?;
+                latest_event = Some(match recovery_result {
+                    Ok(_) => format!("auth-recovered {} via {}", snapshot.agent_name, strategy),
+                    Err(e) => format!("auth recovery failed for {}: {e}", snapshot.agent_name),
+                });
+            } else {
+                latest_event = Some(format!(
+                    "{} auth-failed (recovery cooldown active)",
+                    snapshot.agent_name
+                ));
+            }
         }
 
-        previous_running.insert(snapshot.agent_name.clone(), now_running);
+        state
+            .previous_running
+            .insert(snapshot.agent_name.clone(), now_running);
     }
 
     Ok(latest_event)
+}
+
+fn restart_agent(config: &TuttiConfig, agent_name: &str) -> Result<()> {
+    let session = TmuxSession::session_name(&config.workspace.name, agent_name);
+    if TmuxSession::session_exists(&session) {
+        TmuxSession::kill_session(&session)?;
+    }
+    super::up::run(Some(agent_name), None, false, false, None, None)?;
+    Ok(())
+}
+
+fn is_auth_failed_status(status_raw: &str) -> bool {
+    status_raw
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("auth failed")
+}
+
+fn profile_rotation_enabled(resilience: Option<&ResilienceConfig>) -> bool {
+    let Some(resilience) = resilience else {
+        return false;
+    };
+    strategy_requests_rotation(resilience.provider_down_strategy.as_deref())
+        || strategy_requests_rotation(resilience.rate_limit_strategy.as_deref())
+}
+
+fn rotation_strategy_label(resilience: Option<&ResilienceConfig>) -> Option<&str> {
+    let resilience = resilience?;
+    if strategy_requests_rotation(resilience.rate_limit_strategy.as_deref()) {
+        return resilience.rate_limit_strategy.as_deref();
+    }
+    if strategy_requests_rotation(resilience.provider_down_strategy.as_deref()) {
+        return resilience.provider_down_strategy.as_deref();
+    }
+    None
+}
+
+fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
+    strategy.is_some_and(|s| {
+        matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "rotate" | "rotate_profile" | "profile_rotate" | "failover" | "auto_rotate"
+        )
+    })
 }
 
 fn is_persistent_agent(config: &TuttiConfig, agent_name: &str) -> bool {
@@ -665,5 +758,34 @@ mod tests {
             cache.get("backend").map(|c| c.plan_display.as_str()),
             Some("--")
         );
+    }
+
+    #[test]
+    fn is_auth_failed_status_matches_prefix_case_insensitive() {
+        assert!(is_auth_failed_status("Auth Failed: token expired"));
+        assert!(is_auth_failed_status("auth failed (invalid key)"));
+        assert!(!is_auth_failed_status("Working"));
+    }
+
+    #[test]
+    fn strategy_requests_rotation_accepts_known_values() {
+        assert!(strategy_requests_rotation(Some("rotate_profile")));
+        assert!(strategy_requests_rotation(Some("failover")));
+        assert!(strategy_requests_rotation(Some("AUTO_ROTATE")));
+        assert!(!strategy_requests_rotation(Some("pause")));
+        assert!(!strategy_requests_rotation(None));
+    }
+
+    #[test]
+    fn profile_rotation_enabled_checks_both_strategy_fields() {
+        let cfg = ResilienceConfig {
+            provider_down_strategy: Some("pause".to_string()),
+            save_state_on_failure: false,
+            rate_limit_strategy: Some("rotate_profile".to_string()),
+            retry_max_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+        };
+        assert!(profile_rotation_enabled(Some(&cfg)));
     }
 }
