@@ -2,6 +2,7 @@ use crate::config::{ResilienceConfig, TuttiConfig};
 use crate::error::Result;
 use crate::session::TmuxSession;
 use crate::state;
+use crate::{health, health::RecoveryTrigger};
 use chrono::Utc;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -112,9 +113,20 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
         )? {
             last_event = Some(event);
         }
+        let health_records = match health::probe_workspace(&config, project_root, 200) {
+            Ok(records) => records
+                .into_iter()
+                .map(|record| (record.agent.clone(), record))
+                .collect::<HashMap<_, _>>(),
+            Err(e) => {
+                last_event = Some(format!("health probe warning: {e}"));
+                HashMap::new()
+            }
+        };
         if let Some(event) = detect_and_handle_session_failures(
             &config,
             &snapshots,
+            &health_records,
             &failure_policy,
             &mut failure_state,
             &mut ui,
@@ -328,13 +340,13 @@ struct SessionFailurePolicy<'a> {
 fn detect_and_handle_session_failures(
     config: &TuttiConfig,
     snapshots: &[AgentSnapshot],
+    health_records: &HashMap<String, state::AgentHealth>,
     policy: &SessionFailurePolicy<'_>,
     state: &mut SessionFailureState,
     ui: &mut WatchTerminal,
 ) -> Result<Option<String>> {
     let mut latest_event = None;
     let auth_rotation_enabled = profile_rotation_enabled(policy.resilience);
-    let strategy = rotation_strategy_label(policy.resilience).unwrap_or("rotate_profile");
 
     for snapshot in snapshots {
         let was_running = state
@@ -362,6 +374,7 @@ fn detect_and_handle_session_failures(
                         "agent.recovery_attempted",
                         "crash_restart",
                         None,
+                        None,
                     );
                     ui.suspend()?;
                     let restart_result = restart_agent(config, &snapshot.agent_name);
@@ -376,6 +389,7 @@ fn detect_and_handle_session_failures(
                                 "agent.recovery_succeeded",
                                 "crash_restart",
                                 None,
+                                None,
                             );
                             format!("restarted {}", snapshot.agent_name)
                         }
@@ -386,6 +400,7 @@ fn detect_and_handle_session_failures(
                                 &snapshot.agent_name,
                                 "agent.recovery_failed",
                                 "crash_restart",
+                                None,
                                 Some(&e.to_string()),
                             );
                             format!("restart failed for {}: {e}", snapshot.agent_name)
@@ -400,10 +415,29 @@ fn detect_and_handle_session_failures(
             } else {
                 latest_event = Some(format!("{} crashed", snapshot.agent_name));
             }
-        } else if now_running
-            && auth_rotation_enabled
-            && is_auth_failed_status(&snapshot.status_raw)
-        {
+        } else if now_running && auth_rotation_enabled {
+            let trigger = health_records
+                .get(&snapshot.agent_name)
+                .and_then(health::recovery_trigger)
+                .or_else(|| {
+                    if is_auth_failed_status(&snapshot.status_raw) {
+                        Some(RecoveryTrigger::AuthFailed)
+                    } else {
+                        None
+                    }
+                });
+            let Some(trigger) = trigger else {
+                state
+                    .previous_running
+                    .insert(snapshot.agent_name.clone(), now_running);
+                continue;
+            };
+            let Some(strategy) = rotation_strategy_for_trigger(policy.resilience, trigger) else {
+                state
+                    .previous_running
+                    .insert(snapshot.agent_name.clone(), now_running);
+                continue;
+            };
             let can_attempt = state
                 .last_auth_recovery_attempt
                 .get(&snapshot.agent_name)
@@ -419,6 +453,7 @@ fn detect_and_handle_session_failures(
                     &snapshot.agent_name,
                     "agent.recovery_attempted",
                     strategy,
+                    Some(trigger),
                     Some(reason.as_str()),
                 );
                 ui.suspend()?;
@@ -432,9 +467,15 @@ fn detect_and_handle_session_failures(
                             &snapshot.agent_name,
                             "agent.recovery_succeeded",
                             strategy,
+                            Some(trigger),
                             Some(reason.as_str()),
                         );
-                        format!("auth-recovered {} via {}", snapshot.agent_name, strategy)
+                        format!(
+                            "recovered {} ({}) via {}",
+                            snapshot.agent_name,
+                            trigger.as_str(),
+                            strategy
+                        )
                     }
                     Err(e) => {
                         let _ = emit_recovery_event(
@@ -443,9 +484,14 @@ fn detect_and_handle_session_failures(
                             &snapshot.agent_name,
                             "agent.recovery_failed",
                             strategy,
+                            Some(trigger),
                             Some(&e.to_string()),
                         );
-                        format!("auth recovery failed for {}: {e}", snapshot.agent_name)
+                        format!(
+                            "recovery failed for {} ({}): {e}",
+                            snapshot.agent_name,
+                            trigger.as_str()
+                        )
                     }
                 });
             } else {
@@ -488,15 +534,31 @@ fn profile_rotation_enabled(resilience: Option<&ResilienceConfig>) -> bool {
         || strategy_requests_rotation(resilience.rate_limit_strategy.as_deref())
 }
 
-fn rotation_strategy_label(resilience: Option<&ResilienceConfig>) -> Option<&str> {
+fn rotation_strategy_for_trigger(
+    resilience: Option<&ResilienceConfig>,
+    trigger: RecoveryTrigger,
+) -> Option<&str> {
     let resilience = resilience?;
-    if strategy_requests_rotation(resilience.rate_limit_strategy.as_deref()) {
-        return resilience.rate_limit_strategy.as_deref();
+    match trigger {
+        RecoveryTrigger::RateLimited => resilience
+            .rate_limit_strategy
+            .as_deref()
+            .filter(|s| strategy_requests_rotation(Some(s))),
+        RecoveryTrigger::ProviderDown => resilience
+            .provider_down_strategy
+            .as_deref()
+            .filter(|s| strategy_requests_rotation(Some(s))),
+        RecoveryTrigger::AuthFailed => resilience
+            .rate_limit_strategy
+            .as_deref()
+            .filter(|s| strategy_requests_rotation(Some(s)))
+            .or_else(|| {
+                resilience
+                    .provider_down_strategy
+                    .as_deref()
+                    .filter(|s| strategy_requests_rotation(Some(s)))
+            }),
     }
-    if strategy_requests_rotation(resilience.provider_down_strategy.as_deref()) {
-        return resilience.provider_down_strategy.as_deref();
-    }
-    None
 }
 
 fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
@@ -514,15 +576,18 @@ fn emit_recovery_event(
     agent: &str,
     event: &str,
     strategy: &str,
+    trigger: Option<RecoveryTrigger>,
     reason: Option<&str>,
 ) -> Result<()> {
     let data = match reason {
         Some(value) => serde_json::json!({
             "strategy": strategy,
+            "trigger": trigger.map(|t| t.as_str()),
             "reason": value
         }),
         None => serde_json::json!({
-            "strategy": strategy
+            "strategy": strategy,
+            "trigger": trigger.map(|t| t.as_str())
         }),
     };
     state::append_control_event(
@@ -881,5 +946,25 @@ mod tests {
             retry_max_backoff_ms: None,
         };
         assert!(profile_rotation_enabled(Some(&cfg)));
+    }
+
+    #[test]
+    fn rotation_strategy_for_trigger_prefers_matching_strategy() {
+        let cfg = ResilienceConfig {
+            provider_down_strategy: Some("failover".to_string()),
+            save_state_on_failure: false,
+            rate_limit_strategy: Some("rotate_profile".to_string()),
+            retry_max_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+        };
+        assert_eq!(
+            rotation_strategy_for_trigger(Some(&cfg), RecoveryTrigger::RateLimited),
+            Some("rotate_profile")
+        );
+        assert_eq!(
+            rotation_strategy_for_trigger(Some(&cfg), RecoveryTrigger::ProviderDown),
+            Some("failover")
+        );
     }
 }

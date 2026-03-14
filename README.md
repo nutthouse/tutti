@@ -69,7 +69,7 @@ That doesn't scale. Tutti does.
 
 **Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
 
-**Resilience (partially built).** Tutti detects auth/rate-limit/provider outage signals, captures emergency state on auth failures, retries workflow commands, and can rotate launch profiles when configured. `tt serve` now auto-recovers sessions for auth/rate-limit/provider-down triggers, and `tt watch` auto-recovers auth-failed sessions; broader outage orchestration is still in progress.
+**Resilience (partially built).** Tutti detects auth/rate-limit/provider outage signals, captures emergency state on auth failures, retries workflow commands, and can rotate launch profiles when configured. `tt serve` and `tt watch` now auto-recover sessions for auth/rate-limit/provider-down triggers based on configured resilience strategies; broader outage orchestration is still in progress.
 
 **Multi-subscription aware (partially built).** Profile configuration, capacity tracking, and profile rotation/failover are built for launch and runtime recovery paths. Broader provider outage orchestration remains planned.
 
@@ -332,8 +332,8 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Emergency state capture on auth failures
 - Workflow command retry/backoff (`[resilience].retry_*`)
 - Launch-time profile rotation/fallback (`[resilience].provider_down_strategy = "rotate_profile"` or `rate_limit_strategy`)
-- Runtime auth-failure recovery in `tt serve` (cooldown-throttled session restart + profile-rotation relaunch when rotation strategy is enabled)
-- Runtime rate-limit/provider-down recovery in `tt serve` (strategy-aware profile rotation + restart)
+- Runtime auth/rate-limit/provider-down recovery in `tt serve` (cooldown-throttled restart + strategy-aware profile rotation)
+- Runtime auth/rate-limit/provider-down recovery in `tt watch` (cooldown-throttled restart + strategy-aware profile rotation)
 - Correlated failure detection (provider-level vs individual agent) (planned)
 - Runtime/session pause-resume orchestration (planned)
 
