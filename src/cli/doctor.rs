@@ -7,6 +7,10 @@ use crate::state::{AgentHealth, AuthState};
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
+use std::fs;
+use std::fs::OpenOptions;
+use std::net::TcpListener;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,6 +65,7 @@ pub fn run(json: bool, strict: bool) -> Result<()> {
         &|command| which::which(command).is_ok(),
         &|key| std::env::var_os(key).is_some(),
     );
+    checks.extend(serve_readiness_checks(&config, &global, project_root));
     if let Ok(records) = health::probe_workspace(&config, project_root, 200) {
         checks.extend(auth_health_checks(&records));
     }
@@ -249,6 +254,95 @@ fn evaluate_checks(
     checks
 }
 
+fn serve_readiness_checks(
+    config: &TuttiConfig,
+    global: &GlobalConfig,
+    project_root: &Path,
+) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    let state_dir = project_root.join(".tutti").join("state");
+
+    match fs::create_dir_all(&state_dir) {
+        Ok(()) => checks.push(DoctorCheck {
+            check: "serve/state_dir".to_string(),
+            status: DoctorStatus::Pass,
+            detail: format!("state dir writable at {}", state_dir.display()),
+        }),
+        Err(e) => {
+            checks.push(DoctorCheck {
+                check: "serve/state_dir".to_string(),
+                status: DoctorStatus::Fail,
+                detail: format!("cannot create state dir {}: {e}", state_dir.display()),
+            });
+            return checks;
+        }
+    }
+
+    let events_path = state_dir.join("events.jsonl");
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events_path)
+    {
+        Ok(_) => checks.push(DoctorCheck {
+            check: "serve/events_log".to_string(),
+            status: DoctorStatus::Pass,
+            detail: format!("events log writable at {}", events_path.display()),
+        }),
+        Err(e) => checks.push(DoctorCheck {
+            check: "serve/events_log".to_string(),
+            status: DoctorStatus::Fail,
+            detail: format!("cannot append events log {}: {e}", events_path.display()),
+        }),
+    }
+
+    let scheduled = config
+        .workflows
+        .iter()
+        .filter(|wf| wf.schedule.as_deref().is_some_and(|s| !s.trim().is_empty()))
+        .count();
+    checks.push(DoctorCheck {
+        check: "serve/scheduler".to_string(),
+        status: DoctorStatus::Pass,
+        detail: if scheduled > 0 {
+            format!("{scheduled} scheduled workflow(s) configured")
+        } else {
+            "no scheduled workflows configured (scheduler optional)".to_string()
+        },
+    });
+
+    let port = global
+        .dashboard
+        .as_ref()
+        .map(|dash| dash.port)
+        .unwrap_or(4040);
+    let port_check = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => {
+            drop(listener);
+            DoctorCheck {
+                check: "serve/port".to_string(),
+                status: DoctorStatus::Pass,
+                detail: format!("health API port 127.0.0.1:{port} is available"),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => DoctorCheck {
+            check: "serve/port".to_string(),
+            status: DoctorStatus::Pass,
+            detail: format!(
+                "health API port 127.0.0.1:{port} is already in use (likely active tt serve)"
+            ),
+        },
+        Err(e) => DoctorCheck {
+            check: "serve/port".to_string(),
+            status: DoctorStatus::Fail,
+            detail: format!("cannot bind health API port 127.0.0.1:{port}: {e}"),
+        },
+    };
+    checks.push(port_check);
+
+    checks
+}
+
 fn resolve_launch_settings(config: &TuttiConfig) -> (LaunchMode, LaunchPolicyMode) {
     let mode = config
         .launch
@@ -412,6 +506,15 @@ fn suggestion_for_check(check: &DoctorCheck) -> Option<&'static str> {
         "launch policy" if check.status == DoctorStatus::Warn => {
             Some("Prefer constrained mode for safer unattended runs")
         }
+        "serve/state_dir" if check.status == DoctorStatus::Fail => {
+            Some("Ensure workspace path is writable and .tutti/state can be created")
+        }
+        "serve/events_log" if check.status == DoctorStatus::Fail => {
+            Some("Check filesystem permissions for .tutti/state/events.jsonl")
+        }
+        "serve/port" if check.status == DoctorStatus::Fail => {
+            Some("Configure [dashboard].port to an available loopback port")
+        }
         check_name if check_name.starts_with("auth/") && check.status == DoctorStatus::Fail => {
             Some("Re-authenticate runtime account and re-run doctor")
         }
@@ -460,6 +563,7 @@ mod tests {
     use crate::state::ActivityState;
     use chrono::Utc;
     use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_config(default_profile: Option<&str>) -> TuttiConfig {
         TuttiConfig {
@@ -516,6 +620,16 @@ mod tests {
             resilience: None,
             permissions: None,
         }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
     }
 
     #[test]
@@ -746,5 +860,61 @@ mod tests {
                 .iter()
                 .any(|c| c.check == "auth/frontend" && c.status == DoctorStatus::Fail)
         );
+    }
+
+    #[test]
+    fn serve_readiness_checks_pass_when_state_is_writable() {
+        let dir = unique_temp_dir("tutti-doctor-serve-ready");
+        let mut config = sample_config(None);
+        config.workflows = vec![crate::config::WorkflowConfig {
+            name: "observe".to_string(),
+            description: None,
+            schedule: Some("*/30 * * * *".to_string()),
+            steps: vec![crate::config::WorkflowStepConfig::Command {
+                id: None,
+                depends_on: vec![],
+                run: "echo ok".to_string(),
+                cwd: Some(crate::config::WorkflowCommandCwd::Workspace),
+                subdir: None,
+                agent: None,
+                timeout_secs: None,
+                fail_mode: None,
+                output_json: None,
+            }],
+        }];
+
+        let checks = serve_readiness_checks(&config, &GlobalConfig::default(), &dir);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.check == "serve/state_dir" && c.status == DoctorStatus::Pass)
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.check == "serve/events_log" && c.status == DoctorStatus::Pass)
+        );
+        assert!(checks.iter().any(|c| {
+            c.check == "serve/scheduler"
+                && c.status == DoctorStatus::Pass
+                && c.detail.contains("scheduled workflow")
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_readiness_checks_fail_when_state_dir_cannot_be_created() {
+        let dir = unique_temp_dir("tutti-doctor-serve-state-fail");
+        std::fs::write(dir.join(".tutti"), "not-a-dir").expect("write marker");
+
+        let checks = serve_readiness_checks(&sample_config(None), &GlobalConfig::default(), &dir);
+        assert!(checks.iter().any(|c| {
+            c.check == "serve/state_dir"
+                && c.status == DoctorStatus::Fail
+                && c.detail.contains("cannot create state dir")
+        }));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
