@@ -8,9 +8,10 @@ use crate::health::WaitFailureReason;
 use crate::permissions::evaluate_command_policy;
 use crate::session::TmuxSession;
 use crate::state::{
-    AutomationRunRecord, ControlEvent, VerifyLastSummary, append_automation_run,
-    append_control_event, append_policy_decision, load_workflow_checkpoint,
-    save_verify_last_summary, save_workflow_checkpoint, save_workflow_output,
+    AutomationRunRecord, ControlEvent, VerifyLastSummary, WorkflowStepIntentRecord,
+    WorkflowStepOutcomeRecord, append_automation_run, append_control_event, append_policy_decision,
+    load_workflow_checkpoint, load_workflow_intent, save_verify_last_summary,
+    save_workflow_checkpoint, save_workflow_intent, save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -519,6 +520,40 @@ fn step_is_control(step: &ResolvedStep) -> bool {
     )
 }
 
+fn step_type_name(step: &ResolvedStep) -> &'static str {
+    match step {
+        ResolvedStep::Prompt { .. } => "prompt",
+        ResolvedStep::Command { .. } => "command",
+        ResolvedStep::EnsureRunning { .. } => "ensure_running",
+        ResolvedStep::Workflow { .. } => "workflow",
+        ResolvedStep::Land { .. } => "land",
+        ResolvedStep::Review { .. } => "review",
+    }
+}
+
+fn sanitize_step_key(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn step_file_key(step: &ResolvedStep, step_index: usize) -> String {
+    let base = match step {
+        ResolvedStep::Prompt { step_id, .. } | ResolvedStep::Command { step_id, .. } => {
+            step_id.as_deref().unwrap_or_else(|| step_type_name(step))
+        }
+        _ => step_type_name(step),
+    };
+    format!("{step_index:03}-{}", sanitize_step_key(base))
+}
+
 #[derive(Debug, Clone)]
 pub struct PromptInjectedFile {
     source: PathBuf,
@@ -575,6 +610,7 @@ pub struct ResumeContext {
     pub strict: bool,
     pub agent_scope: Option<String>,
     pub started_at: chrono::DateTime<Utc>,
+    pub failed_steps: Vec<usize>,
     pub completed_steps: HashSet<usize>,
     pub step_results: Vec<StepResult>,
     pub output_files: HashMap<String, String>,
@@ -622,6 +658,7 @@ pub fn load_resume_context(project_root: &Path, run_id: &str) -> Result<Option<R
         strict: record.strict,
         agent_scope: record.agent_scope,
         started_at: record.started_at,
+        failed_steps: record.failed_steps,
         completed_steps,
         step_results,
         output_files: record.output_files,
@@ -668,6 +705,7 @@ impl<'a> WorkflowExecutor<'a> {
         let completed_steps = resume
             .map(|r| r.completed_steps.clone())
             .unwrap_or_default();
+        let mut attempted_steps = HashSet::new();
         let explicit_dep_mode = workflow
             .steps
             .iter()
@@ -684,18 +722,47 @@ impl<'a> WorkflowExecutor<'a> {
             let dag = execute_control_dag(
                 self.config,
                 self.project_root,
+                &run_id,
+                &workflow.name,
                 &workflow.steps,
                 &dep_graph,
                 &completed_steps,
             )?;
             success = dag.success;
             failed_steps.extend(dag.failed_steps);
+            for result in &dag.step_results {
+                attempted_steps.insert(result.index);
+            }
             step_results.extend(dag.step_results);
         } else {
             for (idx, step) in workflow.steps.iter().enumerate() {
                 let step_index = idx + 1;
                 if completed_steps.contains(&step_index) {
                     continue;
+                }
+                let prior_unsuccessful_intent = if resume.is_some() {
+                    load_unsuccessful_step_intent(self.project_root, &run_id, step, step_index)?
+                } else {
+                    None
+                };
+                attempted_steps.insert(step_index);
+                if let Err(err) =
+                    record_step_intent(self.project_root, &run_id, &workflow.name, step_index, step)
+                {
+                    failed_steps.push(step_index);
+                    success = false;
+                    step_results.push(StepResult {
+                        index: step_index,
+                        step_type: step_type_name(step).to_string(),
+                        status: StepStatus::Failed,
+                        duration_ms: 0,
+                        exit_code: None,
+                        timed_out: false,
+                        message: Some(format!("failed to write step intent: {err}")),
+                        stdout: None,
+                        stderr: None,
+                    });
+                    break;
                 }
                 match step {
                     ResolvedStep::Prompt {
@@ -1333,6 +1400,29 @@ impl<'a> WorkflowExecutor<'a> {
                         ..
                     } => {
                         let started = std::time::Instant::now();
+                        if let Some(intent) = prior_unsuccessful_intent.as_ref() {
+                            let branch = agent_branch(self.config, agent)
+                                .unwrap_or_else(|| format!("tutti/{agent}"));
+                            if is_branch_merged(self.project_root, &branch).unwrap_or(false) {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "land".to_string(),
+                                    status: StepStatus::Success,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(0),
+                                    timed_out: false,
+                                    message: Some(format!(
+                                        "resume guard: '{}' already merged (branch '{}') after prior attempt at {}; skipping replay",
+                                        agent,
+                                        branch,
+                                        intent.planned_at.to_rfc3339()
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                continue;
+                            }
+                        }
                         if let Err(e) =
                             ensure_agent_session_running(self.config, self.project_root, agent)
                         {
@@ -1426,6 +1516,29 @@ impl<'a> WorkflowExecutor<'a> {
                         ..
                     } => {
                         let started = std::time::Instant::now();
+                        if let Some(intent) = prior_unsuccessful_intent.as_ref()
+                            && let Some(packet) = review_packet_exists_since(
+                                self.project_root,
+                                agent,
+                                intent.planned_at,
+                            )?
+                        {
+                            step_results.push(StepResult {
+                                index: step_index,
+                                step_type: "review".to_string(),
+                                status: StepStatus::Success,
+                                duration_ms: started.elapsed().as_millis() as u64,
+                                exit_code: Some(0),
+                                timed_out: false,
+                                message: Some(format!(
+                                    "resume guard: existing review packet detected at {}; skipping replay",
+                                    packet.display()
+                                )),
+                                stdout: None,
+                                stderr: None,
+                            });
+                            continue;
+                        }
                         if let Err(e) =
                             ensure_agent_session_running(self.config, self.project_root, reviewer)
                         {
@@ -1526,6 +1639,22 @@ impl<'a> WorkflowExecutor<'a> {
             step_results,
             output_files,
         };
+
+        for step_index in attempted_steps {
+            if let Some(step) = workflow.steps.get(step_index.saturating_sub(1))
+                && let Some(step_result) =
+                    result.step_results.iter().find(|s| s.index == step_index)
+            {
+                let _ = record_step_outcome(
+                    self.project_root,
+                    &result.run_id,
+                    &workflow.name,
+                    step_index,
+                    step,
+                    step_result,
+                );
+            }
+        }
 
         append_automation_run(
             self.project_root,
@@ -1786,6 +1915,316 @@ fn load_resume_outputs(
     Ok(outputs)
 }
 
+fn step_intent_payload(step: &ResolvedStep) -> Value {
+    match step {
+        ResolvedStep::Prompt {
+            agent,
+            text,
+            session_name,
+            ..
+        } => json!({
+            "agent": agent,
+            "session_name": session_name,
+            "text_chars": text.chars().count(),
+        }),
+        ResolvedStep::Command {
+            run,
+            cwd,
+            agent,
+            timeout_secs,
+            ..
+        } => json!({
+            "run": run,
+            "cwd": cwd.display().to_string(),
+            "agent": agent,
+            "timeout_secs": timeout_secs,
+        }),
+        ResolvedStep::EnsureRunning {
+            agent,
+            session_name,
+            ..
+        } => json!({
+            "agent": agent,
+            "session_name": session_name,
+        }),
+        ResolvedStep::Workflow {
+            workflow,
+            agent_override,
+            strict,
+            ..
+        } => json!({
+            "workflow": workflow,
+            "agent_override": agent_override,
+            "strict": strict,
+        }),
+        ResolvedStep::Land {
+            agent, pr, force, ..
+        } => json!({
+            "agent": agent,
+            "pr": pr,
+            "force": force,
+        }),
+        ResolvedStep::Review {
+            agent, reviewer, ..
+        } => json!({
+            "agent": agent,
+            "reviewer": reviewer,
+        }),
+    }
+}
+
+fn record_step_intent(
+    project_root: &Path,
+    run_id: &str,
+    workflow_name: &str,
+    step_index: usize,
+    step: &ResolvedStep,
+) -> Result<()> {
+    let step_id = step_file_key(step, step_index);
+    let attempt = load_workflow_intent(project_root, run_id, &step_id)?
+        .map(|existing| existing.attempt.saturating_add(1))
+        .unwrap_or(1);
+    let record = WorkflowStepIntentRecord {
+        run_id: run_id.to_string(),
+        workflow_name: workflow_name.to_string(),
+        step_index,
+        step_id: step_id.clone(),
+        step_type: step_type_name(step).to_string(),
+        planned_at: Utc::now(),
+        intent: step_intent_payload(step),
+        attempt,
+        outcome: None,
+    };
+    save_workflow_intent(project_root, run_id, &step_id, &record)?;
+    Ok(())
+}
+
+fn step_side_effects(step: &ResolvedStep, result: &StepResult) -> Option<Value> {
+    match step {
+        ResolvedStep::Land {
+            agent, pr, force, ..
+        } => Some(json!({
+            "agent": agent,
+            "pr": pr,
+            "force": force,
+            "status": format!("{:?}", result.status).to_lowercase(),
+        })),
+        ResolvedStep::Review {
+            agent, reviewer, ..
+        } => Some(json!({
+            "agent": agent,
+            "reviewer": reviewer,
+            "status": format!("{:?}", result.status).to_lowercase(),
+        })),
+        ResolvedStep::EnsureRunning { agent, .. } => Some(json!({
+            "agent": agent,
+            "status": format!("{:?}", result.status).to_lowercase(),
+        })),
+        _ => None,
+    }
+}
+
+fn record_step_outcome(
+    project_root: &Path,
+    run_id: &str,
+    workflow_name: &str,
+    step_index: usize,
+    step: &ResolvedStep,
+    result: &StepResult,
+) -> Result<()> {
+    let step_id = step_file_key(step, step_index);
+    let mut record =
+        load_workflow_intent(project_root, run_id, &step_id)?.unwrap_or(WorkflowStepIntentRecord {
+            run_id: run_id.to_string(),
+            workflow_name: workflow_name.to_string(),
+            step_index,
+            step_id: step_id.clone(),
+            step_type: step_type_name(step).to_string(),
+            planned_at: Utc::now(),
+            intent: step_intent_payload(step),
+            attempt: 1,
+            outcome: None,
+        });
+    record.workflow_name = workflow_name.to_string();
+    record.step_index = step_index;
+    record.step_type = step_type_name(step).to_string();
+    record.outcome = Some(WorkflowStepOutcomeRecord {
+        completed_at: Utc::now(),
+        status: format!("{:?}", result.status).to_lowercase(),
+        success: result.status == StepStatus::Success,
+        exit_code: result.exit_code,
+        timed_out: result.timed_out,
+        message: result.message.clone(),
+        side_effects: step_side_effects(step, result),
+    });
+    save_workflow_intent(project_root, run_id, &step_id, &record)?;
+    Ok(())
+}
+
+fn load_unsuccessful_step_intent(
+    project_root: &Path,
+    run_id: &str,
+    step: &ResolvedStep,
+    step_index: usize,
+) -> Result<Option<WorkflowStepIntentRecord>> {
+    let step_id = step_file_key(step, step_index);
+    let Some(record) = load_workflow_intent(project_root, run_id, &step_id)? else {
+        return Ok(None);
+    };
+    if record.outcome.as_ref().is_some_and(|o| o.success) {
+        return Ok(None);
+    }
+    Ok(Some(record))
+}
+
+fn review_packet_exists_since(
+    project_root: &Path,
+    agent: &str,
+    since: chrono::DateTime<Utc>,
+) -> Result<Option<PathBuf>> {
+    let reviews_dir = project_root.join(".tutti").join("state").join("reviews");
+    if !reviews_dir.exists() {
+        return Ok(None);
+    }
+
+    let prefix = format!("{agent}-review-");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&reviews_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".md") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let modified_utc: chrono::DateTime<Utc> = modified.into();
+        if modified_utc < since {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(best_modified, _)| modified > *best_modified)
+        {
+            best = Some((modified, path));
+        }
+    }
+    Ok(best.map(|(_, path)| path))
+}
+
+fn agent_branch(config: &TuttiConfig, agent: &str) -> Option<String> {
+    config
+        .agents
+        .iter()
+        .find(|a| a.name == agent)
+        .map(|a| a.resolved_branch())
+}
+
+fn is_branch_merged(project_root: &Path, branch: &str) -> Result<bool> {
+    let status = Command::new("git")
+        .args(["merge-base", "--is-ancestor", branch, "HEAD"])
+        .current_dir(project_root)
+        .status()?;
+    Ok(status.success())
+}
+
+pub fn build_resume_compensator_plan(
+    config: &TuttiConfig,
+    project_root: &Path,
+    workflow: &ResolvedWorkflow,
+    resume: &ResumeContext,
+) -> Result<Vec<String>> {
+    let Some(step_index) = resume
+        .failed_steps
+        .iter()
+        .copied()
+        .find(|idx| !resume.completed_steps.contains(idx))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(step) = workflow.steps.get(step_index.saturating_sub(1)) else {
+        return Ok(Vec::new());
+    };
+    let Some(intent) =
+        load_unsuccessful_step_intent(project_root, &resume.run_id, step, step_index)?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut plan = vec![format!(
+        "Compensator preflight: step {step_index} ({}) has prior intent without a successful outcome.",
+        step_type_name(step)
+    )];
+
+    match step {
+        ResolvedStep::Land { agent, .. } => {
+            let branch = agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
+            if is_branch_merged(project_root, &branch).unwrap_or(false) {
+                plan.push(format!(
+                    "Detected branch '{branch}' already merged into HEAD; replay will be skipped by idempotency guard."
+                ));
+            } else {
+                plan.push(format!(
+                    "Branch '{branch}' is not merged into HEAD; replay will re-attempt `land`."
+                ));
+            }
+        }
+        ResolvedStep::Review { agent, .. } => {
+            if let Some(packet) =
+                review_packet_exists_since(project_root, agent, intent.planned_at)?
+            {
+                plan.push(format!(
+                    "Detected existing review packet after prior attempt: {}. Replay will be skipped by idempotency guard.",
+                    packet.display()
+                ));
+            } else {
+                plan.push(
+                    "No new review packet found after prior attempt; replay will re-send review."
+                        .to_string(),
+                );
+            }
+        }
+        ResolvedStep::EnsureRunning {
+            agent,
+            session_name,
+            ..
+        } => {
+            if TmuxSession::session_exists(session_name) {
+                plan.push(format!(
+                    "Agent '{agent}' is already running; replay remains a no-op."
+                ));
+            } else {
+                plan.push(format!(
+                    "Agent '{agent}' is not running; replay will attempt to start it."
+                ));
+            }
+        }
+        ResolvedStep::Command { .. } => {
+            plan.push(
+                "Command steps are best-effort only; verify repository side effects before replay."
+                    .to_string(),
+            );
+        }
+        _ => {
+            plan.push(
+                "Replay will continue; review prior step output if side effects are possible."
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(plan)
+}
+
 fn save_execution_checkpoint(
     project_root: &Path,
     options: &ExecuteOptions,
@@ -1892,6 +2331,8 @@ fn build_normalized_dependencies(steps: &[ResolvedStep]) -> Vec<Vec<usize>> {
 fn execute_control_dag(
     config: &TuttiConfig,
     project_root: &Path,
+    run_id: &str,
+    workflow_name: &str,
     steps: &[ResolvedStep],
     dependencies: &[Vec<usize>],
     completed_steps: &HashSet<usize>,
@@ -1926,6 +2367,8 @@ fn execute_control_dag(
             vec![execute_control_step(
                 config,
                 project_root,
+                run_id,
+                workflow_name,
                 &steps[ready[0] - 1],
                 ready[0],
             )?]
@@ -1934,10 +2377,12 @@ fn execute_control_dag(
             for idx in &ready {
                 let cfg = config.clone();
                 let root = project_root.to_path_buf();
+                let run_id = run_id.to_string();
+                let workflow_name = workflow_name.to_string();
                 let step = steps[*idx - 1].clone();
                 let step_idx = *idx;
                 handles.push(std::thread::spawn(move || {
-                    execute_control_step(&cfg, &root, &step, step_idx)
+                    execute_control_step(&cfg, &root, &run_id, &workflow_name, &step, step_idx)
                 }));
             }
             let mut out = Vec::with_capacity(ready.len());
@@ -1981,10 +2426,15 @@ fn execute_control_dag(
 fn execute_control_step(
     config: &TuttiConfig,
     project_root: &Path,
+    run_id: &str,
+    workflow_name: &str,
     step: &ResolvedStep,
     step_index: usize,
 ) -> Result<ControlStepOutcome> {
     let started = std::time::Instant::now();
+    let prior_unsuccessful_intent =
+        load_unsuccessful_step_intent(project_root, run_id, step, step_index)?;
+    record_step_intent(project_root, run_id, workflow_name, step_index, step)?;
     match step {
         ResolvedStep::EnsureRunning {
             agent,
@@ -2065,6 +2515,29 @@ fn execute_control_step(
             fail_mode,
             ..
         } => {
+            if let Some(intent) = prior_unsuccessful_intent.as_ref()
+                && let Some(packet) =
+                    review_packet_exists_since(project_root, agent, intent.planned_at)?
+            {
+                return Ok(ControlStepOutcome {
+                    index: step_index,
+                    result: StepResult {
+                        index: step_index,
+                        step_type: "review".to_string(),
+                        status: StepStatus::Success,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        exit_code: Some(0),
+                        timed_out: false,
+                        message: Some(format!(
+                            "resume guard: existing review packet detected at {}; skipping replay",
+                            packet.display()
+                        )),
+                        stdout: None,
+                        stderr: None,
+                    },
+                    hard_fail: false,
+                });
+            }
             let reviewer_session = TmuxSession::session_name(&config.workspace.name, reviewer);
             if !TmuxSession::session_exists(&reviewer_session)
                 && let Err(e) =
@@ -2118,6 +2591,32 @@ fn execute_control_step(
             fail_mode,
             ..
         } => {
+            if let Some(intent) = prior_unsuccessful_intent.as_ref() {
+                let branch =
+                    agent_branch(config, agent).unwrap_or_else(|| format!("tutti/{agent}"));
+                if is_branch_merged(project_root, &branch).unwrap_or(false) {
+                    return Ok(ControlStepOutcome {
+                        index: step_index,
+                        result: StepResult {
+                            index: step_index,
+                            step_type: "land".to_string(),
+                            status: StepStatus::Success,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                            exit_code: Some(0),
+                            timed_out: false,
+                            message: Some(format!(
+                                "resume guard: '{}' already merged (branch '{}') after prior attempt at {}; skipping replay",
+                                agent,
+                                branch,
+                                intent.planned_at.to_rfc3339()
+                            )),
+                            stdout: None,
+                            stderr: None,
+                        },
+                        hard_fail: false,
+                    });
+                }
+            }
             let agent_session = TmuxSession::session_name(&config.workspace.name, agent);
             if !TmuxSession::session_exists(&agent_session)
                 && let Err(e) = run_tt_subcommand(project_root, &["up".to_string(), agent.clone()])
@@ -2611,7 +3110,8 @@ mod tests {
     use super::*;
     use crate::config::{AgentConfig, DefaultsConfig, PermissionsConfig, WorkspaceConfig};
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     fn sample_config(workflow: WorkflowConfig, hooks: Vec<HookConfig>) -> TuttiConfig {
         TuttiConfig {
@@ -2645,6 +3145,28 @@ mod tests {
             observe: None,
             budget: None,
         }
+    }
+
+    fn init_git_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "tutti-tests@example.com"]);
+        run(&["config", "user.name", "Tutti Tests"]);
+        std::fs::write(dir.join("README.md"), "ok\n").unwrap();
+        run(&["add", "README.md"]);
+        run(&["commit", "-m", "init"]);
     }
 
     #[test]
@@ -3248,6 +3770,208 @@ mod tests {
 
         let err = load_resume_context(&dir, "run-ok").unwrap_err();
         assert!(err.to_string().contains("already succeeded"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_persists_step_intent_and_outcome() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                depends_on: vec![],
+                run: "echo ok".to_string(),
+                cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: None,
+                agent: None,
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-step-intent-outcome");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap();
+        let result = WorkflowExecutor::new(&config, &dir)
+            .execute(&resolved, &opts, None, None, None)
+            .unwrap();
+
+        let intent = crate::state::load_workflow_intent(&dir, &result.run_id, "001-command")
+            .unwrap()
+            .unwrap();
+        assert_eq!(intent.step_type, "command");
+        assert!(
+            intent
+                .outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.success)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_resume_compensator_plan_warns_for_command_step() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                depends_on: vec![],
+                run: "exit 1".to_string(),
+                cwd: Some(WorkflowCommandCwd::Workspace),
+                subdir: None,
+                agent: None,
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+        let dir = std::env::temp_dir().join("tutti-test-resume-plan-command");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let checkpoint = serde_json::json!({
+            "run_id": "run-command",
+            "workflow_name": "verify",
+            "strict": false,
+            "origin": "run",
+            "agent_scope": null,
+            "started_at": Utc::now(),
+            "finished_at": Utc::now(),
+            "success": false,
+            "failed_steps": [1],
+            "step_results": [],
+            "output_files": {}
+        });
+        crate::state::save_workflow_checkpoint(&dir, "run-command", &checkpoint).unwrap();
+
+        let intent = WorkflowStepIntentRecord {
+            run_id: "run-command".to_string(),
+            workflow_name: "verify".to_string(),
+            step_index: 1,
+            step_id: "001-command".to_string(),
+            step_type: "command".to_string(),
+            planned_at: Utc::now(),
+            intent: serde_json::json!({"run":"exit 1"}),
+            attempt: 1,
+            outcome: None,
+        };
+        crate::state::save_workflow_intent(&dir, "run-command", "001-command", &intent).unwrap();
+
+        let resume = load_resume_context(&dir, "run-command").unwrap().unwrap();
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap();
+        let plan = build_resume_compensator_plan(&config, &dir, &resolved, &resume).unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("best-effort") || line.contains("best effort"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_resume_compensator_plan_detects_already_merged_land_branch() {
+        let workflow = WorkflowConfig {
+            name: "autoland".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Land {
+                depends_on: vec![],
+                agent: "backend".to_string(),
+                pr: Some(false),
+                force: Some(false),
+                fail_mode: Some(WorkflowFailMode::Closed),
+            }],
+        };
+        let dir = std::env::temp_dir().join("tutti-test-resume-plan-land");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        Command::new("git")
+            .args(["branch", "tutti/backend"])
+            .current_dir(&dir)
+            .status()
+            .unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let checkpoint = serde_json::json!({
+            "run_id": "run-land",
+            "workflow_name": "autoland",
+            "strict": false,
+            "origin": "run",
+            "agent_scope": "backend",
+            "started_at": Utc::now(),
+            "finished_at": Utc::now(),
+            "success": false,
+            "failed_steps": [1],
+            "step_results": [],
+            "output_files": {}
+        });
+        crate::state::save_workflow_checkpoint(&dir, "run-land", &checkpoint).unwrap();
+
+        let intent = WorkflowStepIntentRecord {
+            run_id: "run-land".to_string(),
+            workflow_name: "autoland".to_string(),
+            step_index: 1,
+            step_id: "001-land".to_string(),
+            step_type: "land".to_string(),
+            planned_at: Utc::now(),
+            intent: serde_json::json!({"agent":"backend","pr":false,"force":false}),
+            attempt: 1,
+            outcome: None,
+        };
+        crate::state::save_workflow_intent(&dir, "run-land", "001-land", &intent).unwrap();
+
+        let resume = load_resume_context(&dir, "run-land").unwrap().unwrap();
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("autoland", None, &opts)
+            .unwrap();
+        let plan = build_resume_compensator_plan(&config, &dir, &resolved, &resume).unwrap();
+        assert!(plan.iter().any(|line| line.contains("already merged")));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

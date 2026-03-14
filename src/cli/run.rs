@@ -1,7 +1,7 @@
 use crate::automation::{
     ExecuteOptions, ExecutionOrigin, ExecutionResult, ResolvedStep, ResolvedWorkflow, StepStatus,
-    WorkflowResolver, execute_workflow_with_hooks, load_resume_context,
-    retry_policy_from_resilience,
+    WorkflowResolver, build_resume_compensator_plan, execute_workflow_with_hooks,
+    load_resume_context, retry_policy_from_resilience,
 };
 use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
@@ -84,6 +84,13 @@ pub fn run(
         )));
     }
 
+    if let Some(ctx) = resume_context.as_ref() {
+        let plan = build_resume_compensator_plan(&config, project_root, &resolved, ctx)?;
+        if !plan.is_empty() {
+            print_resume_plan(&ctx.run_id, &plan);
+        }
+    }
+
     if dry_run {
         if json {
             println!(
@@ -118,6 +125,13 @@ pub fn run(
     }
 
     Ok(())
+}
+
+fn print_resume_plan(run_id: &str, plan: &[String]) {
+    eprintln!("Resume compensator plan for run '{run_id}':");
+    for line in plan {
+        eprintln!("  - {line}");
+    }
 }
 
 #[derive(Debug, Serialize)]
