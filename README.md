@@ -28,6 +28,9 @@ tt send frontend --wait --timeout-secs 900 "Analyze the review page UX issues"
 tt send frontend --auto_up --wait --output "Analyze the review page UX issues"
                          # auto-start if needed and print captured pane delta
 tt health --json         # probe + print machine-readable health
+tt detect frontend       # explain runtime detection matches + confidence
+tt detect frontend --json
+                         # machine-readable detector diagnostics
 tt serve --port 4040     # scheduler + probes + local /v1 control API
 tt handoff generate backend
                          # write a handoff packet to .tutti/handoffs
@@ -71,6 +74,8 @@ That doesn't scale. Tutti does.
 
 **Resilience (partially built).** Tutti detects auth/rate-limit/provider outage signals, captures emergency state on auth failures, retries workflow commands, and can rotate launch profiles when configured. `tt serve` and `tt watch` now auto-recover sessions for auth/rate-limit/provider-down triggers based on configured resilience strategies; broader outage orchestration is still in progress.
 
+Runtime detector patterns are versioned in `src/runtime/*.rs` and validated against transcript fixtures in `tests/fixtures/runtime/`; update both when upstream CLI phrasing changes.
+
 **Multi-subscription aware (partially built).** Profile configuration, capacity tracking, and profile rotation/failover are built for launch and runtime recovery paths. Broader provider outage orchestration remains planned.
 
 ## What Tutti Is Not
@@ -109,7 +114,7 @@ source ~/.zshrc
 ## Project Status (March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -425,7 +430,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 ## Roadmap
 
-- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt diff`, `tt land`, `tt review`, `tt send`, `tt handoff`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
+- [x] Core CLI (`tt init`, `tt up`, `tt down`, `tt status`, `tt voices`, `tt watch`, `tt switch`, `tt diff`, `tt detect`, `tt land`, `tt review`, `tt send`, `tt handoff`, `tt attach`, `tt peek`, `tt logs`, `tt usage`, `tt run`, `tt verify`, `tt doctor`, `tt permissions`, `tt workspaces`)
 - [x] Claude Code runtime adapter
 - [x] Codex runtime adapter  
 - [x] Aider runtime adapter

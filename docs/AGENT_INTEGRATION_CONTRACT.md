@@ -82,6 +82,9 @@ Recommended machine pattern:
 
 - Snapshot:
   - `tt peek <agent> --lines 100`
+- Detector diagnostics:
+  - `tt detect <agent>`
+  - `tt detect <agent> --json`
 - Interactive:
   - `tt attach <agent>`
 - One-off prompt with completion wait:

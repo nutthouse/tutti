@@ -2,9 +2,10 @@ pub mod aider;
 pub mod claude_code;
 pub mod codex;
 pub mod openclaw;
+use serde::{Deserialize, Serialize};
 
 /// Status of an agent as detected from terminal output.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentStatus {
     /// Agent is actively working (generating output).
     Working,
@@ -19,6 +20,17 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionSignal {
     Explicit(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionDiagnostics {
+    pub status: AgentStatus,
+    pub confidence: f32,
+    pub matched_patterns: Vec<String>,
+    pub auth_match: Option<String>,
+    pub rate_limit_match: Option<String>,
+    pub provider_down_match: Option<String>,
+    pub completion_match: Option<String>,
 }
 
 impl std::fmt::Display for AgentStatus {
@@ -65,6 +77,9 @@ pub trait RuntimeAdapter {
 
     /// Whether this runtime exposes explicit completion signals.
     fn supports_completion_signal(&self) -> bool;
+
+    /// Explain runtime detection decisions for a captured terminal output.
+    fn diagnose(&self, terminal_output: &str) -> DetectionDiagnostics;
 }
 
 /// Shared configuration that drives the default RuntimeAdapter implementation.
@@ -129,67 +144,33 @@ impl RuntimeAdapter for CommonAdapter {
     }
 
     fn detect_status(&self, terminal_output: &str) -> AgentStatus {
-        if let Some(reason) = self.detect_auth_failure(terminal_output) {
-            return AgentStatus::AuthFailed(reason);
-        }
-
-        let recent: String = terminal_output
-            .lines()
-            .rev()
-            .take(20)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        for pattern in self.config.working_patterns {
-            if recent.contains(pattern) {
-                return AgentStatus::Working;
-            }
-        }
-
-        for pattern in self.config.idle_patterns {
-            if recent.contains(pattern) {
-                return AgentStatus::Idle;
-            }
-        }
-
-        AgentStatus::Unknown
+        self.diagnose(terminal_output).status
     }
 
     fn detect_auth_failure(&self, terminal_output: &str) -> Option<String> {
-        detect_pattern(terminal_output, self.config.auth_patterns)
+        self.diagnose(terminal_output).auth_match
     }
 
     fn detect_rate_limit(&self, terminal_output: &str) -> Option<String> {
-        detect_pattern(terminal_output, self.config.rate_limit_patterns)
+        self.diagnose(terminal_output).rate_limit_match
     }
 
     fn detect_provider_down(&self, terminal_output: &str) -> Option<String> {
-        detect_pattern(terminal_output, self.config.provider_down_patterns)
+        self.diagnose(terminal_output).provider_down_match
     }
 
     fn detect_completion_signal(&self, terminal_output: &str) -> Option<CompletionSignal> {
-        let recent: String = terminal_output
-            .lines()
-            .rev()
-            .take(20)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        for pattern in self.config.completion_patterns {
-            if recent.contains(pattern) {
-                return Some(CompletionSignal::Explicit((*pattern).to_string()));
-            }
-        }
-        None
+        self.diagnose(terminal_output)
+            .completion_match
+            .map(CompletionSignal::Explicit)
     }
 
     fn supports_completion_signal(&self) -> bool {
         !self.config.completion_patterns.is_empty()
+    }
+
+    fn diagnose(&self, terminal_output: &str) -> DetectionDiagnostics {
+        diagnose_with_config(self.config, terminal_output)
     }
 }
 
@@ -197,14 +178,118 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn detect_pattern(terminal_output: &str, patterns: &[&str]) -> Option<String> {
-    let lower = terminal_output.to_lowercase();
-    for pattern in patterns {
-        if lower.contains(&pattern.to_lowercase()) {
-            return Some(pattern.to_string());
-        }
+fn recent_window(terminal_output: &str, max_lines: usize) -> String {
+    terminal_output
+        .lines()
+        .rev()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn detect_pattern_ci(haystack_lower: &str, patterns: &[&str]) -> Option<String> {
+    patterns
+        .iter()
+        .find(|pattern| haystack_lower.contains(&pattern.to_lowercase()))
+        .map(|pattern| (*pattern).to_string())
+}
+
+fn collect_pattern_matches(haystack_lower: &str, patterns: &[&str]) -> Vec<String> {
+    patterns
+        .iter()
+        .filter_map(|pattern| {
+            if haystack_lower.contains(&pattern.to_lowercase()) {
+                Some((*pattern).to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn contains_spinner_glyph(text: &str) -> bool {
+    const SPINNER_GLYPHS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    text.chars().any(|ch| SPINNER_GLYPHS.contains(&ch))
+}
+
+fn weighted_pattern_score(matches: usize) -> f32 {
+    if matches == 0 {
+        return 0.0;
     }
-    None
+    let base = 0.40;
+    let incremental = 0.12 * (matches.saturating_sub(1) as f32);
+    (base + incremental).min(0.92)
+}
+
+fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> DetectionDiagnostics {
+    let full_lower = terminal_output.to_lowercase();
+    let recent = recent_window(terminal_output, 40);
+    let recent_lower = recent.to_lowercase();
+
+    let auth_match = detect_pattern_ci(&full_lower, config.auth_patterns);
+    let rate_limit_match = detect_pattern_ci(&full_lower, config.rate_limit_patterns);
+    let provider_down_match = detect_pattern_ci(&full_lower, config.provider_down_patterns);
+    let completion_match = detect_pattern_ci(&recent_lower, config.completion_patterns);
+    let working_matches = collect_pattern_matches(&recent_lower, config.working_patterns);
+    let idle_matches = collect_pattern_matches(&recent_lower, config.idle_patterns);
+
+    if let Some(reason) = auth_match.clone() {
+        return DetectionDiagnostics {
+            status: AgentStatus::AuthFailed(reason.clone()),
+            confidence: 1.0,
+            matched_patterns: vec![format!("auth:{reason}")],
+            auth_match,
+            rate_limit_match,
+            provider_down_match,
+            completion_match,
+        };
+    }
+
+    let mut working_score = weighted_pattern_score(working_matches.len());
+    let mut idle_score = weighted_pattern_score(idle_matches.len());
+
+    if contains_spinner_glyph(&recent) {
+        working_score = working_score.max(0.70);
+    }
+    if completion_match.is_some() {
+        // Structured completion markers outrank single-word pattern hits.
+        idle_score = idle_score.max(0.85);
+    }
+
+    let mut matched_patterns = Vec::new();
+    matched_patterns.extend(
+        working_matches
+            .iter()
+            .map(|pattern| format!("working:{pattern}")),
+    );
+    matched_patterns.extend(idle_matches.iter().map(|pattern| format!("idle:{pattern}")));
+    if let Some(pattern) = completion_match.as_deref() {
+        matched_patterns.push(format!("completion:{pattern}"));
+    }
+
+    let (status, confidence) = if working_score == 0.0 && idle_score == 0.0 {
+        (AgentStatus::Unknown, 0.0)
+    } else if (working_score - idle_score).abs() < 0.10 {
+        // Avoid brittle flips when both states weakly match.
+        (AgentStatus::Unknown, 0.45)
+    } else if working_score > idle_score {
+        (AgentStatus::Working, working_score.min(0.99))
+    } else {
+        (AgentStatus::Idle, idle_score.min(0.99))
+    };
+
+    DetectionDiagnostics {
+        status,
+        confidence,
+        matched_patterns,
+        auth_match,
+        rate_limit_match,
+        provider_down_match,
+        completion_match,
+    }
 }
 
 /// Get a runtime adapter by name, with an optional command override from a profile.
@@ -223,6 +308,15 @@ pub fn get_adapter(
         command: command_override.map(|s| s.to_string()),
         config,
     }))
+}
+
+pub fn diagnose_output(
+    runtime: &str,
+    terminal_output: &str,
+    command_override: Option<&str>,
+) -> Option<DetectionDiagnostics> {
+    let adapter = get_adapter(runtime, command_override)?;
+    Some(adapter.diagnose(terminal_output))
 }
 
 /// Return a profile command override only when it is compatible with the agent runtime.
@@ -583,5 +677,86 @@ mod tests {
         assert!(cmd.contains("'dontAsk'"));
         assert!(cmd.contains("'/tmp/my settings.json'"));
         assert!(cmd.ends_with("'hello'"));
+    }
+
+    #[test]
+    fn fixture_claude_status_variants() {
+        let adapter = adapter("claude-code");
+        let working = include_str!("../../tests/fixtures/runtime/claude_working_spinner.txt");
+        let idle = include_str!("../../tests/fixtures/runtime/claude_idle_prompt.txt");
+        let auth_failed = include_str!("../../tests/fixtures/runtime/claude_auth_failed.txt");
+
+        let working_diag = adapter.diagnose(working);
+        assert_eq!(working_diag.status, AgentStatus::Working);
+        assert!(working_diag.confidence >= 0.65);
+        assert!(!working_diag.matched_patterns.is_empty());
+
+        let idle_diag = adapter.diagnose(idle);
+        assert_eq!(idle_diag.status, AgentStatus::Idle);
+        assert!(idle_diag.confidence >= 0.70);
+        assert!(idle_diag.completion_match.is_some());
+
+        let auth_diag = adapter.diagnose(auth_failed);
+        assert!(matches!(auth_diag.status, AgentStatus::AuthFailed(_)));
+        assert_eq!(auth_diag.confidence, 1.0);
+        assert!(auth_diag.auth_match.is_some());
+    }
+
+    #[test]
+    fn fixture_codex_status_and_signal_variants() {
+        let adapter = adapter("codex");
+        let working = include_str!("../../tests/fixtures/runtime/codex_working_generating.txt");
+        let idle = include_str!("../../tests/fixtures/runtime/codex_idle_completion_variant.txt");
+        let rate_limit = include_str!("../../tests/fixtures/runtime/codex_rate_limit.txt");
+
+        let working_diag = adapter.diagnose(working);
+        assert_eq!(working_diag.status, AgentStatus::Working);
+        assert!(working_diag.confidence >= 0.35);
+
+        let idle_diag = adapter.diagnose(idle);
+        assert_eq!(idle_diag.status, AgentStatus::Idle);
+        assert!(idle_diag.completion_match.is_some());
+        assert!(idle_diag.confidence >= 0.70);
+
+        let signal_diag = adapter.diagnose(rate_limit);
+        assert!(signal_diag.rate_limit_match.is_some());
+    }
+
+    #[test]
+    fn fixture_aider_and_openclaw_signal_variants() {
+        let aider = adapter("aider");
+        let openclaw = adapter("openclaw");
+        let aider_idle = include_str!("../../tests/fixtures/runtime/aider_idle_prompt.txt");
+        let provider_down = include_str!("../../tests/fixtures/runtime/openclaw_provider_down.txt");
+
+        let aider_diag = aider.diagnose(aider_idle);
+        assert_eq!(aider_diag.status, AgentStatus::Idle);
+        assert!(aider_diag.completion_match.is_some());
+
+        let openclaw_diag = openclaw.diagnose(provider_down);
+        assert!(openclaw_diag.provider_down_match.is_some());
+    }
+
+    #[test]
+    fn diagnostics_report_match_explanations() {
+        let output = "Generating code...\n⠋ Thinking...\n";
+        let diagnostics = diagnose_output("codex", output, None).unwrap();
+        assert_eq!(diagnostics.status, AgentStatus::Working);
+        assert!(
+            diagnostics
+                .matched_patterns
+                .iter()
+                .any(|entry| entry.starts_with("working:"))
+        );
+    }
+
+    #[test]
+    fn diagnostics_tie_breaker_returns_unknown_in_ambiguous_case() {
+        let output = "Generating...\nWhat would you like to do?\n";
+        let diagnostics = diagnose_output("codex", output, None).unwrap();
+        assert!(matches!(
+            diagnostics.status,
+            AgentStatus::Unknown | AgentStatus::Idle
+        ));
     }
 }
