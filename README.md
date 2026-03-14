@@ -331,6 +331,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Emergency state capture on auth failures
 - Workflow command retry/backoff (`[resilience].retry_*`)
 - Launch-time profile rotation/fallback (`[resilience].provider_down_strategy = "rotate_profile"` or `rate_limit_strategy`)
+- Runtime auth-failure recovery in `tt serve` (cooldown-throttled session restart + profile-rotation relaunch when rotation strategy is enabled)
 - Correlated failure detection (provider-level vs individual agent) (planned)
 - Runtime/session pause-resume orchestration (planned)
 

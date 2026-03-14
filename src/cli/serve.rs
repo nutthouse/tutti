@@ -1,9 +1,11 @@
 use crate::cli::snapshot;
-use crate::config::{GlobalConfig, TuttiConfig};
+use crate::config::{GlobalConfig, ResilienceConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::scheduler;
+use crate::session::TmuxSession;
 use crate::state;
+use crate::state::{AuthState, ControlEvent};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -50,6 +52,10 @@ pub fn run(
     let host = "127.0.0.1";
     let http_targets = Arc::new(targets.clone());
     start_control_http_server(http_targets, host, selected_port)?;
+    let global = GlobalConfig::load().ok();
+    let resilience = global.as_ref().and_then(|g| g.resilience.as_ref());
+    let recovery_cooldown = Duration::from_secs(90);
+    let mut last_recovery_attempt = HashMap::<String, Instant>::new();
 
     println!(
         "serve: running {} workspace(s), control API at http://{}:{}/v1",
@@ -73,8 +79,28 @@ pub fn run(
                 }
                 _ = ticker.tick() => {
                     for target in &targets {
-                        if let Err(e) = health::probe_workspace(&target.config, &target.project_root, 200) {
-                            eprintln!("warn: health probe failed for {}: {e}", target.name);
+                        match health::probe_workspace(&target.config, &target.project_root, 200) {
+                            Ok(records) => {
+                                match attempt_auth_recovery_for_workspace(
+                                    target,
+                                    &records,
+                                    resilience,
+                                    recovery_cooldown,
+                                    &mut last_recovery_attempt,
+                                ) {
+                                    Ok(events) => {
+                                        for event in events {
+                                            println!("{event}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("warn: auth recovery tick failed for {}: {e}", target.name);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("warn: health probe failed for {}: {e}", target.name);
+                            }
                         }
                         match scheduler::run_due_workflows_for_workspace(
                             &target.config,
@@ -98,6 +124,149 @@ pub fn run(
 
     println!("serve: stopped");
     Ok(())
+}
+
+fn attempt_auth_recovery_for_workspace(
+    target: &WorkspaceTarget,
+    records: &[state::AgentHealth],
+    resilience: Option<&ResilienceConfig>,
+    recovery_cooldown: Duration,
+    last_recovery_attempt: &mut HashMap<String, Instant>,
+) -> Result<Vec<String>> {
+    if !profile_rotation_enabled(resilience) {
+        return Ok(Vec::new());
+    }
+
+    let strategy = rotation_strategy_label(resilience).unwrap_or("rotate_profile");
+    let mut out = Vec::new();
+
+    for record in records
+        .iter()
+        .filter(|r| r.running && matches!(r.auth_state, AuthState::Failed))
+    {
+        let key = format!("{}/{}", target.name, record.agent);
+        if !recovery_cooldown_elapsed(last_recovery_attempt.get(&key), recovery_cooldown) {
+            continue;
+        }
+        last_recovery_attempt.insert(key, Instant::now());
+
+        let reason = record
+            .reason
+            .as_deref()
+            .unwrap_or("auth_failed")
+            .to_string();
+        let correlation_prefix = format!(
+            "serve-{}-{}-{}",
+            target.name,
+            record.agent,
+            Utc::now().timestamp_millis()
+        );
+        let _ = state::append_control_event(
+            &target.project_root,
+            &ControlEvent {
+                event: "agent.recovery_attempted".to_string(),
+                workspace: target.name.clone(),
+                agent: Some(record.agent.clone()),
+                timestamp: Utc::now(),
+                correlation_id: format!("{correlation_prefix}-agent.recovery_attempted"),
+                data: Some(json!({
+                    "reason": reason,
+                    "strategy": strategy
+                })),
+            },
+        );
+
+        let recovery_result = with_project_root(&target.project_root, || {
+            restart_agent_session(target, &record.agent)
+        });
+
+        match recovery_result {
+            Ok(()) => {
+                let _ = state::append_control_event(
+                    &target.project_root,
+                    &ControlEvent {
+                        event: "agent.recovery_succeeded".to_string(),
+                        workspace: target.name.clone(),
+                        agent: Some(record.agent.clone()),
+                        timestamp: Utc::now(),
+                        correlation_id: format!("{correlation_prefix}-agent.recovery_succeeded"),
+                        data: Some(json!({
+                            "reason": reason,
+                            "strategy": strategy
+                        })),
+                    },
+                );
+                out.push(format!(
+                    "recovered {} in {} via {}",
+                    record.agent, target.name, strategy
+                ));
+            }
+            Err(e) => {
+                let _ = state::append_control_event(
+                    &target.project_root,
+                    &ControlEvent {
+                        event: "agent.recovery_failed".to_string(),
+                        workspace: target.name.clone(),
+                        agent: Some(record.agent.clone()),
+                        timestamp: Utc::now(),
+                        correlation_id: format!("{correlation_prefix}-agent.recovery_failed"),
+                        data: Some(json!({
+                            "reason": reason,
+                            "strategy": strategy,
+                            "error": e.to_string()
+                        })),
+                    },
+                );
+                out.push(format!(
+                    "recovery failed for {} in {}: {}",
+                    record.agent, target.name, e
+                ));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn restart_agent_session(target: &WorkspaceTarget, agent_name: &str) -> Result<()> {
+    let session = TmuxSession::session_name(&target.config.workspace.name, agent_name);
+    if TmuxSession::session_exists(&session) {
+        TmuxSession::kill_session(&session)?;
+    }
+    super::up::run(Some(agent_name), None, false, false, None, None)?;
+    Ok(())
+}
+
+fn profile_rotation_enabled(resilience: Option<&ResilienceConfig>) -> bool {
+    let Some(resilience) = resilience else {
+        return false;
+    };
+    strategy_requests_rotation(resilience.provider_down_strategy.as_deref())
+        || strategy_requests_rotation(resilience.rate_limit_strategy.as_deref())
+}
+
+fn rotation_strategy_label(resilience: Option<&ResilienceConfig>) -> Option<&str> {
+    let resilience = resilience?;
+    if strategy_requests_rotation(resilience.rate_limit_strategy.as_deref()) {
+        return resilience.rate_limit_strategy.as_deref();
+    }
+    if strategy_requests_rotation(resilience.provider_down_strategy.as_deref()) {
+        return resilience.provider_down_strategy.as_deref();
+    }
+    None
+}
+
+fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
+    strategy.is_some_and(|s| {
+        matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "rotate" | "rotate_profile" | "profile_rotate" | "failover" | "auto_rotate"
+        )
+    })
+}
+
+fn recovery_cooldown_elapsed(last_attempt: Option<&Instant>, recovery_cooldown: Duration) -> bool {
+    last_attempt.is_none_or(|last| last.elapsed() >= recovery_cooldown)
 }
 
 fn start_control_http_server(
@@ -960,3 +1129,61 @@ fn resolve_targets(workspace: Option<&str>, all: bool) -> Result<Vec<WorkspaceTa
 
 #[allow(dead_code)]
 fn _assert_path(_: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strategy_requests_rotation_matches_supported_values() {
+        assert!(strategy_requests_rotation(Some("rotate_profile")));
+        assert!(strategy_requests_rotation(Some("failover")));
+        assert!(strategy_requests_rotation(Some("AUTO_ROTATE")));
+        assert!(!strategy_requests_rotation(Some("pause")));
+        assert!(!strategy_requests_rotation(None));
+    }
+
+    #[test]
+    fn profile_rotation_enabled_checks_both_strategies() {
+        let rate_limit = ResilienceConfig {
+            provider_down_strategy: Some("pause".to_string()),
+            save_state_on_failure: false,
+            rate_limit_strategy: Some("rotate_profile".to_string()),
+            retry_max_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+        };
+        assert!(profile_rotation_enabled(Some(&rate_limit)));
+
+        let provider_down = ResilienceConfig {
+            provider_down_strategy: Some("failover".to_string()),
+            save_state_on_failure: false,
+            rate_limit_strategy: Some("pause".to_string()),
+            retry_max_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+        };
+        assert!(profile_rotation_enabled(Some(&provider_down)));
+
+        let disabled = ResilienceConfig {
+            provider_down_strategy: Some("pause".to_string()),
+            save_state_on_failure: false,
+            rate_limit_strategy: Some("pause".to_string()),
+            retry_max_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+        };
+        assert!(!profile_rotation_enabled(Some(&disabled)));
+    }
+
+    #[test]
+    fn recovery_cooldown_elapsed_throttles_recent_attempts() {
+        let now = Instant::now();
+        assert!(recovery_cooldown_elapsed(None, Duration::from_secs(30)));
+        assert!(!recovery_cooldown_elapsed(
+            Some(&now),
+            Duration::from_secs(30)
+        ));
+        assert!(recovery_cooldown_elapsed(Some(&now), Duration::ZERO));
+    }
+}
