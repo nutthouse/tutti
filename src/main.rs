@@ -55,6 +55,11 @@ fn main() {
             name_only,
             stat,
         } => cli::diff::run(agent, staged, name_only, stat),
+        Commands::Detect {
+            ref agent,
+            lines,
+            json,
+        } => cli::detect::run(agent, lines, json),
         Commands::Land {
             ref agent,
             pr,

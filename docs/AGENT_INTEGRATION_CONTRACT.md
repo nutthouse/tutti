@@ -82,13 +82,28 @@ Recommended machine pattern:
 
 - Snapshot:
   - `tt peek <agent> --lines 100`
+- Detector diagnostics:
+  - `tt detect <agent>`
+  - `tt detect <agent> --json`
 - Interactive:
   - `tt attach <agent>`
 - One-off prompt with completion wait:
   - `tt send <agent> --wait --timeout-secs 900 "..."` (optionally tune `--idle-stable-secs`)
   - `tt send <agent> --auto_up --wait --output "..."` for auto-start + captured pane delta
 
-Use `peek` for automation. Use `attach` for operator handoff.
+Preferred machine surface: use `tt detect <agent> --json` for programmatic
+state/signal inference; treat raw `tt peek` output as human inspection only.
+
+Stable detector JSON fields consumers can rely on:
+- `workspace` (workspace identifier)
+- `agent` (agent identifier)
+- `runtime` (runtime name)
+- `session` (tmux session name)
+- `status` (detected state string)
+- `confidence` (0.0-1.0 detector confidence)
+- `matched_patterns` (array of matched signal labels)
+- `auth_match`, `rate_limit_match`, `provider_down_match`, `completion_match`
+  (nullable signal details)
 
 ### 4.5) Inspect and land code changes
 

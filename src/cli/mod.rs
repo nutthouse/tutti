@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 pub mod agent_ref;
 pub mod attach;
+pub mod detect;
 pub mod diff;
 pub mod doctor;
 pub mod down;
@@ -139,6 +140,20 @@ pub enum Commands {
         /// Show diff stat summary
         #[arg(long)]
         stat: bool,
+    },
+
+    /// Explain runtime detector matches for a running agent session
+    Detect {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Number of pane lines to inspect
+        #[arg(short, long, default_value = "200")]
+        lines: u32,
+
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Land an agent branch back into current branch
