@@ -5,7 +5,7 @@ use crate::health;
 use crate::scheduler;
 use crate::session::TmuxSession;
 use crate::state;
-use crate::state::{AuthState, ControlEvent};
+use crate::state::ControlEvent;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -81,7 +81,7 @@ pub fn run(
                     for target in &targets {
                         match health::probe_workspace(&target.config, &target.project_root, 200) {
                             Ok(records) => {
-                                match attempt_auth_recovery_for_workspace(
+                                match attempt_resilience_recovery_for_workspace(
                                     target,
                                     &records,
                                     resilience,
@@ -126,24 +126,22 @@ pub fn run(
     Ok(())
 }
 
-fn attempt_auth_recovery_for_workspace(
+fn attempt_resilience_recovery_for_workspace(
     target: &WorkspaceTarget,
     records: &[state::AgentHealth],
     resilience: Option<&ResilienceConfig>,
     recovery_cooldown: Duration,
     last_recovery_attempt: &mut HashMap<String, Instant>,
 ) -> Result<Vec<String>> {
-    if !profile_rotation_enabled(resilience) {
-        return Ok(Vec::new());
-    }
-
-    let strategy = rotation_strategy_label(resilience).unwrap_or("rotate_profile");
     let mut out = Vec::new();
 
-    for record in records
-        .iter()
-        .filter(|r| r.running && matches!(r.auth_state, AuthState::Failed))
-    {
+    for record in records {
+        let Some(trigger) = health::recovery_trigger(record) else {
+            continue;
+        };
+        let Some(strategy) = rotation_strategy_for_trigger(resilience, trigger) else {
+            continue;
+        };
         let key = format!("{}/{}", target.name, record.agent);
         if !recovery_cooldown_elapsed(last_recovery_attempt.get(&key), recovery_cooldown) {
             continue;
@@ -171,7 +169,8 @@ fn attempt_auth_recovery_for_workspace(
                 correlation_id: format!("{correlation_prefix}-agent.recovery_attempted"),
                 data: Some(json!({
                     "reason": reason,
-                    "strategy": strategy
+                    "strategy": strategy,
+                    "trigger": trigger.as_str()
                 })),
             },
         );
@@ -192,7 +191,8 @@ fn attempt_auth_recovery_for_workspace(
                         correlation_id: format!("{correlation_prefix}-agent.recovery_succeeded"),
                         data: Some(json!({
                             "reason": reason,
-                            "strategy": strategy
+                            "strategy": strategy,
+                            "trigger": trigger.as_str()
                         })),
                     },
                 );
@@ -213,6 +213,7 @@ fn attempt_auth_recovery_for_workspace(
                         data: Some(json!({
                             "reason": reason,
                             "strategy": strategy,
+                            "trigger": trigger.as_str(),
                             "error": e.to_string()
                         })),
                     },
@@ -237,23 +238,31 @@ fn restart_agent_session(target: &WorkspaceTarget, agent_name: &str) -> Result<(
     Ok(())
 }
 
-fn profile_rotation_enabled(resilience: Option<&ResilienceConfig>) -> bool {
-    let Some(resilience) = resilience else {
-        return false;
-    };
-    strategy_requests_rotation(resilience.provider_down_strategy.as_deref())
-        || strategy_requests_rotation(resilience.rate_limit_strategy.as_deref())
-}
-
-fn rotation_strategy_label(resilience: Option<&ResilienceConfig>) -> Option<&str> {
+fn rotation_strategy_for_trigger(
+    resilience: Option<&ResilienceConfig>,
+    trigger: health::RecoveryTrigger,
+) -> Option<&str> {
     let resilience = resilience?;
-    if strategy_requests_rotation(resilience.rate_limit_strategy.as_deref()) {
-        return resilience.rate_limit_strategy.as_deref();
+    match trigger {
+        health::RecoveryTrigger::RateLimited => resilience
+            .rate_limit_strategy
+            .as_deref()
+            .filter(|s| strategy_requests_rotation(Some(s))),
+        health::RecoveryTrigger::ProviderDown => resilience
+            .provider_down_strategy
+            .as_deref()
+            .filter(|s| strategy_requests_rotation(Some(s))),
+        health::RecoveryTrigger::AuthFailed => resilience
+            .rate_limit_strategy
+            .as_deref()
+            .filter(|s| strategy_requests_rotation(Some(s)))
+            .or_else(|| {
+                resilience
+                    .provider_down_strategy
+                    .as_deref()
+                    .filter(|s| strategy_requests_rotation(Some(s)))
+            }),
     }
-    if strategy_requests_rotation(resilience.provider_down_strategy.as_deref()) {
-        return resilience.provider_down_strategy.as_deref();
-    }
-    None
 }
 
 fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
@@ -1144,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_rotation_enabled_checks_both_strategies() {
+    fn rotation_strategy_for_trigger_picks_expected_strategy() {
         let rate_limit = ResilienceConfig {
             provider_down_strategy: Some("pause".to_string()),
             save_state_on_failure: false,
@@ -1153,7 +1162,10 @@ mod tests {
             retry_initial_backoff_ms: None,
             retry_max_backoff_ms: None,
         };
-        assert!(profile_rotation_enabled(Some(&rate_limit)));
+        assert_eq!(
+            rotation_strategy_for_trigger(Some(&rate_limit), health::RecoveryTrigger::RateLimited),
+            Some("rotate_profile")
+        );
 
         let provider_down = ResilienceConfig {
             provider_down_strategy: Some("failover".to_string()),
@@ -1163,7 +1175,13 @@ mod tests {
             retry_initial_backoff_ms: None,
             retry_max_backoff_ms: None,
         };
-        assert!(profile_rotation_enabled(Some(&provider_down)));
+        assert_eq!(
+            rotation_strategy_for_trigger(
+                Some(&provider_down),
+                health::RecoveryTrigger::ProviderDown
+            ),
+            Some("failover")
+        );
 
         let disabled = ResilienceConfig {
             provider_down_strategy: Some("pause".to_string()),
@@ -1173,7 +1191,10 @@ mod tests {
             retry_initial_backoff_ms: None,
             retry_max_backoff_ms: None,
         };
-        assert!(!profile_rotation_enabled(Some(&disabled)));
+        assert_eq!(
+            rotation_strategy_for_trigger(Some(&disabled), health::RecoveryTrigger::AuthFailed),
+            None
+        );
     }
 
     #[test]

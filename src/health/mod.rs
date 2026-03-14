@@ -11,6 +11,25 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_CAPTURE_LINES: u32 = 200;
 const RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER: u32 = 2;
+const RATE_LIMIT_REASON_PREFIX: &str = "rate_limit:";
+const PROVIDER_DOWN_REASON_PREFIX: &str = "provider_down:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryTrigger {
+    AuthFailed,
+    RateLimited,
+    ProviderDown,
+}
+
+impl RecoveryTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecoveryTrigger::AuthFailed => "auth_failed",
+            RecoveryTrigger::RateLimited => "rate_limited",
+            RecoveryTrigger::ProviderDown => "provider_down",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum WaitCompletionSource {
@@ -117,8 +136,15 @@ pub fn probe_workspace(
                         if let Some(reason) = adapter.detect_auth_failure(&output) {
                             health.auth_state = AuthState::Failed;
                             health.reason = Some(reason);
+                        } else if let Some(reason) = adapter.detect_rate_limit(&output) {
+                            health.auth_state = AuthState::Ok;
+                            health.reason = Some(format!("{RATE_LIMIT_REASON_PREFIX} {reason}"));
+                        } else if let Some(reason) = adapter.detect_provider_down(&output) {
+                            health.auth_state = AuthState::Ok;
+                            health.reason = Some(format!("{PROVIDER_DOWN_REASON_PREFIX} {reason}"));
                         } else {
                             health.auth_state = AuthState::Ok;
+                            health.reason = None;
                         }
                     }
                 }
@@ -138,6 +164,23 @@ pub fn probe_workspace(
     }
 
     Ok(out)
+}
+
+pub fn recovery_trigger(health: &AgentHealth) -> Option<RecoveryTrigger> {
+    if !health.running {
+        return None;
+    }
+    if matches!(health.auth_state, AuthState::Failed) {
+        return Some(RecoveryTrigger::AuthFailed);
+    }
+    let reason = health.reason.as_deref()?.trim().to_ascii_lowercase();
+    if reason.starts_with(RATE_LIMIT_REASON_PREFIX) {
+        return Some(RecoveryTrigger::RateLimited);
+    }
+    if reason.starts_with(PROVIDER_DOWN_REASON_PREFIX) {
+        return Some(RecoveryTrigger::ProviderDown);
+    }
+    None
 }
 
 pub fn wait_for_agent_idle(
@@ -327,6 +370,56 @@ fn transition_events(
         }
     }
 
+    let previous_trigger = recovery_trigger(previous);
+    let current_trigger = recovery_trigger(current);
+    let previous_non_auth = previous_trigger.and_then(|t| match t {
+        RecoveryTrigger::RateLimited | RecoveryTrigger::ProviderDown => Some(t),
+        RecoveryTrigger::AuthFailed => None,
+    });
+    let current_non_auth = current_trigger.and_then(|t| match t {
+        RecoveryTrigger::RateLimited | RecoveryTrigger::ProviderDown => Some(t),
+        RecoveryTrigger::AuthFailed => None,
+    });
+
+    if current.running && previous_non_auth != current_non_auth {
+        if let Some(trigger) = current_non_auth {
+            let event = match trigger {
+                RecoveryTrigger::RateLimited => "agent.rate_limited",
+                RecoveryTrigger::ProviderDown => "agent.provider_down",
+                RecoveryTrigger::AuthFailed => unreachable!("filtered above"),
+            };
+            out.push(ControlEvent {
+                event: event.to_string(),
+                workspace: current.workspace.clone(),
+                agent: Some(current.agent.clone()),
+                timestamp: now,
+                correlation_id: format!("{prefix}-{event}"),
+                data: Some(serde_json::json!({
+                    "source": "probe",
+                    "reason": current.reason,
+                    "runtime": current.runtime
+                })),
+            });
+        }
+
+        if let Some(previous_trigger) = previous_non_auth
+            && current_non_auth.is_none()
+        {
+            out.push(ControlEvent {
+                event: "agent.provider_recovered".to_string(),
+                workspace: current.workspace.clone(),
+                agent: Some(current.agent.clone()),
+                timestamp: now,
+                correlation_id: format!("{prefix}-agent.provider_recovered"),
+                data: Some(serde_json::json!({
+                    "source": "probe",
+                    "from": previous_trigger.as_str(),
+                    "runtime": current.runtime
+                })),
+            });
+        }
+    }
+
     out
 }
 
@@ -375,5 +468,40 @@ mod tests {
         let current = sample_health(false, ActivityState::Stopped, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.stopped"));
+    }
+
+    #[test]
+    fn recovery_trigger_detects_rate_limit_and_provider_down_reason_prefixes() {
+        let rate = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("rate_limit: too many requests"),
+        );
+        assert_eq!(recovery_trigger(&rate), Some(RecoveryTrigger::RateLimited));
+
+        let provider = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("provider_down: service unavailable"),
+        );
+        assert_eq!(
+            recovery_trigger(&provider),
+            Some(RecoveryTrigger::ProviderDown)
+        );
+    }
+
+    #[test]
+    fn transition_events_emits_rate_limited_and_provider_recovered() {
+        let previous = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("rate_limit: too many requests"),
+        );
+        let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        let events = transition_events(Some(&previous), &current, Utc::now());
+        assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
     }
 }

@@ -54,6 +54,12 @@ pub trait RuntimeAdapter {
     /// Check if terminal output indicates an auth failure.
     fn detect_auth_failure(&self, terminal_output: &str) -> Option<String>;
 
+    /// Check if terminal output indicates a provider rate-limit condition.
+    fn detect_rate_limit(&self, terminal_output: &str) -> Option<String>;
+
+    /// Check if terminal output indicates provider outage/unavailability.
+    fn detect_provider_down(&self, terminal_output: &str) -> Option<String>;
+
     /// Detect explicit runtime completion markers (preferred over heuristic idle detection).
     fn detect_completion_signal(&self, terminal_output: &str) -> Option<CompletionSignal>;
 
@@ -72,6 +78,8 @@ struct RuntimeConfig {
     /// (spinner glyphs, prompt text, auth phrases). Upstream CLI output can change,
     /// so update these lists when status detection drifts after provider upgrades.
     auth_patterns: &'static [&'static str],
+    rate_limit_patterns: &'static [&'static str],
+    provider_down_patterns: &'static [&'static str],
     working_patterns: &'static [&'static str],
     idle_patterns: &'static [&'static str],
     completion_patterns: &'static [&'static str],
@@ -151,13 +159,15 @@ impl RuntimeAdapter for CommonAdapter {
     }
 
     fn detect_auth_failure(&self, terminal_output: &str) -> Option<String> {
-        let lower = terminal_output.to_lowercase();
-        for pattern in self.config.auth_patterns {
-            if lower.contains(&pattern.to_lowercase()) {
-                return Some(pattern.to_string());
-            }
-        }
-        None
+        detect_pattern(terminal_output, self.config.auth_patterns)
+    }
+
+    fn detect_rate_limit(&self, terminal_output: &str) -> Option<String> {
+        detect_pattern(terminal_output, self.config.rate_limit_patterns)
+    }
+
+    fn detect_provider_down(&self, terminal_output: &str) -> Option<String> {
+        detect_pattern(terminal_output, self.config.provider_down_patterns)
     }
 
     fn detect_completion_signal(&self, terminal_output: &str) -> Option<CompletionSignal> {
@@ -185,6 +195,16 @@ impl RuntimeAdapter for CommonAdapter {
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn detect_pattern(terminal_output: &str, patterns: &[&str]) -> Option<String> {
+    let lower = terminal_output.to_lowercase();
+    for pattern in patterns {
+        if lower.contains(&pattern.to_lowercase()) {
+            return Some(pattern.to_string());
+        }
+    }
+    None
 }
 
 /// Get a runtime adapter by name, with an optional command override from a profile.
@@ -354,6 +374,15 @@ mod tests {
     }
 
     #[test]
+    fn codex_detect_rate_limit_signal() {
+        let a = adapter("codex");
+        assert!(
+            a.detect_rate_limit("Error: rate_limit_exceeded - try again later")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn codex_detect_unknown() {
         let a = adapter("codex");
         assert_eq!(
@@ -469,6 +498,15 @@ mod tests {
             a.detect_status("Error: authentication_error - token has expired"),
             AgentStatus::AuthFailed(_)
         ));
+    }
+
+    #[test]
+    fn claude_detect_provider_down_signal() {
+        let a = adapter("claude-code");
+        assert!(
+            a.detect_provider_down("Error: 503 Service Unavailable")
+                .is_some()
+        );
     }
 
     #[test]

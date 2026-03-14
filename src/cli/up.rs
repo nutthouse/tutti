@@ -1059,21 +1059,12 @@ fn detect_profile_rotation_failure(
     if let Some(reason) = adapter.detect_auth_failure(&output) {
         return Some(format!("auth_failure: {reason}"));
     }
-    let lower = output.to_ascii_lowercase();
-    const ROTATION_PATTERNS: &[&str] = &[
-        "rate limit",
-        "rate_limit",
-        "too many requests",
-        "429",
-        "service unavailable",
-        "temporarily unavailable",
-        "provider unavailable",
-        "overloaded",
-    ];
-    ROTATION_PATTERNS
-        .iter()
-        .find(|pattern| lower.contains(**pattern))
-        .map(|pattern| format!("provider_or_rate_limit: {pattern}"))
+    if let Some(reason) = adapter.detect_rate_limit(&output) {
+        return Some(format!("rate_limit: {reason}"));
+    }
+    adapter
+        .detect_provider_down(&output)
+        .map(|reason| format!("provider_down: {reason}"))
 }
 
 fn resolve_profile_limit(config: &TuttiConfig, global: &GlobalConfig) -> Option<ProfileLimit> {

@@ -12,6 +12,22 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "APIError: 401",
         "APIError: 403",
     ],
+    rate_limit_patterns: &[
+        "rate_limit_exceeded",
+        "rate limit",
+        "too many requests",
+        "apierror: 429",
+        "quota exceeded",
+    ],
+    provider_down_patterns: &[
+        "service unavailable",
+        "temporarily unavailable",
+        "provider unavailable",
+        "upstream timeout",
+        "gateway timeout",
+        "bad gateway",
+        "connection reset",
+    ],
     working_patterns: &[
         "⠋",
         "⠙",
