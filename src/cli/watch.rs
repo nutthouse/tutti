@@ -58,6 +58,7 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
         restart_cooldown,
         auth_recovery_cooldown,
         resilience: global.as_ref().and_then(|g| g.resilience.as_ref()),
+        project_root,
     };
     let mut failure_state = SessionFailureState::default();
     let mut last_logged_snapshot = HashMap::<String, String>::new();
@@ -321,6 +322,7 @@ struct SessionFailurePolicy<'a> {
     restart_cooldown: Duration,
     auth_recovery_cooldown: Duration,
     resilience: Option<&'a ResilienceConfig>,
+    project_root: &'a Path,
 }
 
 fn detect_and_handle_session_failures(
@@ -353,13 +355,41 @@ fn detect_and_handle_session_failures(
                     state
                         .last_restart_attempt
                         .insert(snapshot.agent_name.clone(), Instant::now());
+                    let _ = emit_recovery_event(
+                        policy.project_root,
+                        &config.workspace.name,
+                        &snapshot.agent_name,
+                        "agent.recovery_attempted",
+                        "crash_restart",
+                        None,
+                    );
                     ui.suspend()?;
                     let restart_result = restart_agent(config, &snapshot.agent_name);
                     ui.resume()?;
 
                     latest_event = Some(match restart_result {
-                        Ok(_) => format!("restarted {}", snapshot.agent_name),
-                        Err(e) => format!("restart failed for {}: {e}", snapshot.agent_name),
+                        Ok(_) => {
+                            let _ = emit_recovery_event(
+                                policy.project_root,
+                                &config.workspace.name,
+                                &snapshot.agent_name,
+                                "agent.recovery_succeeded",
+                                "crash_restart",
+                                None,
+                            );
+                            format!("restarted {}", snapshot.agent_name)
+                        }
+                        Err(e) => {
+                            let _ = emit_recovery_event(
+                                policy.project_root,
+                                &config.workspace.name,
+                                &snapshot.agent_name,
+                                "agent.recovery_failed",
+                                "crash_restart",
+                                Some(&e.to_string()),
+                            );
+                            format!("restart failed for {}: {e}", snapshot.agent_name)
+                        }
                     });
                 } else {
                     latest_event = Some(format!(
@@ -382,12 +412,41 @@ fn detect_and_handle_session_failures(
                 state
                     .last_auth_recovery_attempt
                     .insert(snapshot.agent_name.clone(), Instant::now());
+                let reason = snapshot.status_raw.clone();
+                let _ = emit_recovery_event(
+                    policy.project_root,
+                    &config.workspace.name,
+                    &snapshot.agent_name,
+                    "agent.recovery_attempted",
+                    strategy,
+                    Some(reason.as_str()),
+                );
                 ui.suspend()?;
                 let recovery_result = restart_agent(config, &snapshot.agent_name);
                 ui.resume()?;
                 latest_event = Some(match recovery_result {
-                    Ok(_) => format!("auth-recovered {} via {}", snapshot.agent_name, strategy),
-                    Err(e) => format!("auth recovery failed for {}: {e}", snapshot.agent_name),
+                    Ok(_) => {
+                        let _ = emit_recovery_event(
+                            policy.project_root,
+                            &config.workspace.name,
+                            &snapshot.agent_name,
+                            "agent.recovery_succeeded",
+                            strategy,
+                            Some(reason.as_str()),
+                        );
+                        format!("auth-recovered {} via {}", snapshot.agent_name, strategy)
+                    }
+                    Err(e) => {
+                        let _ = emit_recovery_event(
+                            policy.project_root,
+                            &config.workspace.name,
+                            &snapshot.agent_name,
+                            "agent.recovery_failed",
+                            strategy,
+                            Some(&e.to_string()),
+                        );
+                        format!("auth recovery failed for {}: {e}", snapshot.agent_name)
+                    }
                 });
             } else {
                 latest_event = Some(format!(
@@ -447,6 +506,41 @@ fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
             "rotate" | "rotate_profile" | "profile_rotate" | "failover" | "auto_rotate"
         )
     })
+}
+
+fn emit_recovery_event(
+    project_root: &Path,
+    workspace: &str,
+    agent: &str,
+    event: &str,
+    strategy: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    let data = match reason {
+        Some(value) => serde_json::json!({
+            "strategy": strategy,
+            "reason": value
+        }),
+        None => serde_json::json!({
+            "strategy": strategy
+        }),
+    };
+    state::append_control_event(
+        project_root,
+        &state::ControlEvent {
+            event: event.to_string(),
+            workspace: workspace.to_string(),
+            agent: Some(agent.to_string()),
+            timestamp: Utc::now(),
+            correlation_id: format!(
+                "watch-{}-{}-{}",
+                event,
+                agent,
+                Utc::now().timestamp_millis()
+            ),
+            data: Some(data),
+        },
+    )
 }
 
 fn is_persistent_agent(config: &TuttiConfig, agent_name: &str) -> bool {

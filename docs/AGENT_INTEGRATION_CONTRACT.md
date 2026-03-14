@@ -131,7 +131,7 @@ Use `peek` for automation. Use `attach` for operator handoff.
   - `GET /v1/status`, `GET /v1/voices`, `GET /v1/workflows`, `GET /v1/runs`, `GET /v1/logs`, `GET /v1/handoffs`, `GET /v1/policy-decisions`, `GET /v1/events`
   - Events cursor/filter: `GET /v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Event stream (SSE): `GET /v1/events/stream?cursor=<RFC3339 timestamp>&workspace=<name>`
-  - Stream event types include: `agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, `handoff.generated`, `handoff.applied`
+  - Stream event types include: `agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `agent.recovery_attempted`, `agent.recovery_succeeded`, `agent.recovery_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, `handoff.generated`, `handoff.applied`
   - Budget control events may be emitted when configured: `budget.threshold`, `budget.blocked`
   - `POST /v1/actions/up|down|send|run|verify|review|land`
   - `up` action supports optional payload flag: `"fresh_worktree": true`
