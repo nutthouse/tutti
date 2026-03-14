@@ -69,9 +69,9 @@ That doesn't scale. Tutti does.
 
 **Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
 
-**Resilience (partially built).** Tutti detects auth failures and captures emergency state. Provider-wide outage handling, pause/resume, and profile failover are planned.
+**Resilience (partially built).** Tutti detects auth failures, captures emergency state, retries workflow commands, and can rotate launch profiles when configured. Full outage orchestration is still in progress.
 
-**Multi-subscription aware (partially built).** Profile configuration and capacity tracking are built. Automatic rate-limit rotation/failover is planned.
+**Multi-subscription aware (partially built).** Profile configuration, capacity tracking, and launch-time fallback profile rotation are built. Full runtime/session-level failover is still planned.
 
 ## What Tutti Is Not
 
@@ -329,14 +329,17 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ### Resilience (Partially Built)
 - Auth failure detection (OAuth expiry, provider outages)
 - Emergency state capture on auth failures
+- Workflow command retry/backoff (`[resilience].retry_*`)
+- Launch-time profile rotation/fallback (`[resilience].provider_down_strategy = "rotate_profile"` or `rate_limit_strategy`)
 - Correlated failure detection (provider-level vs individual agent) (planned)
-- Pause/resume + automatic failover (planned)
+- Runtime/session pause-resume orchestration (planned)
 
 ### Subscription Management (Partially Built)
 - Multiple profiles per provider (personal, work, team accounts)
 - Per-profile capacity settings (`plan`, `reset_day`, `weekly_hours`)
 - Per-profile concurrency limits (`max_concurrent`) enforced by `tt up`
-- Automatic profile rotation and `tt profiles` command (planned)
+- Automatic launch-time profile rotation/fallback (built)
+- `tt profiles` command (planned)
 
 ### Permissions Policy (Built, Opt-in)
 - Team-shared command allowlist in `~/.config/tutti/config.toml` under `[permissions]`

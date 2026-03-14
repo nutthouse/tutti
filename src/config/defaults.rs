@@ -194,6 +194,7 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 # Global resilience defaults
 # [resilience]
 # provider_down_strategy = "pause"
+# rate_limit_strategy = "rotate_profile" # enable profile failover on provider/rate-limit/auth failures
 # save_state_on_failure = true
 # retry_max_attempts = 3        # command-step retries for run/verify/scheduler
 # retry_initial_backoff_ms = 500

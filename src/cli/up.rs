@@ -25,6 +25,12 @@ struct ProfileLimit {
     max_concurrent: u32,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeLaunchAttempt {
+    profile_name: Option<String>,
+    command_override: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LaunchSettings {
     mode: LaunchMode,
@@ -83,6 +89,7 @@ pub fn run(
 
     // Load global config once for profile resolution and capacity check
     let global = GlobalConfig::load().ok();
+    let rotation_enabled = profile_rotation_enabled(global.as_ref());
     let profile_limit = global
         .as_ref()
         .and_then(|g| resolve_profile_limit(&config, g));
@@ -137,15 +144,6 @@ pub fn run(
             ))
         })?;
 
-        let command_override =
-            resolve_profile_command_for_runtime(&config, global.as_ref(), &runtime_name);
-        let adapter = runtime::get_adapter(&runtime_name, command_override.as_deref())
-            .ok_or_else(|| TuttiError::RuntimeUnknown(runtime_name.clone()))?;
-
-        if !adapter.is_available() {
-            return Err(TuttiError::RuntimeNotAvailable(runtime_name.clone()));
-        }
-
         let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
 
         if TmuxSession::session_exists(&session) {
@@ -178,15 +176,96 @@ pub fn run(
             env.insert(k.clone(), v.clone());
         }
 
-        let (cmd, warnings) = build_launch_command(
-            adapter.as_ref(),
+        let attempts = resolve_runtime_launch_attempts(
+            &config,
+            global.as_ref(),
             &runtime_name,
-            launch_settings,
-            permissions_policy,
-            project_root,
-            &agent.name,
-            agent.prompt.as_deref(),
-        )?;
+            rotation_enabled,
+        );
+        let mut launch_result: Option<(String, LaunchCommandWarnings)> = None;
+        let mut last_error: Option<TuttiError> = None;
+
+        for attempt in attempts {
+            let adapter = runtime::get_adapter(&runtime_name, attempt.command_override.as_deref())
+                .ok_or_else(|| TuttiError::RuntimeUnknown(runtime_name.clone()))?;
+            if !adapter.is_available() {
+                last_error = Some(TuttiError::RuntimeNotAvailable(
+                    adapter.command_name().to_string(),
+                ));
+                if rotation_enabled {
+                    continue;
+                }
+                return Err(last_error.expect("last_error just set"));
+            }
+
+            let cmd = match build_launch_command(
+                adapter.as_ref(),
+                &runtime_name,
+                launch_settings,
+                permissions_policy,
+                project_root,
+                &agent.name,
+                agent.prompt.as_deref(),
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    last_error = Some(e);
+                    break;
+                }
+            };
+
+            let _ = state::append_policy_decision(
+                project_root,
+                &launch_policy_record(
+                    &config.workspace.name,
+                    &agent.name,
+                    &runtime_name,
+                    launch_settings,
+                    permissions_policy,
+                    cmd.1,
+                    &cmd.0,
+                ),
+            );
+
+            match TmuxSession::create_session(&session, &working_dir, &cmd.0, &env) {
+                Ok(()) => {
+                    if rotation_enabled
+                        && let Some(reason) =
+                            detect_profile_rotation_failure(adapter.as_ref(), &session)
+                    {
+                        let _ = TmuxSession::kill_session(&session);
+                        let profile_label =
+                            attempt.profile_name.as_deref().unwrap_or("runtime default");
+                        eprintln!(
+                            "  {} launch failed on profile '{}' ({}); trying next profile",
+                            "warn".yellow(),
+                            profile_label,
+                            reason
+                        );
+                        continue;
+                    }
+                    launch_result = Some(cmd);
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if !rotation_enabled {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let (_cmd, warnings) = if let Some(success) = launch_result {
+            success
+        } else {
+            return Err(last_error.unwrap_or_else(|| {
+                TuttiError::ConfigValidation(format!(
+                    "failed to launch '{}' after trying available profile fallbacks",
+                    agent.name
+                ))
+            }));
+        };
         if warnings.constrained_policy_via_shim && !warned_shim_enforced {
             eprintln!(
                 "  {} constrained policy for {} is hard-enforced via Tutti shell shim allowlist",
@@ -210,20 +289,6 @@ pub fn run(
             );
             warned_bypass = true;
         }
-        let _ = state::append_policy_decision(
-            project_root,
-            &launch_policy_record(
-                &config.workspace.name,
-                &agent.name,
-                &runtime_name,
-                launch_settings,
-                permissions_policy,
-                warnings,
-                &cmd,
-            ),
-        );
-        TmuxSession::create_session(&session, &working_dir, &cmd, &env)?;
-
         // Save state
         let agent_state = state::AgentState {
             name: agent.name.clone(),
@@ -836,6 +901,181 @@ fn resolve_profile_command_for_runtime(
     .map(ToString::to_string)
 }
 
+fn profile_rotation_enabled(global: Option<&GlobalConfig>) -> bool {
+    let Some(resilience) = global.and_then(|g| g.resilience.as_ref()) else {
+        return false;
+    };
+    strategy_requests_rotation(resilience.provider_down_strategy.as_deref())
+        || strategy_requests_rotation(resilience.rate_limit_strategy.as_deref())
+}
+
+fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
+    strategy.is_some_and(|s| {
+        matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "rotate" | "rotate_profile" | "profile_rotate" | "failover" | "auto_rotate"
+        )
+    })
+}
+
+fn resolve_runtime_launch_attempts(
+    config: &TuttiConfig,
+    global: Option<&GlobalConfig>,
+    runtime_name: &str,
+    include_fallbacks: bool,
+) -> Vec<RuntimeLaunchAttempt> {
+    let default_profile = config
+        .workspace
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.default_profile.as_deref());
+    let default_command = resolve_profile_command_for_runtime(config, global, runtime_name);
+
+    let mut attempts = Vec::<RuntimeLaunchAttempt>::new();
+    let mut seen_commands = HashSet::<String>::new();
+    let mut seen_none = false;
+
+    push_runtime_launch_attempt(
+        &mut attempts,
+        &mut seen_commands,
+        &mut seen_none,
+        default_profile.map(ToString::to_string),
+        default_command.clone(),
+    );
+
+    if !include_fallbacks {
+        if attempts.is_empty() {
+            push_runtime_launch_attempt(
+                &mut attempts,
+                &mut seen_commands,
+                &mut seen_none,
+                None,
+                None,
+            );
+        }
+        return attempts;
+    }
+
+    let Some(global) = global else {
+        if attempts.is_empty() {
+            push_runtime_launch_attempt(
+                &mut attempts,
+                &mut seen_commands,
+                &mut seen_none,
+                None,
+                None,
+            );
+        }
+        return attempts;
+    };
+
+    let default_provider = default_profile
+        .and_then(|name| global.get_profile(name))
+        .map(|p| p.provider.to_ascii_lowercase());
+
+    let mut fallback_profiles = global
+        .profiles
+        .iter()
+        .filter(|profile| {
+            let is_default = default_profile.is_some_and(|name| name == profile.name);
+            if is_default {
+                return false;
+            }
+            if let Some(provider) = default_provider.as_deref()
+                && profile.provider.to_ascii_lowercase() != provider
+            {
+                return false;
+            }
+            runtime::compatible_command_override(
+                runtime_name,
+                Some(profile.provider.as_str()),
+                Some(profile.command.as_str()),
+            )
+            .is_some()
+        })
+        .collect::<Vec<_>>();
+    fallback_profiles.sort_by(|a, b| {
+        let a_key = (a.priority.unwrap_or(u32::MAX), a.name.as_str());
+        let b_key = (b.priority.unwrap_or(u32::MAX), b.name.as_str());
+        a_key.cmp(&b_key)
+    });
+
+    for profile in fallback_profiles {
+        let command_override = runtime::compatible_command_override(
+            runtime_name,
+            Some(profile.provider.as_str()),
+            Some(profile.command.as_str()),
+        )
+        .map(ToString::to_string);
+        push_runtime_launch_attempt(
+            &mut attempts,
+            &mut seen_commands,
+            &mut seen_none,
+            Some(profile.name.clone()),
+            command_override,
+        );
+    }
+
+    if attempts.is_empty() {
+        push_runtime_launch_attempt(
+            &mut attempts,
+            &mut seen_commands,
+            &mut seen_none,
+            None,
+            None,
+        );
+    }
+    attempts
+}
+
+fn push_runtime_launch_attempt(
+    attempts: &mut Vec<RuntimeLaunchAttempt>,
+    seen_commands: &mut HashSet<String>,
+    seen_none: &mut bool,
+    profile_name: Option<String>,
+    command_override: Option<String>,
+) {
+    if let Some(cmd) = command_override.as_deref() {
+        if !seen_commands.insert(cmd.to_string()) {
+            return;
+        }
+    } else if *seen_none {
+        return;
+    } else {
+        *seen_none = true;
+    }
+    attempts.push(RuntimeLaunchAttempt {
+        profile_name,
+        command_override,
+    });
+}
+
+fn detect_profile_rotation_failure(
+    adapter: &dyn runtime::RuntimeAdapter,
+    session: &str,
+) -> Option<String> {
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let output = TmuxSession::capture_pane(session, 200).ok()?;
+    if let Some(reason) = adapter.detect_auth_failure(&output) {
+        return Some(format!("auth_failure: {reason}"));
+    }
+    let lower = output.to_ascii_lowercase();
+    const ROTATION_PATTERNS: &[&str] = &[
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "429",
+        "service unavailable",
+        "temporarily unavailable",
+        "provider unavailable",
+        "overloaded",
+    ];
+    ROTATION_PATTERNS
+        .iter()
+        .find(|pattern| lower.contains(**pattern))
+        .map(|pattern| format!("provider_or_rate_limit: {pattern}"))
+}
+
 fn resolve_profile_limit(config: &TuttiConfig, global: &GlobalConfig) -> Option<ProfileLimit> {
     let profile_name = config.workspace.auth.as_ref()?.default_profile.as_ref()?;
     let profile = global.get_profile(profile_name)?;
@@ -985,6 +1225,7 @@ fn run_all(
     policy_override: Option<super::UpLaunchPolicy>,
 ) -> Result<()> {
     let global = crate::config::GlobalConfig::load()?;
+    let rotation_enabled = profile_rotation_enabled(Some(&global));
     if global.registered_workspaces.is_empty() {
         println!("No registered workspaces. Run `tt init` in your projects first.");
         return Ok(());
@@ -1048,27 +1289,6 @@ fn run_all(
                             continue;
                         }
                     };
-                    let command_override =
-                        resolve_profile_command_for_runtime(&config, Some(&global), &runtime_name);
-                    let adapter =
-                        match runtime::get_adapter(&runtime_name, command_override.as_deref()) {
-                            Some(a) => a,
-                            None => {
-                                eprintln!(
-                                    "  Skipping {} (unknown runtime '{runtime_name}')",
-                                    agent.name
-                                );
-                                continue;
-                            }
-                        };
-                    if !adapter.is_available() {
-                        eprintln!(
-                            "  Skipping {} (runtime '{runtime_name}' not installed)",
-                            agent.name
-                        );
-                        continue;
-                    }
-
                     let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
                     if TmuxSession::session_exists(&session) {
                         println!("  skip {} (already running)", agent.name);
@@ -1097,20 +1317,97 @@ fn run_all(
                         agent,
                         fresh_worktree,
                     );
-                    let (cmd, warnings) = match build_launch_command(
-                        adapter.as_ref(),
+                    let attempts = resolve_runtime_launch_attempts(
+                        &config,
+                        Some(&global),
                         &runtime_name,
-                        launch_settings,
-                        permissions_policy,
-                        project_root,
-                        &agent.name,
-                        agent.prompt.as_deref(),
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("  Failed to prepare launch for {}: {e}", agent.name);
+                        rotation_enabled,
+                    );
+                    let mut launch_result: Option<(String, LaunchCommandWarnings)> = None;
+                    let mut last_error: Option<String> = None;
+
+                    for attempt in attempts {
+                        let adapter = match runtime::get_adapter(
+                            &runtime_name,
+                            attempt.command_override.as_deref(),
+                        ) {
+                            Some(a) => a,
+                            None => {
+                                last_error = Some(format!("unknown runtime '{runtime_name}'"));
+                                continue;
+                            }
+                        };
+                        if !adapter.is_available() {
+                            last_error = Some(format!(
+                                "runtime '{}' not installed",
+                                adapter.command_name()
+                            ));
                             continue;
                         }
+
+                        let cmd = match build_launch_command(
+                            adapter.as_ref(),
+                            &runtime_name,
+                            launch_settings,
+                            permissions_policy,
+                            project_root,
+                            &agent.name,
+                            agent.prompt.as_deref(),
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                last_error = Some(e.to_string());
+                                break;
+                            }
+                        };
+                        let _ = state::append_policy_decision(
+                            project_root,
+                            &launch_policy_record(
+                                &config.workspace.name,
+                                &agent.name,
+                                &runtime_name,
+                                launch_settings,
+                                permissions_policy,
+                                cmd.1,
+                                &cmd.0,
+                            ),
+                        );
+                        match TmuxSession::create_session(&session, &working_dir, &cmd.0, &env) {
+                            Ok(()) => {
+                                if rotation_enabled
+                                    && let Some(reason) =
+                                        detect_profile_rotation_failure(adapter.as_ref(), &session)
+                                {
+                                    let _ = TmuxSession::kill_session(&session);
+                                    let profile_label = attempt
+                                        .profile_name
+                                        .as_deref()
+                                        .unwrap_or("runtime default");
+                                    eprintln!(
+                                        "  {} launch failed on profile '{}' ({}); trying next profile",
+                                        "warn".yellow(),
+                                        profile_label,
+                                        reason
+                                    );
+                                    continue;
+                                }
+                                launch_result = Some(cmd);
+                                break;
+                            }
+                            Err(e) => {
+                                last_error = Some(e.to_string());
+                            }
+                        }
+                    }
+                    let Some((_cmd, warnings)) = launch_result else {
+                        eprintln!(
+                            "  Failed to launch {}: {}",
+                            agent.name,
+                            last_error.unwrap_or_else(
+                                || "no compatible profile launch candidate".to_string()
+                            )
+                        );
+                        continue;
                     };
                     if warnings.constrained_policy_via_shim && !warned_shim_enforced {
                         eprintln!(
@@ -1135,24 +1432,6 @@ fn run_all(
                         );
                         warned_bypass = true;
                     }
-                    let _ = state::append_policy_decision(
-                        project_root,
-                        &launch_policy_record(
-                            &config.workspace.name,
-                            &agent.name,
-                            &runtime_name,
-                            launch_settings,
-                            permissions_policy,
-                            warnings,
-                            &cmd,
-                        ),
-                    );
-                    if let Err(e) = TmuxSession::create_session(&session, &working_dir, &cmd, &env)
-                    {
-                        eprintln!("  Failed to launch {}: {e}", agent.name);
-                        continue;
-                    }
-
                     let agent_state = state::AgentState {
                         name: agent.name.clone(),
                         runtime: runtime_name,
@@ -1553,6 +1832,97 @@ mod tests {
         assert_eq!(
             resolve_profile_command_for_runtime(&config, Some(&global), "codex").as_deref(),
             Some("/opt/bin/codex-prod")
+        );
+    }
+
+    #[test]
+    fn strategy_requests_rotation_accepts_known_values() {
+        assert!(strategy_requests_rotation(Some("rotate")));
+        assert!(strategy_requests_rotation(Some("rotate_profile")));
+        assert!(strategy_requests_rotation(Some("failover")));
+        assert!(!strategy_requests_rotation(Some("pause")));
+        assert!(!strategy_requests_rotation(None));
+    }
+
+    #[test]
+    fn resolve_runtime_launch_attempts_adds_fallback_profiles_by_priority() {
+        let config = TuttiConfig {
+            workspace: WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: Some(WorkspaceAuth {
+                    default_profile: Some("primary".to_string()),
+                }),
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("codex".to_string()),
+            },
+            launch: None,
+            agents: vec![],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+            budget: None,
+        };
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![
+                ProfileConfig {
+                    name: "primary".to_string(),
+                    provider: "openai".to_string(),
+                    command: "/opt/bin/codex-primary".to_string(),
+                    max_concurrent: None,
+                    monthly_budget: None,
+                    priority: Some(1),
+                    plan: None,
+                    reset_day: None,
+                    weekly_hours: None,
+                },
+                ProfileConfig {
+                    name: "fallback-b".to_string(),
+                    provider: "openai".to_string(),
+                    command: "/opt/bin/codex-b".to_string(),
+                    max_concurrent: None,
+                    monthly_budget: None,
+                    priority: Some(5),
+                    plan: None,
+                    reset_day: None,
+                    weekly_hours: None,
+                },
+                ProfileConfig {
+                    name: "fallback-a".to_string(),
+                    provider: "openai".to_string(),
+                    command: "/opt/bin/codex-a".to_string(),
+                    max_concurrent: None,
+                    monthly_budget: None,
+                    priority: Some(2),
+                    plan: None,
+                    reset_day: None,
+                    weekly_hours: None,
+                },
+            ],
+            registered_workspaces: vec![],
+            dashboard: None,
+            resilience: None,
+            permissions: None,
+        };
+
+        let attempts = resolve_runtime_launch_attempts(&config, Some(&global), "codex", true);
+        let labels: Vec<String> = attempts
+            .into_iter()
+            .map(|a| a.profile_name.unwrap_or_else(|| "default".to_string()))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "primary".to_string(),
+                "fallback-a".to_string(),
+                "fallback-b".to_string()
+            ]
         );
     }
 
