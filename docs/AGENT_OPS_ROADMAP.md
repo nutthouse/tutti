@@ -47,7 +47,7 @@ Position Tutti as the agent operations layer (not just a coding assistant) by cl
 8. **Ecosystem + Templates**
    - Connector starter set (CRM, ticketing, docs, messaging)
    - Template arrangements/workflows by use case
-   - <30 min time-to-first-value path
+   - Under 30 min time-to-first-value path
 
 9. **Trust and Compliance Pack**
    - Security posture docs
@@ -71,6 +71,13 @@ Position Tutti as the agent operations layer (not just a coding assistant) by cl
 - Outcome: run success/failure, failure type (`routing/tool/model/policy`), time-to-success
 - Commercial: conversion funnel install → first up → first successful run → D7 return
 
+**PII boundaries (mandatory):**
+- Allowed fields: timestamps, boolean flags, counters, duration buckets, workflow/run status, failure category.
+- Identifier handling: workspace/user identifiers must be one-way pseudonymized (salted hash).
+- Explicitly excluded: workspace names, user emails, full prompts/messages, raw payload bodies.
+- Retention: raw event payloads 30 days; aggregated cohort and DAW metrics 12 months.
+- Enforcement: apply and verify via the "Redaction/privacy defaults" deliverable before dashboard rollout.
+
 ### Telemetry deliverables
 - Event schema + versioning
 - Redaction/privacy defaults
@@ -85,7 +92,8 @@ Position Tutti as the agent operations layer (not just a coding assistant) by cl
 - Ongoing: P1.9 + P1.10 hardening and GTM tuning
 
 ## Success criteria
-- Activation >= target baseline and trending up
-- Reduced run failure rate and faster MTTR
-- Clear operator trust: approval/audit/cost controls usable in production
-- Repeatable adoption via templates + onboarding story
+- Activation: >= 60% of installs reach first successful workflow run within 24h
+- Reliability: run failure rate < 5% and MTTR < 2 hours
+- Operator trust: approval/audit/cost controls are production-usable and exercised in at least one documented runbook
+- Adoption: >= 3 production-ready templates with documented use cases
+- Retention: D7 returning-workspace cohort >= 40%

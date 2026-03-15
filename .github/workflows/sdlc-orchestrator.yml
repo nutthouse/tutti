@@ -22,7 +22,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      issues: read
+      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
         run: |
           cp docs/examples/tutti-codex-sdlc.toml tutti.toml
 
-      - name: Install gh auth
+      - name: Verify gh auth
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,8 +54,10 @@ jobs:
         if: ${{ inputs.mode == 'smoke' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          ISSUE_LABEL: ${{ inputs.issue_label }}
         run: |
-          scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json "${{ inputs.issue_label }}"
+          mkdir -p .tutti/state/auto
+          scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json "$ISSUE_LABEL"
           cargo run --quiet -- run sdlc-smoke --strict
 
       - name: Verify codex CLI is available
@@ -67,6 +69,8 @@ jobs:
         if: ${{ inputs.mode == 'auto' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          ISSUE_LABEL: ${{ inputs.issue_label }}
         run: |
-          scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json "${{ inputs.issue_label }}"
+          mkdir -p .tutti/state/auto
+          scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json "$ISSUE_LABEL"
           cargo run --quiet -- run sdlc-auto --strict
