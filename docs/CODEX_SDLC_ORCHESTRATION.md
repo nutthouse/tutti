@@ -13,14 +13,15 @@ This framework automates the SDLC loop for Tutti using Codex agents:
 
 ## Specialized agent topology (recommended)
 
-Use 5 focused agents:
-- `conductor` — orchestration/handoffs only
-- `implementer` — code changes in `src/**`
-- `tester` — tests and validation ownership
-- `docs-release` — docs/changelog/version responsibilities
-- `reviewer` — strict release-readiness review
+Use 6 focused agents:
+- `planner` (Claude) — issue decomposition, risk/test/release planning
+- `conductor` (Codex) — orchestration/handoffs only
+- `implementer` (Codex) — code changes in `src/**`
+- `tester` (Codex) — tests and validation ownership
+- `docs-release` (Codex) — docs/changelog/version responsibilities
+- `reviewer` (Codex) — strict release-readiness review
 
-This keeps each agent independent and accountable to one concern.
+This keeps each agent independent and accountable to one concern while preserving Codex-heavy execution.
 
 ## Prerequisites
 
