@@ -4,12 +4,23 @@ This framework automates the SDLC loop for Tutti using Codex agents:
 
 1. Select issue from GitHub
 2. Create issue branch
-3. Implement with tests/docs/version bump
+3. Implement with specialized agents (implementation, testing, docs/release)
 4. Validate locally
 5. Open PR
 6. Wait for CodeRabbit review
 7. Apply review fixes
 8. Re-validate and update PR
+
+## Specialized agent topology (recommended)
+
+Use 5 focused agents:
+- `conductor` — orchestration/handoffs only
+- `implementer` — code changes in `src/**`
+- `tester` — tests and validation ownership
+- `docs-release` — docs/changelog/version responsibilities
+- `reviewer` — strict release-readiness review
+
+This keeps each agent independent and accountable to one concern.
 
 ## Prerequisites
 
