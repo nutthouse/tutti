@@ -16,16 +16,25 @@ out = subprocess.check_output(
     ["gh", "pr", "list", "--state", "open", "--head", branch, "--json", "number"],
     text=True,
 )
-pr = json.loads(out)[0]["number"]
+prs = json.loads(out)
+if not prs:
+    print(f"No open PR found for branch: {branch}", file=sys.stderr)
+    sys.exit(1)
+pr = prs[0]["number"]
 
 wait_result = subprocess.run(
     ["scripts/automation/wait_coderabbit.sh", str(pr), str(wait_mins), status_file],
     check=False,
 )
-subprocess.check_call([
-    "scripts/automation/collect_coderabbit_feedback.sh",
-    str(pr),
-    feedback_file,
-])
+try:
+    subprocess.check_call([
+        "scripts/automation/collect_coderabbit_feedback.sh",
+        str(pr),
+        feedback_file,
+    ])
+except subprocess.CalledProcessError as e:
+    print(f"Warning: failed to collect CodeRabbit feedback: {e}", file=sys.stderr)
+except Exception as e:
+    print(f"Warning: unexpected feedback collection error: {e}", file=sys.stderr)
 
 sys.exit(wait_result.returncode)
