@@ -1,0 +1,114 @@
+[workspace]
+name = "tutti"
+description = "Codex-driven SDLC automation"
+
+[defaults]
+runtime = "codex"
+worktree = true
+
+[[agent]]
+name = "conductor"
+runtime = "codex"
+worktree = true
+persistent = true
+prompt = "You orchestrate SDLC execution in this repo. Always update tests, docs, and version/changelog when behavior changes."
+
+[[agent]]
+name = "reviewer"
+runtime = "codex"
+worktree = true
+persistent = false
+prompt = "You perform strict code review and verification for changes."
+
+[[workflow]]
+name = "sdlc-smoke"
+description = "Preflight test run before unattended automation"
+
+[[workflow.step]]
+id = "select_issue"
+type = "command"
+run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json agent-ops"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "create_branch"
+type = "command"
+run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "validate_smoke"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow]]
+name = "sdlc-auto"
+description = "Full issue -> branch -> code -> test -> PR -> CodeRabbit -> fix loop"
+
+[[workflow.step]]
+id = "ensure_conductor"
+type = "ensure_running"
+agent = "conductor"
+
+[[workflow.step]]
+id = "select_issue"
+type = "command"
+run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json agent-ops"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "create_branch"
+type = "command"
+run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "implement"
+type = "prompt"
+agent = "conductor"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 3600
+text = "Implement the selected issue in this repository.\n\nRequirements:\n- Create/adjust tests first (or with implementation)\n- Implement code changes\n- Run and fix failing tests\n- Update docs and CHANGELOG\n- Increment version in Cargo.toml if behavior changes\n- Commit changes with message: 'fix: issue #<issue_number> <short title>'\n- Push branch from .tutti/state/auto/branch.json\n\nDo not open PR yet."
+
+[[workflow.step]]
+id = "validate"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "open_pr"
+type = "command"
+run = "python3 - <<'PY'\nimport json,subprocess\ni=json.load(open('.tutti/state/auto/selected_issue.json'))\nb=json.load(open('.tutti/state/auto/branch.json'))\nbranch=b['branch']\nissue=i['issue_number']\ntitle=f\"[auto] #{issue} {i['title']}\"\nbody=f\"Automated SDLC cycle for #{issue}.\\n\\n- tests: updated\\n- docs: updated\\n- version/changelog: updated as needed\"\nsubprocess.check_call(['gh','pr','create','--title',title,'--body',body,'--head',branch,'--base','main'])\nPY"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "wait_coderabbit"
+type = "command"
+run = "python3 - <<'PY'\nimport subprocess,re\nout=subprocess.check_output(['gh','pr','list','--state','open','--head',__import__('json').load(open('.tutti/state/auto/branch.json'))['branch'],'--json','number'], text=True)\nimport json\npr=json.loads(out)[0]['number']\nsubprocess.check_call(['scripts/automation/wait_coderabbit.sh',str(pr),'45','.tutti/state/auto/coderabbit_status.json'])\nsubprocess.check_call(['scripts/automation/collect_coderabbit_feedback.sh',str(pr),'.tutti/state/auto/coderabbit-feedback.md'])\nPY"
+fail_mode = "open"
+
+[[workflow.step]]
+id = "apply_review_feedback"
+type = "prompt"
+agent = "conductor"
+inject_files = [".tutti/state/auto/coderabbit-feedback.md", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 1800
+text = "If coderabbit feedback exists, apply required changes, rerun tests, amend/commit, and push. If no actionable feedback, explicitly state no changes needed."
+
+[[workflow.step]]
+id = "revalidate"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "request_human_gate"
+type = "prompt"
+agent = "reviewer"
+wait_for_idle = true
+wait_timeout_secs = 900
+text = "Review the branch and summarize readiness to merge. If risky, list blockers clearly."
