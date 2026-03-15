@@ -19,6 +19,9 @@ on:
 jobs:
   orchestrate:
     runs-on: ubuntu-latest
+    concurrency:
+      group: sdlc-orchestrator-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write

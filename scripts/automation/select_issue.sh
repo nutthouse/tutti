@@ -33,12 +33,13 @@ payload = {
     "author": issue.get("author", {}).get("login"),
     "created_at": issue.get("createdAt"),
 }
-with open(out, "w", encoding="utf-8") as f:
+with open(f"{out}.tmp", "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)
 print(issue["number"])
 PY
 )
 
 gh issue edit "$ISSUE_NUM" --repo "$REPO" --add-label "automation-claimed" >/dev/null
+mv "${OUT_FILE}.tmp" "$OUT_FILE"
 
 echo "$OUT_FILE"

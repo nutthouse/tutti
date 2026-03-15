@@ -43,7 +43,7 @@ name = "docs-release"
 runtime = "codex"
 worktree = true
 persistent = true
-scope = "docs/**"
+scope = "**"
 prompt = "Own docs, changelog, and version bump policy. Update README/docs/CHANGELOG and Cargo.toml when required."
 
 [[agent]]
@@ -66,6 +66,7 @@ fail_mode = "closed"
 [[workflow.step]]
 id = "create_branch"
 type = "command"
+agent = "implementer"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
@@ -115,6 +116,7 @@ fail_mode = "closed"
 [[workflow.step]]
 id = "create_branch"
 type = "command"
+agent = "implementer"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
@@ -174,7 +176,7 @@ fail_mode = "closed"
 [[workflow.step]]
 id = "open_pr"
 type = "command"
-run = "python3 - <<'PY'\nimport json,subprocess\ni=json.load(open('.tutti/state/auto/selected_issue.json'))\nb=json.load(open('.tutti/state/auto/branch.json'))\nbranch=b['branch']\nissue=i['issue_number']\ntitle=f\"[auto] #{issue} {i['title']}\"\nbody=f\"Automated SDLC cycle for #{issue}.\\n\\n- planner: completed\\n- implementation: completed\\n- tests: updated\\n- docs/changelog: updated\\n- version: bumped if required\"\nsubprocess.check_call(['gh','pr','create','--title',title,'--body',body,'--head',branch,'--base','main'])\nPY"
+run = "python3 - <<'PY'\nimport json,subprocess\ni=json.load(open('.tutti/state/auto/selected_issue.json'))\nb=json.load(open('.tutti/state/auto/branch.json'))\nbranch=b['branch']\nissue=i['issue_number']\ntitle=f\"[auto] #{issue} {i['title']}\"\nbody=f\"Automated SDLC cycle for #{issue}.\\n\\n- planner: completed\\n- implementation: completed\\n- tests: updated\\n- docs/changelog: updated\\n- version: bumped if required\"\nexisting=subprocess.check_output(['gh','pr','list','--state','open','--head',branch,'--json','number'], text=True)\nprs=json.loads(existing)\nif prs:\n    print(f\"PR already exists: #{prs[0]['number']}\")\nelse:\n    subprocess.check_call(['gh','pr','create','--title',title,'--body',body,'--head',branch,'--base','main'])\nPY"
 fail_mode = "closed"
 
 # 8) Review loop
