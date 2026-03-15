@@ -59,8 +59,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
         run: |
-          mkdir -p .tutti/state/auto
-          scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json "$ISSUE_LABEL"
           cargo run --quiet -- run sdlc-smoke --strict
 
       - name: Verify codex CLI is available
@@ -74,6 +72,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
         run: |
-          mkdir -p .tutti/state/auto
-          scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json "$ISSUE_LABEL"
           cargo run --quiet -- run sdlc-auto --strict
