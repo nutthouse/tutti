@@ -169,21 +169,21 @@ fail_mode = "closed"
 [[workflow.step]]
 id = "verify_branch_has_changes"
 type = "command"
-run = "python3 - <<'PY'\nimport json,subprocess,sys\nb=json.load(open('.tutti/state/auto/branch.json'))['branch']\nsubprocess.check_call(['git','fetch','origin','main'])\nlog=subprocess.check_output(['git','log','--oneline',f'origin/main..{b}'], text=True).strip()\nif not log:\n    print('No commits found on automation branch vs origin/main')\n    sys.exit(1)\nprint(log.splitlines()[0])\nPY"
+run = "python3 scripts/automation/verify_branch_has_changes.py .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
 # 7) Open PR
 [[workflow.step]]
 id = "open_pr"
 type = "command"
-run = "python3 - <<'PY'\nimport json,subprocess\ni=json.load(open('.tutti/state/auto/selected_issue.json'))\nb=json.load(open('.tutti/state/auto/branch.json'))\nbranch=b['branch']\nissue=i['issue_number']\ntitle=f\"[auto] #{issue} {i['title']}\"\nbody=f\"Automated SDLC cycle for #{issue}.\\n\\n- planner: completed\\n- implementation: completed\\n- tests: updated\\n- docs/changelog: updated\\n- version: bumped if required\"\nexisting=subprocess.check_output(['gh','pr','list','--state','open','--head',branch,'--json','number'], text=True)\nprs=json.loads(existing)\nif prs:\n    print(f\"PR already exists: #{prs[0]['number']}\")\nelse:\n    subprocess.check_call(['gh','pr','create','--title',title,'--body',body,'--head',branch,'--base','main'])\nPY"
+run = "python3 scripts/automation/open_or_create_pr.py .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json main"
 fail_mode = "closed"
 
 # 8) Review loop
 [[workflow.step]]
 id = "wait_coderabbit"
 type = "command"
-run = "python3 - <<'PY'\nimport subprocess,json,sys\nbranch=json.load(open('.tutti/state/auto/branch.json'))['branch']\nout=subprocess.check_output(['gh','pr','list','--state','open','--head',branch,'--json','number'], text=True)\npr=json.loads(out)[0]['number']\nwait_result=subprocess.run(['scripts/automation/wait_coderabbit.sh',str(pr),'45','.tutti/state/auto/coderabbit_status.json'], check=False)\nsubprocess.check_call(['scripts/automation/collect_coderabbit_feedback.sh',str(pr),'.tutti/state/auto/coderabbit-feedback.md'])\nsys.exit(wait_result.returncode)\nPY"
+run = "python3 scripts/automation/wait_and_collect_coderabbit.py .tutti/state/auto/branch.json 45 .tutti/state/auto/coderabbit_status.json .tutti/state/auto/coderabbit-feedback.md"
 fail_mode = "open"
 
 [[workflow.step]]
