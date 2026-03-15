@@ -40,12 +40,13 @@ for c in checks:
 if not cr:
     print("NONE")
     raise SystemExit
-# if multiple, require all completed non-fail
+# if multiple, require all completed and explicitly successful
 states=[(c.get("status") or "", c.get("conclusion") or "") for c in cr]
 if any(s != "COMPLETED" for s,_ in states):
     print("PENDING")
 else:
-    bad=[x for x in states if x[1] in ("FAILURE","TIMED_OUT","CANCELLED","ACTION_REQUIRED")]
+    allowed=("SUCCESS",)
+    bad=[x for x in states if x[1] not in allowed]
     print("FAIL" if bad else "PASS")
 PY
 )

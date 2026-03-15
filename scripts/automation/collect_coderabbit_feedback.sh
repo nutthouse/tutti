@@ -11,17 +11,19 @@ REPO="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner
 mkdir -p "$(dirname "$OUT_FILE")"
 
 DATA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json comments,reviews,url,title)
+INLINE_COMMENTS=$(gh api "repos/$REPO/pulls/$PR_NUMBER/comments")
 
-python3 - <<'PY' "$OUT_FILE" "$DATA"
+python3 - <<'PY' "$OUT_FILE" "$DATA" "$INLINE_COMMENTS"
 import json,sys,re
 out=obj=None
 out=sys.argv[1]
 obj=json.loads(sys.argv[2])
+inline_comments=json.loads(sys.argv[3])
 
 def is_coderabbit(author):
     if not author:
         return False
-    login=(author.get("login") or "").lower()
+    login=(author.get("login") or author.get("name") or "").lower()
     return "coderabbit" in login or "code-rabbit" in login or "code_rabbit" in login
 
 lines=[]
@@ -47,6 +49,19 @@ for c in obj.get("comments", []):
         body=(c.get("body") or "").strip()
         if body:
             lines.append("## Comment")
+            lines.append(body)
+            lines.append("")
+
+for c in inline_comments:
+    # REST PR review comments use `user` instead of `author`
+    if is_coderabbit(c.get("user")):
+        found=True
+        body=(c.get("body") or "").strip()
+        path=(c.get("path") or "").strip()
+        line_num=c.get("line") or c.get("original_line")
+        if body:
+            where = f" ({path}:{line_num})" if path and line_num else (f" ({path})" if path else "")
+            lines.append(f"## Inline comment{where}")
             lines.append(body)
             lines.append("")
 
