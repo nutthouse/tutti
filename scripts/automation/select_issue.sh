@@ -10,15 +10,20 @@ REPO="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner
 
 mkdir -p "$(dirname "$OUT_FILE")"
 
-JSON=$(gh issue list --repo "$REPO" --state open --label "$LABEL" --limit 1 \
+JSON=$(gh issue list --repo "$REPO" --state open --label "$LABEL" --limit 100 \
   --json number,title,url,labels,author,createdAt)
 
-python3 - "$OUT_FILE" "$LABEL" "$JSON" <<'PY'
+ISSUE_NUM=$(python3 - "$OUT_FILE" "$LABEL" "$JSON" <<'PY'
 import json,sys
 out, label, raw = sys.argv[1], sys.argv[2], sys.argv[3]
 items = json.loads(raw or "[]")
+items = [
+    i for i in items
+    if "automation-claimed" not in {l.get("name") for l in i.get("labels", [])}
+]
 if not items:
-    raise SystemExit(f"No open issues found for label '{label}'")
+    raise SystemExit(f"No unclaimed open issues found for label '{label}'")
+items.sort(key=lambda i: i.get("createdAt") or "")
 issue = items[0]
 payload = {
     "issue_number": issue["number"],
@@ -30,5 +35,10 @@ payload = {
 }
 with open(out, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)
-print(out)
+print(issue["number"])
 PY
+)
+
+gh issue edit "$ISSUE_NUM" --repo "$REPO" --add-label "automation-claimed" >/dev/null
+
+echo "$OUT_FILE"

@@ -181,7 +181,7 @@ fail_mode = "closed"
 [[workflow.step]]
 id = "wait_coderabbit"
 type = "command"
-run = "python3 - <<'PY'\nimport subprocess,json\nbranch=json.load(open('.tutti/state/auto/branch.json'))['branch']\nout=subprocess.check_output(['gh','pr','list','--state','open','--head',branch,'--json','number'], text=True)\npr=json.loads(out)[0]['number']\nsubprocess.check_call(['scripts/automation/wait_coderabbit.sh',str(pr),'45','.tutti/state/auto/coderabbit_status.json'])\nsubprocess.check_call(['scripts/automation/collect_coderabbit_feedback.sh',str(pr),'.tutti/state/auto/coderabbit-feedback.md'])\nPY"
+run = "python3 - <<'PY'\nimport subprocess,json,sys\nbranch=json.load(open('.tutti/state/auto/branch.json'))['branch']\nout=subprocess.check_output(['gh','pr','list','--state','open','--head',branch,'--json','number'], text=True)\npr=json.loads(out)[0]['number']\nwait_result=subprocess.run(['scripts/automation/wait_coderabbit.sh',str(pr),'45','.tutti/state/auto/coderabbit_status.json'], check=False)\nsubprocess.check_call(['scripts/automation/collect_coderabbit_feedback.sh',str(pr),'.tutti/state/auto/coderabbit-feedback.md'])\nsys.exit(wait_result.returncode)\nPY"
 fail_mode = "open"
 
 [[workflow.step]]
