@@ -480,8 +480,9 @@ workflow = "child"
             ..Default::default()
         };
 
-        let report = suggest_workflow_permissions("root", false, &config, project_root, &mut global)
-            .expect("suggest should work");
+        let report =
+            suggest_workflow_permissions("root", false, &config, project_root, &mut global)
+                .expect("suggest should work");
 
         assert_eq!(report.total_commands, 3);
         assert_eq!(report.blocked.len(), 1);
@@ -501,7 +502,9 @@ workflow = "child"
         std::fs::create_dir_all(&temp).unwrap();
 
         let old_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", &temp); }
+        unsafe {
+            std::env::set_var("HOME", &temp);
+        }
 
         let config_text = r#"
 [workspace]
@@ -542,9 +545,13 @@ run = "echo blocked"
         assert!(saved.contains("echo blocked *"));
 
         if let Some(value) = old_home {
-            unsafe { std::env::set_var("HOME", value); }
+            unsafe {
+                std::env::set_var("HOME", value);
+            }
         } else {
-            unsafe { std::env::remove_var("HOME"); }
+            unsafe {
+                std::env::remove_var("HOME");
+            }
         }
 
         let _ = std::fs::remove_dir_all(&temp);
