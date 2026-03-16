@@ -204,6 +204,39 @@ pub struct SdlcRunLedgerRecord {
     pub transitions: Vec<SdlcTransitionRecord>,
 }
 
+pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "SDLC run `{}` for #{} is currently `{:?}` (updated {} by {}).\n",
+        ledger.run_id,
+        ledger.issue_number,
+        ledger.state,
+        ledger.updated_at.to_rfc3339(),
+        ledger.actor
+    ));
+    if ledger.transitions.is_empty() {
+        out.push_str("No transitions recorded yet.");
+        return out;
+    }
+
+    out.push_str("\nTransitions:\n");
+    for transition in &ledger.transitions {
+        out.push_str(&format!(
+            "- {:?} → {:?} @ {} by {}{}\n",
+            transition.from,
+            transition.to,
+            transition.timestamp.to_rfc3339(),
+            transition.actor,
+            transition
+                .reason
+                .as_ref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityState {
@@ -1190,5 +1223,31 @@ mod tests {
 
         let bad = validate_step_id("step*1").unwrap_err();
         assert!(bad.to_string().contains("only [A-Za-z0-9_-] allowed"));
+    }
+
+    #[test]
+    fn sdlc_pr_comment_summary_renders_transitions() {
+        let now = Utc::now();
+        let ledger = SdlcRunLedgerRecord {
+            run_id: "run-ledger-summary".to_string(),
+            issue_number: 30,
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "readiness".to_string(),
+            state: SdlcRunState::Tested,
+            updated_at: now,
+            actor: "wren".to_string(),
+            transitions: vec![SdlcTransitionRecord {
+                from: SdlcRunState::Implemented,
+                to: SdlcRunState::Tested,
+                timestamp: now,
+                actor: "wren".to_string(),
+                reason: Some("tests passed".to_string()),
+            }],
+        };
+
+        let summary = sdlc_pr_comment_summary(&ledger);
+        assert!(summary.contains("run-ledger-summary"));
+        assert!(summary.contains("Transitions:"));
+        assert!(summary.contains("tests passed"));
     }
 }
