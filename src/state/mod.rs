@@ -124,6 +124,16 @@ fn validate_step_id(step_id: &str) -> Result<()> {
     Ok(())
 }
 
+struct RunLedgerLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for RunLedgerLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock_dir = project_root.join(".tutti").join("state").join("run-ledger");
     std::fs::create_dir_all(&lock_dir)?;
@@ -162,9 +172,8 @@ fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) 
         ));
     }
 
-    let result = op();
-    let _ = std::fs::remove_file(lock_path);
-    result
+    let _guard = RunLedgerLockGuard { path: lock_path };
+    op()
 }
 
 #[allow(dead_code)]
@@ -473,14 +482,15 @@ pub fn load_workflow_checkpoint(
     Ok(Some(value))
 }
 
-#[allow(dead_code)]
 pub fn save_sdlc_run_ledger(project_root: &Path, ledger: &SdlcRunLedgerRecord) -> Result<PathBuf> {
     validate_run_id(&ledger.run_id)?;
     let dir = project_root.join(".tutti").join("state").join("run-ledger");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.json", ledger.run_id));
+    let tmp_path = dir.join(format!("{}.json.tmp", ledger.run_id));
     let body = serde_json::to_string_pretty(ledger)?;
-    std::fs::write(&path, body)?;
+    std::fs::write(&tmp_path, body)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(path)
 }
 
@@ -789,6 +799,7 @@ mod tests {
         assert!(dir.join(".tutti/state/runtime-settings").exists());
         assert!(dir.join(".tutti/state/workflow-checkpoints").exists());
         assert!(dir.join(".tutti/state/workflow-intents").exists());
+        assert!(dir.join(".tutti/state/run-ledger").exists());
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());
