@@ -115,6 +115,7 @@ fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) 
     let lock_dir = project_root.join(".tutti").join("state").join("run-ledger");
     std::fs::create_dir_all(&lock_dir)?;
     let lock_path = lock_dir.join(".transition.lock");
+    let stale_after = std::time::Duration::from_secs(30);
 
     let mut acquired = false;
     for _ in 0..50 {
@@ -128,6 +129,14 @@ fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) 
                 break;
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Ok(meta) = std::fs::metadata(&lock_path)
+                    && let Ok(modified) = meta.modified()
+                    && let Ok(age) = std::time::SystemTime::now().duration_since(modified)
+                    && age > stale_after
+                {
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Err(err) => return Err(err.into()),
@@ -496,9 +505,6 @@ pub fn transition_sdlc_run_ledger(
         let previous = ledger.state.clone();
 
         if previous == next {
-            ledger.updated_at = Utc::now();
-            ledger.actor = actor.to_string();
-            save_sdlc_run_ledger(project_root, &ledger)?;
             return Ok(ledger);
         }
 
@@ -1098,7 +1104,7 @@ mod tests {
 
         assert_eq!(updated.state, SdlcRunState::Branched);
         assert!(updated.transitions.is_empty());
-        assert_eq!(updated.actor, "retry-agent");
+        assert_eq!(updated.actor, "wren");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
