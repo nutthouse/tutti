@@ -1004,10 +1004,13 @@ impl<'a> WorkflowExecutor<'a> {
                         let policy_decision =
                             evaluate_workflow_command_policy(policy_ctx, &rendered);
                         if !policy_decision.allowed {
-                            let message = format!(
+                            let mut message = format!(
                                 "command blocked by permissions policy: '{}'",
                                 policy_decision.command
                             );
+                            if let Some(rule) = policy_decision.suggested_rule.as_deref() {
+                                message.push_str(&format!(" (hint: add allow rule '{rule}')"));
+                            }
                             match fail_mode {
                                 WorkflowFailMode::Open => {
                                     step_results.push(StepResult {
@@ -1857,6 +1860,7 @@ fn evaluate_workflow_command_policy(
                 "step_index": ctx.step_index,
                 "command": decision.command,
                 "matched_rule": decision.matched_rule,
+                "suggested_rule": decision.suggested_rule,
             })),
         },
     );
@@ -3474,6 +3478,12 @@ mod tests {
                 .message
                 .as_deref()
                 .is_some_and(|m| m.contains("blocked by permissions policy"))
+        );
+        assert!(
+            result.step_results[0]
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("hint: add allow rule"))
         );
 
         let decisions = crate::state::load_policy_decisions(&dir).unwrap();

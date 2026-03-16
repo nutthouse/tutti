@@ -29,6 +29,7 @@ struct PermissionCheckReport {
     allowed: bool,
     policy_configured: bool,
     matched_rule: Option<String>,
+    suggested_rule: Option<String>,
     reason: Option<String>,
 }
 
@@ -49,6 +50,7 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
         decision.allowed,
         decision.policy_configured,
         decision.matched_rule.as_deref(),
+        decision.suggested_rule.as_deref(),
         decision.reason.as_deref(),
     );
 
@@ -58,6 +60,7 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
             allowed: decision.allowed,
             policy_configured: decision.policy_configured,
             matched_rule: decision.matched_rule.clone(),
+            suggested_rule: decision.suggested_rule.clone(),
             reason: decision.reason.clone(),
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -74,15 +77,19 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
         }
     } else if let Some(reason) = decision.reason.as_deref() {
         eprintln!("{reason}: '{}'", decision.command);
+        if let Some(rule) = decision.suggested_rule.as_deref() {
+            eprintln!("hint: add this allow rule: {rule}");
+        }
     }
 
     if decision.allowed {
         Ok(())
     } else {
-        Err(TuttiError::ConfigValidation(format!(
-            "command blocked by permissions policy: '{}'",
-            decision.command
-        )))
+        let mut message = format!("command blocked by permissions policy: '{}'", decision.command);
+        if let Some(rule) = decision.suggested_rule.as_deref() {
+            message.push_str(&format!(" (hint: add allow rule '{rule}')"));
+        }
+        Err(TuttiError::ConfigValidation(message))
     }
 }
 
@@ -108,6 +115,7 @@ fn persist_permission_check_decision(
     allowed: bool,
     policy_configured: bool,
     matched_rule: Option<&str>,
+    suggested_rule: Option<&str>,
     reason: Option<&str>,
 ) {
     let Some(ctx) = workspace_ctx else {
@@ -137,7 +145,8 @@ fn persist_permission_check_decision(
             reason: reason.map(ToString::to_string),
             data: Some(json!({
                 "command": command,
-                "matched_rule": matched_rule
+                "matched_rule": matched_rule,
+                "suggested_rule": suggested_rule
             })),
         },
     );
@@ -191,7 +200,9 @@ fn collect_blocked_commands(
                     if !decision.allowed && seen_commands.insert(cmd.clone()) {
                         blocked.push(PermissionSuggestion {
                             command: cmd.clone(),
-                            suggested_rule: format!("{cmd} *"),
+                            suggested_rule: decision
+                                .suggested_rule
+                                .unwrap_or_else(|| format!("{cmd} *")),
                             reason: decision.reason,
                         });
                     }
@@ -435,6 +446,7 @@ mod tests {
             true,
             true,
             Some("git status"),
+            None,
             None,
         );
 
