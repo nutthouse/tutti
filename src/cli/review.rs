@@ -256,3 +256,69 @@ fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_input_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_limit_unchanged() {
+        assert_eq!(truncate("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_over_limit_adds_suffix() {
+        let result = truncate("abcdef", 3);
+        assert!(result.starts_with("abc"));
+        assert!(result.contains("[truncated by tt review]"));
+    }
+
+    #[test]
+    fn truncate_empty_input() {
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn truncate_handles_multibyte_chars() {
+        let input = "àéî";
+        let result = truncate(input, 2);
+        assert!(result.starts_with("àé"));
+        assert!(result.contains("[truncated by tt review]"));
+    }
+
+    #[test]
+    fn write_review_packet_renders_markdown_sections() {
+        let dir = std::env::temp_dir().join("tutti-test-review-packet");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".tutti").join("state")).unwrap();
+
+        let packet = ReviewPacketData {
+            agent_name: "coder".to_string(),
+            branch: "tutti/coder".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: " src/main.rs | 2 +-".to_string(),
+            committed_diff: "+new line".to_string(),
+            wip_stat: String::new(),
+            wip_diff: String::new(),
+        };
+
+        let path = write_review_packet(&dir, &packet).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("# Review Packet: coder"));
+        assert!(content.contains("Branch: tutti/coder"));
+        assert!(content.contains("Merge base: abc123"));
+        assert!(content.contains("## Committed Diff Stat"));
+        assert!(content.contains("src/main.rs | 2 +-"));
+        assert!(content.contains("## Worktree WIP Diff Stat"));
+        assert!(content.contains("(none)"));
+        assert!(content.contains("+new line"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

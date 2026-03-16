@@ -245,3 +245,34 @@ fn git_rev_parse(path: &Path) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn worktree_path_constructs_expected_path() {
+        let root = Path::new("/projects/myapp");
+        let path = worktree_path(root, "coder");
+        assert_eq!(
+            path,
+            PathBuf::from("/projects/myapp/.tutti/worktrees/coder")
+        );
+    }
+
+    #[test]
+    fn worktree_path_handles_special_agent_names() {
+        let root = Path::new("/repo");
+        let path = worktree_path(root, "my-agent_v2");
+        assert_eq!(path, PathBuf::from("/repo/.tutti/worktrees/my-agent_v2"));
+    }
+
+    #[test]
+    fn worktree_snapshot_default_is_not_exists() {
+        let snap = WorktreeSnapshot::default();
+        assert!(!snap.exists);
+        assert!(!snap.dirty);
+        assert!(!snap.at_project_head);
+    }
+}
