@@ -178,6 +178,59 @@ fn worktree_path(project_root: &Path, agent_name: &str) -> PathBuf {
         .join(agent_name)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn worktree_path_builds_expected_path() {
+        let root = Path::new("/home/user/project");
+        let result = worktree_path(root, "backend");
+        assert_eq!(
+            result,
+            PathBuf::from("/home/user/project/.tutti/worktrees/backend")
+        );
+    }
+
+    #[test]
+    fn worktree_path_handles_special_chars_in_agent_name() {
+        let root = Path::new("/repo");
+        let result = worktree_path(root, "my-agent_v2");
+        assert_eq!(result, PathBuf::from("/repo/.tutti/worktrees/my-agent_v2"));
+    }
+
+    #[test]
+    fn snapshot_default_is_non_existent() {
+        let snap = WorktreeSnapshot::default();
+        assert!(!snap.exists);
+        assert!(!snap.dirty);
+        assert!(!snap.at_project_head);
+    }
+
+    #[test]
+    fn snapshot_equality() {
+        let a = WorktreeSnapshot {
+            exists: true,
+            dirty: false,
+            at_project_head: true,
+        };
+        let b = WorktreeSnapshot {
+            exists: true,
+            dirty: false,
+            at_project_head: true,
+        };
+        assert_eq!(a, b);
+
+        let c = WorktreeSnapshot {
+            exists: true,
+            dirty: true,
+            at_project_head: true,
+        };
+        assert_ne!(a, c);
+    }
+}
+
 fn git_rev_parse(path: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])

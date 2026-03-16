@@ -147,6 +147,100 @@ fn truncate(input: &str, max_chars: usize) -> String {
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_input_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_limit_unchanged() {
+        let s = "abcde";
+        assert_eq!(truncate(s, 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_over_limit_appends_marker() {
+        let result = truncate("abcdef", 3);
+        assert!(result.starts_with("abc"));
+        assert!(result.contains("[truncated by tt review]"));
+    }
+
+    #[test]
+    fn truncate_empty_input() {
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn truncate_multibyte_chars() {
+        // Ensure char-based truncation, not byte-based
+        let s = "héllo wörld";
+        let result = truncate(s, 5);
+        assert!(result.starts_with("héllo"));
+        assert!(result.contains("[truncated by tt review]"));
+    }
+
+    #[test]
+    fn write_review_packet_creates_file_with_expected_sections() {
+        let tmp = std::env::temp_dir().join("tutti-test-review-packet");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let packet = ReviewPacketData {
+            agent_name: "backend".to_string(),
+            branch: "tutti/backend".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: " src/main.rs | 5 +++++".to_string(),
+            committed_diff: "+new line".to_string(),
+            wip_stat: String::new(),
+            wip_diff: String::new(),
+        };
+
+        let path = write_review_packet(&tmp, &packet).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# Review Packet: backend"));
+        assert!(content.contains("Branch: tutti/backend"));
+        assert!(content.contains("Merge base: abc123"));
+        assert!(content.contains("## Committed Diff Stat"));
+        assert!(content.contains("src/main.rs | 5 +++++"));
+        assert!(content.contains("## Worktree WIP Diff Stat"));
+        assert!(content.contains("(none)")); // wip_stat is empty
+        assert!(content.contains("+new line"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_review_packet_truncates_large_diffs() {
+        let tmp = std::env::temp_dir().join("tutti-test-review-trunc");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let big_diff = "x".repeat(200_000);
+        let packet = ReviewPacketData {
+            agent_name: "big".to_string(),
+            branch: "tutti/big".to_string(),
+            merge_base: "def456".to_string(),
+            committed_stat: String::new(),
+            committed_diff: big_diff,
+            wip_stat: String::new(),
+            wip_diff: String::new(),
+        };
+
+        let path = write_review_packet(&tmp, &packet).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[truncated by tt review]"));
+        // The file should be smaller than the raw diff
+        assert!(content.len() < 200_000);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
 fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
     let output = Command::new("git").args(args).current_dir(cwd).output()?;
     if output.status.success() {

@@ -52,3 +52,63 @@ pub enum TuttiError {
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn config_already_exists_display() {
+        let err = TuttiError::ConfigAlreadyExists(PathBuf::from("/tmp/project"));
+        assert_eq!(err.to_string(), "tutti.toml already exists in /tmp/project");
+    }
+
+    #[test]
+    fn config_not_found_display() {
+        let err = TuttiError::ConfigNotFound(PathBuf::from("/home/user"));
+        assert!(err
+            .to_string()
+            .contains("tutti.toml not found (searched from /home/user"));
+    }
+
+    #[test]
+    fn tmux_not_installed_display() {
+        let err = TuttiError::TmuxNotInstalled;
+        assert!(err.to_string().contains("tmux is not installed"));
+        assert!(err.to_string().contains("brew install tmux"));
+    }
+
+    #[test]
+    fn agent_not_found_display() {
+        let err = TuttiError::AgentNotFound("ghost".to_string());
+        assert_eq!(err.to_string(), "agent 'ghost' not found in config");
+    }
+
+    #[test]
+    fn agent_not_running_display() {
+        let err = TuttiError::AgentNotRunning("backend".to_string());
+        assert_eq!(err.to_string(), "agent 'backend' is not running");
+    }
+
+    #[test]
+    fn runtime_unknown_display() {
+        let err = TuttiError::RuntimeUnknown("myruntime".to_string());
+        assert_eq!(err.to_string(), "unknown runtime: myruntime");
+    }
+
+    #[test]
+    fn io_error_converts() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let tutti_err: TuttiError = io_err.into();
+        assert!(matches!(tutti_err, TuttiError::Io(_)));
+        assert!(tutti_err.to_string().contains("file missing"));
+    }
+
+    #[test]
+    fn json_error_converts() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let tutti_err: TuttiError = json_err.into();
+        assert!(matches!(tutti_err, TuttiError::Json(_)));
+    }
+}

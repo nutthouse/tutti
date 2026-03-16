@@ -63,6 +63,57 @@ fn print_tail(path: &Path, lines: usize) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as IoWrite;
+
+    #[test]
+    fn print_tail_reads_last_n_lines() {
+        let dir = std::env::temp_dir().join("tutti-test-logs-tail");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("test.log");
+        {
+            let mut f = std::fs::File::create(&log).unwrap();
+            for i in 1..=10 {
+                writeln!(f, "line {i}").unwrap();
+            }
+        }
+        // print_tail shouldn't error
+        assert!(print_tail(&log, 3).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn print_tail_handles_fewer_lines_than_requested() {
+        let dir = std::env::temp_dir().join("tutti-test-logs-few");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("short.log");
+        std::fs::write(&log, "only one line").unwrap();
+        assert!(print_tail(&log, 100).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn print_tail_handles_empty_file() {
+        let dir = std::env::temp_dir().join("tutti-test-logs-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("empty.log");
+        std::fs::write(&log, "").unwrap();
+        assert!(print_tail(&log, 10).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn print_tail_errors_on_missing_file() {
+        let missing = std::env::temp_dir().join("tutti-test-logs-missing/no.log");
+        assert!(print_tail(&missing, 5).is_err());
+    }
+}
+
 fn follow_log(path: &Path) -> Result<()> {
     let mut position = std::fs::metadata(path)?.len();
 
