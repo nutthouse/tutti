@@ -203,6 +203,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_output.add_argument("agent")
     p_output.add_argument("--lines", type=int, default=100)
 
+    p_send = sub.add_parser("send_prompt", help="Send prompt to agent with auto-up/wait/output")
+    p_send.add_argument("agent")
+    p_send.add_argument("prompt", nargs=argparse.REMAINDER, help="Prompt text")
+    p_send.add_argument("--auto-up", action="store_true", help="Start agent if not running")
+    p_send.add_argument("--wait", action="store_true", help="Wait for agent to finish")
+    p_send.add_argument("--output", action="store_true", help="Capture agent response")
+    p_send.add_argument("--timeout-secs", type=int, default=900)
+    p_send.add_argument("--idle-stable-secs", type=int, default=5)
+    p_send.add_argument("--output-lines", type=int, default=200)
+
+    p_land = sub.add_parser("land_agent", help="Run tt land <agent>")
+    p_land.add_argument("agent")
+    p_land.add_argument("--pr", action="store_true", help="Push branch and open PR")
+    p_land.add_argument("--force", action="store_true", help="Force land")
+
     p_stop = sub.add_parser("stop_agent", help="Run tt down <agent>")
     p_stop.add_argument("agent")
     sub.add_parser("stop_team", help="Run tt down")
@@ -304,6 +319,37 @@ def main() -> None:
         _print_and_exit(_team_status(action))
     if action == "agent_output":
         _print_and_exit(_agent_output(action, tt_bin, args.agent, args.lines))
+    if action == "send_prompt":
+        if not args.prompt:
+            result = CommandResult(
+                ok=False,
+                action=action,
+                command=None,
+                exit_code=2,
+                data=None,
+                stdout="",
+                stderr="send_prompt requires a prompt",
+            )
+            _print_and_exit(result)
+        cmd = ["send", args.agent]
+        if args.auto_up:
+            cmd.append("--auto-up")
+        if args.wait:
+            cmd.append("--wait")
+            cmd.extend(["--timeout-secs", str(args.timeout_secs)])
+            cmd.extend(["--idle-stable-secs", str(args.idle_stable_secs)])
+        if args.output:
+            cmd.append("--output")
+            cmd.extend(["--output-lines", str(args.output_lines)])
+        cmd.extend(args.prompt)
+        _print_and_exit(_run_tt(action, tt_bin, cmd, expect_json=False))
+    if action == "land_agent":
+        cmd = ["land", args.agent]
+        if args.pr:
+            cmd.append("--pr")
+        if args.force:
+            cmd.append("--force")
+        _print_and_exit(_run_tt(action, tt_bin, cmd, expect_json=False))
     if action == "stop_agent":
         _print_and_exit(_run_tt(action, tt_bin, ["down", args.agent], expect_json=False))
     if action == "stop_team":
