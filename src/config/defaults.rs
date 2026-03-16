@@ -161,53 +161,6 @@ prompt = "You own the UI. Follow existing component patterns."
 # track_cost = true
 "#;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config_is_valid_toml() {
-        let parsed: toml::Value = toml::from_str(DEFAULT_CONFIG)
-            .expect("DEFAULT_CONFIG should be valid TOML");
-        let workspace = parsed.get("workspace").expect("workspace section missing");
-        assert_eq!(
-            workspace.get("name").and_then(|v| v.as_str()),
-            Some("my-project")
-        );
-    }
-
-    #[test]
-    fn default_config_has_required_sections() {
-        let parsed: toml::Value = toml::from_str(DEFAULT_CONFIG).unwrap();
-        assert!(parsed.get("workspace").is_some());
-        assert!(parsed.get("defaults").is_some());
-        assert!(parsed.get("agent").is_some());
-    }
-
-    #[test]
-    fn default_config_defines_two_agents() {
-        let parsed: toml::Value = toml::from_str(DEFAULT_CONFIG).unwrap();
-        let agents = parsed.get("agent").unwrap().as_array().unwrap();
-        assert_eq!(agents.len(), 2);
-        let names: Vec<&str> = agents
-            .iter()
-            .map(|a| a.get("name").unwrap().as_str().unwrap())
-            .collect();
-        assert!(names.contains(&"backend"));
-        assert!(names.contains(&"frontend"));
-    }
-
-    #[test]
-    fn default_global_config_is_valid_toml() {
-        // The global config template is mostly comments; the uncommented portion
-        // should still parse as valid (empty) TOML.
-        let parsed: toml::Value = toml::from_str(DEFAULT_GLOBAL_CONFIG)
-            .expect("DEFAULT_GLOBAL_CONFIG should be valid TOML");
-        // It's all comments, so the parsed value should be an empty table
-        assert!(parsed.as_table().unwrap().is_empty());
-    }
-}
-
 /// Default global config template written to ~/.config/tutti/config.toml.
 pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies across all workspaces
 # This file is auto-created by `tt init` and updated as you register workspaces.
@@ -258,3 +211,47 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 #   "Edit",
 # ]
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_is_valid_toml() {
+        let parsed: toml::Value =
+            toml::from_str(DEFAULT_CONFIG).expect("DEFAULT_CONFIG should be valid TOML");
+        let workspace = parsed.get("workspace").expect("workspace section missing");
+        assert_eq!(
+            workspace.get("name").and_then(|v| v.as_str()),
+            Some("my-project")
+        );
+    }
+
+    #[test]
+    fn default_config_has_required_sections() {
+        let parsed: toml::Value = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(parsed.get("workspace").is_some());
+        assert!(parsed.get("defaults").is_some());
+        assert!(parsed.get("agent").is_some());
+    }
+
+    #[test]
+    fn default_config_defines_two_agents() {
+        let parsed: toml::Value = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let agents = parsed.get("agent").unwrap().as_array().unwrap();
+        assert_eq!(agents.len(), 2);
+        let names: Vec<&str> = agents
+            .iter()
+            .map(|a| a.get("name").unwrap().as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"backend"));
+        assert!(names.contains(&"frontend"));
+    }
+
+    #[test]
+    fn default_global_config_is_valid_toml() {
+        let parsed: toml::Value = toml::from_str(DEFAULT_GLOBAL_CONFIG)
+            .expect("DEFAULT_GLOBAL_CONFIG should be valid TOML");
+        assert!(parsed.as_table().unwrap().is_empty());
+    }
+}

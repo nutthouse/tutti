@@ -63,6 +63,36 @@ fn print_tail(path: &Path, lines: usize) -> Result<()> {
     Ok(())
 }
 
+fn follow_log(path: &Path) -> Result<()> {
+    let mut position = std::fs::metadata(path)?.len();
+
+    loop {
+        thread::sleep(Duration::from_millis(500));
+
+        let metadata = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let new_len = metadata.len();
+
+        if new_len < position {
+            position = 0;
+        }
+        if new_len == position {
+            continue;
+        }
+
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(position))?;
+        let mut chunk = String::new();
+        file.read_to_string(&mut chunk)?;
+        print!("{chunk}");
+        std::io::stdout().flush()?;
+
+        position = new_len;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,7 +110,6 @@ mod tests {
                 writeln!(f, "line {i}").unwrap();
             }
         }
-        // print_tail shouldn't error
         assert!(print_tail(&log, 3).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -111,35 +140,5 @@ mod tests {
     fn print_tail_errors_on_missing_file() {
         let missing = std::env::temp_dir().join("tutti-test-logs-missing/no.log");
         assert!(print_tail(&missing, 5).is_err());
-    }
-}
-
-fn follow_log(path: &Path) -> Result<()> {
-    let mut position = std::fs::metadata(path)?.len();
-
-    loop {
-        thread::sleep(Duration::from_millis(500));
-
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let new_len = metadata.len();
-
-        if new_len < position {
-            position = 0;
-        }
-        if new_len == position {
-            continue;
-        }
-
-        let mut file = std::fs::File::open(path)?;
-        file.seek(SeekFrom::Start(position))?;
-        let mut chunk = String::new();
-        file.read_to_string(&mut chunk)?;
-        print!("{chunk}");
-        std::io::stdout().flush()?;
-
-        position = new_len;
     }
 }
