@@ -2696,11 +2696,8 @@ fn execute_control_step(
             if *force {
                 args.push("--force".to_string());
             }
-            let run_result = run_tt_subcommand_with_env(
-                project_root,
-                &args,
-                &[("TT_ENFORCE_MERGE_GATE", "1")],
-            );
+            let run_result =
+                run_tt_subcommand_with_env(project_root, &args, &[("TT_ENFORCE_MERGE_GATE", "1")]);
             match (run_result, *fail_mode) {
                 (Ok(_), _) => Ok(ControlStepOutcome {
                     index: step_index,

@@ -178,7 +178,9 @@ fn find_open_pr_number(project_root: &Path, branch: &str) -> Result<u64> {
     }
 
     let prs: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
-        TuttiError::State(format!("merge gate failed to parse `gh pr list` output: {e}"))
+        TuttiError::State(format!(
+            "merge gate failed to parse `gh pr list` output: {e}"
+        ))
     })?;
     let number = parse_pr_number(&prs).ok_or_else(|| {
         TuttiError::Git(format!(
@@ -192,12 +194,7 @@ fn find_open_pr_number(project_root: &Path, branch: &str) -> Result<u64> {
 
 fn ensure_required_checks_green(project_root: &Path, pr_number: u64) -> Result<()> {
     let output = Command::new("gh")
-        .args([
-            "pr",
-            "checks",
-            &pr_number.to_string(),
-            "--required",
-        ])
+        .args(["pr", "checks", &pr_number.to_string(), "--required"])
         .current_dir(project_root)
         .output()?;
 
@@ -279,7 +276,14 @@ fn ensure_all_review_threads_resolved(project_root: &Path, pr_number: u64) -> Re
 
 fn gh_repo_name_with_owner(project_root: &Path) -> Result<String> {
     let output = Command::new("gh")
-        .args(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ])
         .current_dir(project_root)
         .output()?;
 
