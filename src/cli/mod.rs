@@ -9,6 +9,7 @@ pub mod down;
 pub mod handoff;
 pub mod health;
 pub mod init;
+pub mod issue_claim;
 pub mod land;
 pub mod logs;
 pub mod peek;
@@ -355,6 +356,12 @@ pub enum Commands {
         command: PermissionsSubcommand,
     },
 
+    /// Acquire/renew/release GitHub issue automation claims
+    IssueClaim {
+        #[command(subcommand)]
+        command: IssueClaimSubcommand,
+    },
+
     /// List all registered workspaces
     Workspaces {
         #[command(subcommand)]
@@ -402,6 +409,74 @@ pub enum PermissionsSubcommand {
         /// Write output to a file path instead of stdout
         #[arg(long)]
         output: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IssueClaimSubcommand {
+    /// Acquire the oldest open issue with a claim lease
+    Acquire {
+        /// Output JSON file to persist the selected issue + claim metadata
+        #[arg(long, default_value = ".tutti/state/auto/selected_issue.json")]
+        output: std::path::PathBuf,
+
+        /// Label used to find candidate issues
+        #[arg(long, default_value = "agent-ops")]
+        label: String,
+
+        /// GitHub repository in owner/name format
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Claim owner run id (defaults to GITHUB_RUN_ID or generated local id)
+        #[arg(long)]
+        run_id: Option<String>,
+
+        /// Lease TTL in seconds
+        #[arg(long, default_value = "1800")]
+        lease_ttl_secs: u64,
+    },
+    /// Renew a previously acquired claim
+    Heartbeat {
+        /// Selected issue state file written during acquire
+        #[arg(long, default_value = ".tutti/state/auto/selected_issue.json")]
+        state: std::path::PathBuf,
+
+        /// GitHub repository in owner/name format
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Exit successfully if the state file does not exist yet
+        #[arg(long)]
+        allow_missing_state: bool,
+    },
+    /// Release a previously acquired claim
+    Release {
+        /// Selected issue state file written during acquire
+        #[arg(long, default_value = ".tutti/state/auto/selected_issue.json")]
+        state: std::path::PathBuf,
+
+        /// Release reason recorded into the claim comment
+        #[arg(long)]
+        reason: String,
+
+        /// GitHub repository in owner/name format
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Exit successfully if the state file does not exist yet
+        #[arg(long)]
+        allow_missing_state: bool,
+    },
+    /// Release stale claims whose leases have expired
+    Sweep {
+        /// GitHub repository in owner/name format
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Label whose issues should be scanned for stale claims
+        #[arg(long, default_value = "automation-claimed")]
+        label: String,
     },
 }
 

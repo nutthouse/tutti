@@ -15,9 +15,30 @@ on:
         description: "GitHub issue label to select (for automation scripts)"
         required: false
         default: "agent-ops"
+  schedule:
+    - cron: "*/30 * * * *"
 
 jobs:
+  sweep-stale-claims:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Sweep stale issue claims
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo run --quiet -- issue-claim sweep
+
   orchestrate:
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     concurrency:
       group: sdlc-orchestrator-${{ github.repository }}
@@ -59,7 +80,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
         run: |
+          set +e
+          (
+            while true; do
+              sleep 300
+              cargo run --quiet -- issue-claim heartbeat --state .tutti/state/auto/selected_issue.json --allow-missing-state || true
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          cleanup() {
+            kill "$HEARTBEAT_PID" >/dev/null 2>&1 || true
+            wait "$HEARTBEAT_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
           cargo run --quiet -- run sdlc-smoke --strict
+          STATUS=$?
+          cleanup
+          trap - EXIT
+          if [ "$STATUS" -ne 0 ]; then
+            cargo run --quiet -- issue-claim release --state .tutti/state/auto/selected_issue.json --reason "workflow failed for run ${GITHUB_RUN_ID}" --allow-missing-state || true
+          fi
+          exit "$STATUS"
 
       - name: Verify codex CLI is available
         if: ${{ inputs.mode == 'auto' }}
@@ -72,4 +113,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
         run: |
+          set +e
+          (
+            while true; do
+              sleep 300
+              cargo run --quiet -- issue-claim heartbeat --state .tutti/state/auto/selected_issue.json --allow-missing-state || true
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          cleanup() {
+            kill "$HEARTBEAT_PID" >/dev/null 2>&1 || true
+            wait "$HEARTBEAT_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
           cargo run --quiet -- run sdlc-auto --strict
+          STATUS=$?
+          cleanup
+          trap - EXIT
+          if [ "$STATUS" -ne 0 ]; then
+            cargo run --quiet -- issue-claim release --state .tutti/state/auto/selected_issue.json --reason "workflow failed for run ${GITHUB_RUN_ID}" --allow-missing-state || true
+          fi
+          exit "$STATUS"

@@ -13,7 +13,7 @@ mod usage;
 mod worktree;
 
 use clap::Parser;
-use cli::{Cli, Commands, WorkspacesSubcommand};
+use cli::{Cli, Commands, IssueClaimSubcommand, WorkspacesSubcommand};
 use std::process;
 
 fn main() {
@@ -140,6 +140,36 @@ fn main() {
             by_workspace,
         } => cli::usage::run(profile.as_deref(), by_workspace),
         Commands::Permissions { command } => cli::permissions::run(command),
+        Commands::IssueClaim { command } => match command {
+            IssueClaimSubcommand::Acquire {
+                ref output,
+                ref label,
+                ref repo,
+                ref run_id,
+                lease_ttl_secs,
+            } => cli::issue_claim::acquire(
+                output,
+                label,
+                repo.as_deref(),
+                run_id.as_deref(),
+                lease_ttl_secs,
+            ),
+            IssueClaimSubcommand::Heartbeat {
+                ref state,
+                ref repo,
+                allow_missing_state,
+            } => cli::issue_claim::heartbeat(state, repo.as_deref(), allow_missing_state),
+            IssueClaimSubcommand::Release {
+                ref state,
+                ref reason,
+                ref repo,
+                allow_missing_state,
+            } => cli::issue_claim::release(state, reason, repo.as_deref(), allow_missing_state),
+            IssueClaimSubcommand::Sweep {
+                ref repo,
+                ref label,
+            } => cli::issue_claim::sweep(repo.as_deref(), Some(label)),
+        },
         Commands::Workspaces { ref command } => match command {
             Some(WorkspacesSubcommand::Status) => cli::workspaces::status(),
             None => cli::workspaces::list(),

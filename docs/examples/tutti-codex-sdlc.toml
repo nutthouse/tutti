@@ -60,7 +60,7 @@ description = "Preflight test run before unattended automation"
 [[workflow.step]]
 id = "select_issue"
 type = "command"
-run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json \"${ISSUE_LABEL:-agent-ops}\""
+run = "cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -110,7 +110,7 @@ agent = "docs-release"
 [[workflow.step]]
 id = "select_issue"
 type = "command"
-run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json \"${ISSUE_LABEL:-agent-ops}\""
+run = "cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -133,12 +133,12 @@ text = "Create a concrete execution plan for the selected issue. Include: scope,
 # 4) Implementation specialization (Codex)
 [[workflow.step]]
 id = "implement_code"
-type = "prompt"
+type = "command"
 agent = "implementer"
-inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
-wait_for_idle = true
-wait_timeout_secs = 3600
-text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push. In your final response include changed files, test command(s) run, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
+cwd = "agent_worktree"
+run = "python3 ../../../scripts/automation/codex_exec_with_context.py implement ../../state/auto/selected_issue.json ../../state/auto/branch.json"
+timeout_secs = 3600
+fail_mode = "closed"
 
 [[workflow.step]]
 id = "verify_impl_progress"
@@ -148,21 +148,21 @@ fail_mode = "closed"
 
 [[workflow.step]]
 id = "test_update_and_validate"
-type = "prompt"
+type = "command"
 agent = "tester"
-inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
-wait_for_idle = true
-wait_timeout_secs = 2400
-text = "Update/add tests for the implemented behavior and run test suite. Fix test failures. Commit test changes and push."
+cwd = "agent_worktree"
+run = "python3 ../../../scripts/automation/codex_exec_with_context.py tester ../../state/auto/selected_issue.json ../../state/auto/branch.json"
+timeout_secs = 2400
+fail_mode = "closed"
 
 [[workflow.step]]
 id = "docs_and_version"
-type = "prompt"
+type = "command"
 agent = "docs-release"
-inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
-wait_for_idle = true
-wait_timeout_secs = 1800
-text = "Update docs and changelog. If behavior changed, increment version in Cargo.toml and note release impact. Commit docs/release changes and push."
+cwd = "agent_worktree"
+run = "python3 ../../../scripts/automation/codex_exec_with_context.py docs ../../state/auto/selected_issue.json ../../state/auto/branch.json"
+timeout_secs = 1800
+fail_mode = "closed"
 
 # 5) Hard validation gate
 [[workflow.step]]
