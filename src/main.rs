@@ -1,5 +1,7 @@
 mod automation;
 mod budget;
+#[allow(dead_code)]
+mod claim;
 mod cli;
 mod config;
 mod error;

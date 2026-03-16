@@ -71,5 +71,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           cargo run --quiet -- run sdlc-auto --strict
+
+      - name: Release claim on failure/cancel
+        if: ${{ always() && inputs.mode == 'auto' && (failure() || cancelled()) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/automation/release_claim.sh .tutti/state/auto/selected_issue.json "workflow ${{ job.status }}"

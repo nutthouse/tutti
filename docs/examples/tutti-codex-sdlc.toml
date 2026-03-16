@@ -106,7 +106,14 @@ id = "ensure_docs_release"
 type = "ensure_running"
 agent = "docs-release"
 
-# 2) Intake and branch setup
+# 2) Sweep stale claims before selecting a new issue
+[[workflow.step]]
+id = "sweep_stale_claims"
+type = "command"
+run = "scripts/automation/sweep_stale_claims.sh .tutti/state/claims"
+fail_mode = "open"
+
+# 3) Intake and branch setup
 [[workflow.step]]
 id = "select_issue"
 type = "command"
@@ -222,3 +229,10 @@ inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/bran
 wait_for_idle = true
 wait_timeout_secs = 900
 text = "Summarize final readiness, residual risks, and merge recommendation."
+
+# 10) Release claim after successful completion
+[[workflow.step]]
+id = "release_claim"
+type = "command"
+run = "scripts/automation/release_claim.sh .tutti/state/auto/selected_issue.json 'workflow completed successfully'"
+fail_mode = "open"

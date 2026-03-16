@@ -1,3 +1,4 @@
+use crate::claim;
 use crate::config::{
     HookConfig, HookEvent, HookWorkflowSource, PermissionsConfig, ResilienceConfig, TuttiConfig,
     WorkflowCommandCwd, WorkflowConfig, WorkflowFailMode, WorkflowStepConfig,
@@ -3061,6 +3062,20 @@ pub fn execute_workflow_with_hooks(
     );
     let result = executor.execute(resolved, options, agent_scope, Some(&run_id), resume)?;
     reclaim_non_persistent_sessions(config, project_root, &running_before)?;
+
+    // Auto-release claim on workflow failure so issues don't stay permanently blocked.
+    if !result.success
+        && let Ok(Some(issue_num)) = claim::load_selected_issue_number(project_root)
+        && let Ok(Some(_lease)) = claim::load_claim(project_root, issue_num)
+    {
+        let reason = format!(
+            "workflow `{}` failed (steps {:?})",
+            result.workflow_name, result.failed_steps
+        );
+        if let Err(e) = claim::release_claim(project_root, issue_num, &reason) {
+            eprintln!("claim: auto-release failed for issue #{}: {}", issue_num, e);
+        }
+    }
 
     // Recursion guard: don't emit workflow_complete from workflow_complete hooks.
     if options.origin != ExecutionOrigin::HookWorkflowComplete {
