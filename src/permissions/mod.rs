@@ -75,7 +75,7 @@ pub fn evaluate_command_policy(
     }
 }
 
-pub fn suggested_wildcard_prefix_rule(command_line: &str) -> Option<String> {
+fn suggested_wildcard_prefix_rule(command_line: &str) -> Option<String> {
     let tokens: Vec<&str> = command_line.split_whitespace().collect();
     if tokens.len() < 2 {
         return None;
