@@ -102,7 +102,7 @@ pub fn run(
                         eprintln!("warn: failed to format SDLC run ledger summary: {err}");
                     }
                 }
-            },
+            }
             Ok(None) => {}
             Err(err) => {
                 eprintln!(
