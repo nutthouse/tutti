@@ -111,6 +111,19 @@ fn validate_run_id(run_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_step_id(step_id: &str) -> Result<()> {
+    if step_id.is_empty()
+        || step_id.contains('/')
+        || step_id.contains('\\')
+        || step_id.contains("..")
+    {
+        return Err(TuttiError::State(format!(
+            "invalid step_id '{step_id}': must not contain path separators or traversal segments"
+        )));
+    }
+    Ok(())
+}
+
 fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock_dir = project_root.join(".tutti").join("state").join("run-ledger");
     std::fs::create_dir_all(&lock_dir)?;
@@ -412,6 +425,7 @@ pub fn save_workflow_output(
     json: &serde_json::Value,
 ) -> Result<PathBuf> {
     validate_run_id(run_id)?;
+    validate_step_id(step_id)?;
     let dir = project_root
         .join(".tutti")
         .join("state")
@@ -538,6 +552,7 @@ pub fn save_workflow_intent(
     record: &WorkflowStepIntentRecord,
 ) -> Result<PathBuf> {
     validate_run_id(run_id)?;
+    validate_step_id(step_id)?;
     let dir = project_root
         .join(".tutti")
         .join("state")
@@ -556,6 +571,7 @@ pub fn load_workflow_intent(
     step_id: &str,
 ) -> Result<Option<WorkflowStepIntentRecord>> {
     validate_run_id(run_id)?;
+    validate_step_id(step_id)?;
     let path = project_root
         .join(".tutti")
         .join("state")
@@ -1118,6 +1134,21 @@ mod tests {
 
         let err = load_workflow_checkpoint(&dir, "../escape").unwrap_err();
         assert!(err.to_string().contains("invalid run_id"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn step_id_with_path_segments_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-stepid-validation-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let payload = serde_json::json!({"ok": true});
+        let err = save_workflow_output(&dir, "run123", "../escape", &payload).unwrap_err();
+        assert!(err.to_string().contains("invalid step_id"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
