@@ -91,10 +91,16 @@ pub fn run(
             print_resume_plan(&ctx.run_id, &plan);
         }
         match load_sdlc_run_ledger(project_root, &ctx.run_id) {
-            Ok(Some(ledger)) => match sdlc_pr_comment_summary(&ledger) {
-                Ok(summary) => eprintln!("{summary}"),
-                Err(err) => {
-                    eprintln!("warn: failed to format SDLC run ledger summary: {err}");
+            Ok(Some(ledger)) => {
+                eprintln!(
+                    "Resume baseline from SDLC ledger: run='{}' state='{:?}'",
+                    ledger.run_id, ledger.state
+                );
+                match sdlc_pr_comment_summary(&ledger) {
+                    Ok(summary) => eprintln!("{summary}"),
+                    Err(err) => {
+                        eprintln!("warn: failed to format SDLC run ledger summary: {err}");
+                    }
                 }
             },
             Ok(None) => {}
