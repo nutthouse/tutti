@@ -224,14 +224,49 @@ fn gh_remove_label(repo: &str, number: u64, label: &str) -> Result<()> {
         ])
         .output()?;
     if !out.status.success() {
-        // label may not exist — treat as non-fatal
-        eprintln!(
-            "warning: could not remove label '{}': {}",
-            label,
+        let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+        // Idempotent case: label already absent.
+        if stderr.contains("not found")
+            || stderr.contains("does not exist")
+            || (stderr.contains("label") && stderr.contains("not") && stderr.contains("issue"))
+        {
+            return Ok(());
+        }
+        return Err(TuttiError::IssueClaim(format!(
+            "gh remove label failed: {}",
             String::from_utf8_lossy(&out.stderr)
-        );
+        )));
     }
     Ok(())
+}
+
+fn is_trusted_claim_comment(comment: &serde_json::Value, expected_run_id: Option<&str>) -> bool {
+    let body = match comment["body"].as_str() {
+        Some(b) => b,
+        None => return false,
+    };
+    let record = match decode_claim_comment(body) {
+        Some(r) => r,
+        None => return false,
+    };
+
+    if let Some(run_id) = expected_run_id
+        && record.run_id != run_id
+    {
+        return false;
+    }
+
+    let login = comment["user"]["login"].as_str().unwrap_or("");
+    let user_type = comment["user"]["type"].as_str().unwrap_or("");
+
+    if std::env::var("GITHUB_ACTIONS").is_ok() {
+        let actor = std::env::var("GITHUB_ACTOR").unwrap_or_default();
+        return user_type == "Bot"
+            || login == "github-actions[bot]"
+            || (!actor.is_empty() && login == actor);
+    }
+
+    true
 }
 
 /// Create a comment on an issue, return the comment ID.
@@ -263,10 +298,10 @@ fn gh_create_comment(repo: &str, number: u64, body: &str) -> Result<u64> {
         return Ok(id);
     }
     // Fallback: fetch comments and find ours
+    let expected_run_id = decode_claim_comment(body).map(|r| r.run_id);
     let comments = gh_list_comments(repo, number)?;
     for c in comments.iter().rev() {
-        if let Some(body_text) = c["body"].as_str()
-            && body_text.contains(CLAIM_MARKER_START)
+        if is_trusted_claim_comment(c, expected_run_id.as_deref())
             && let Some(id) = c["id"].as_u64()
         {
             return Ok(id);
@@ -305,6 +340,7 @@ fn gh_list_comments(repo: &str, number: u64) -> Result<Vec<serde_json::Value>> {
             "api",
             &format!("repos/{repo}/issues/{number}/comments"),
             "--paginate",
+            "--slurp",
         ])
         .output()?;
     if !out.status.success() {
@@ -313,7 +349,8 @@ fn gh_list_comments(repo: &str, number: u64) -> Result<Vec<serde_json::Value>> {
             String::from_utf8_lossy(&out.stderr)
         )));
     }
-    let comments: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout)?;
+    let pages: Vec<Vec<serde_json::Value>> = serde_json::from_slice(&out.stdout)?;
+    let comments = pages.into_iter().flatten().collect();
     Ok(comments)
 }
 
@@ -373,7 +410,8 @@ fn find_claim_comments(repo: &str, issue_number: u64) -> Result<Vec<(u64, ClaimR
     let comments = gh_list_comments(repo, issue_number)?;
     let mut claims = Vec::new();
     for c in &comments {
-        if let Some(body) = c["body"].as_str()
+        if is_trusted_claim_comment(c, None)
+            && let Some(body) = c["body"].as_str()
             && let Some(record) = decode_claim_comment(body)
             && let Some(id) = c["id"].as_u64()
         {
@@ -412,7 +450,8 @@ fn winner_active_claim(claims: &[(u64, ClaimRecord)]) -> Option<(u64, &ClaimReco
     claims
         .iter()
         .filter(|(_, r)| r.status == ClaimStatus::Active && !r.is_expired())
-        .min_by_key(|(cid, r)| (r.claimed_at, *cid))
+        // Use server-ordered comment id to avoid cross-runner clock skew.
+        .min_by_key(|(cid, _)| *cid)
         .map(|(cid, r)| (*cid, r))
 }
 
@@ -485,91 +524,93 @@ pub fn acquire(output_path: &Path, label: &str, lease_ttl_secs: Option<u64>) -> 
         )));
     }
 
-    // Try to claim the first candidate
-    let issue = candidates[0];
-    let number = issue["number"]
-        .as_u64()
-        .ok_or_else(|| TuttiError::IssueClaim("issue missing number".into()))?;
+    for issue in candidates {
+        let number = match issue["number"].as_u64() {
+            Some(n) => n,
+            None => continue,
+        };
 
-    // Create claim record and post as comment
-    let record = ClaimRecord::new(&run_id, ttl);
-    let comment_body = encode_claim_comment(&record)?;
+        // Create claim record and post as comment
+        let record = ClaimRecord::new(&run_id, ttl);
+        let comment_body = encode_claim_comment(&record)?;
 
-    // Add label first to prevent races
-    gh_add_label(&repo, number, "automation-claimed")?;
+        // Add label first to prevent races
+        gh_add_label(&repo, number, "automation-claimed")?;
 
-    let comment_id = match gh_create_comment(&repo, number, &comment_body) {
-        Ok(id) => id,
-        Err(err) => {
-            // Best-effort cleanup to avoid stranded labels when comment creation fails.
-            let _ = gh_remove_label(&repo, number, "automation-claimed");
-            return Err(err);
+        let comment_id = match gh_create_comment(&repo, number, &comment_body) {
+            Ok(id) => id,
+            Err(err) => {
+                // Best-effort cleanup to avoid stranded labels when comment creation fails.
+                let _ = gh_remove_label(&repo, number, "automation-claimed");
+                return Err(err);
+            }
+        };
+
+        // Verify we won the race (check all claims, find winner)
+        let claims = find_claim_comments(&repo, number)?;
+        if let Some((winner_id, _)) = winner_active_claim(&claims)
+            && winner_id != comment_id
+        {
+            // We lost the race — release our claim and continue to next candidate.
+            let mut our_record = record.clone();
+            our_record.status = ClaimStatus::Released;
+            our_record.released_at = Some(Utc::now());
+            our_record.release_reason = Some("lost claim race".into());
+            our_record.push_event("Released", Some("lost claim race".into()));
+            let body = encode_claim_comment(&our_record)?;
+            gh_update_comment(&repo, comment_id, &body)?;
+            continue;
         }
-    };
 
-    // Verify we won the race (check all claims, find winner)
-    let claims = find_claim_comments(&repo, number)?;
-    if let Some((winner_id, _)) = winner_active_claim(&claims)
-        && winner_id != comment_id
-    {
-        // We lost the race — release our claim
-        let mut our_record = record.clone();
-        our_record.status = ClaimStatus::Released;
-        our_record.released_at = Some(Utc::now());
-        our_record.release_reason = Some("lost claim race".into());
-        our_record.push_event("Released", Some("lost claim race".into()));
-        let body = encode_claim_comment(&our_record)?;
-        gh_update_comment(&repo, comment_id, &body)?;
+        // Fetch issue body
+        let body = gh_issue_body(&repo, number)?;
 
-        return Err(TuttiError::IssueClaim(format!(
-            "lost claim race for issue #{number}"
-        )));
+        // Build output
+        let labels: Vec<String> = issue["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let output = SelectedIssueOutput {
+            issue_number: number,
+            title: issue["title"].as_str().unwrap_or("").to_string(),
+            url: issue["url"].as_str().unwrap_or("").to_string(),
+            labels,
+            author: issue["author"]["login"].as_str().map(|s| s.to_string()),
+            created_at: issue["createdAt"].as_str().unwrap_or("").to_string(),
+            body,
+            run_id: run_id.clone(),
+            claimed_at: record.claimed_at,
+            lease_ttl_secs: ttl,
+            last_heartbeat_at: record.last_heartbeat_at,
+            claim_comment_id: comment_id,
+            claim_status: ClaimStatus::Active,
+        };
+
+        // Write output
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp_path = output_path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(&output)?;
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, output_path)?;
+
+        eprintln!(
+            "claimed issue #{} (comment {}, ttl {}s, run {})",
+            number, comment_id, ttl, run_id
+        );
+        println!("{}", output_path.display());
+        return Ok(());
     }
 
-    // Fetch issue body
-    let body = gh_issue_body(&repo, number)?;
-
-    // Build output
-    let labels: Vec<String> = issue["labels"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let output = SelectedIssueOutput {
-        issue_number: number,
-        title: issue["title"].as_str().unwrap_or("").to_string(),
-        url: issue["url"].as_str().unwrap_or("").to_string(),
-        labels,
-        author: issue["author"]["login"].as_str().map(|s| s.to_string()),
-        created_at: issue["createdAt"].as_str().unwrap_or("").to_string(),
-        body,
-        run_id: run_id.clone(),
-        claimed_at: record.claimed_at,
-        lease_ttl_secs: ttl,
-        last_heartbeat_at: record.last_heartbeat_at,
-        claim_comment_id: comment_id,
-        claim_status: ClaimStatus::Active,
-    };
-
-    // Write output
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_path = output_path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(&output)?;
-    std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, output_path)?;
-
-    eprintln!(
-        "claimed issue #{} (comment {}, ttl {}s, run {})",
-        number, comment_id, ttl, run_id
-    );
-    println!("{}", output_path.display());
-    Ok(())
+    Err(TuttiError::IssueClaim(format!(
+        "could not claim any candidate issue for label '{label}'"
+    )))
 }
 
 /// `tt issue-claim heartbeat`
@@ -648,15 +689,16 @@ pub fn release(state_path: &Path, reason: Option<&str>) -> Result<()> {
             {
                 if record.status == ClaimStatus::Released {
                     eprintln!("claim already released for #{}", issue_number);
-                    return Ok(());
+                    released = true;
+                } else {
+                    record.status = ClaimStatus::Released;
+                    record.released_at = Some(Utc::now());
+                    record.release_reason = Some(release_reason.to_string());
+                    record.push_event("Released", Some(release_reason.to_string()));
+                    let new_body = encode_claim_comment(&record)?;
+                    gh_update_comment(&repo, comment_id, &new_body)?;
+                    released = true;
                 }
-                record.status = ClaimStatus::Released;
-                record.released_at = Some(Utc::now());
-                record.release_reason = Some(release_reason.to_string());
-                record.push_event("Released", Some(release_reason.to_string()));
-                let new_body = encode_claim_comment(&record)?;
-                gh_update_comment(&repo, comment_id, &new_body)?;
-                released = true;
             }
             break;
         }
