@@ -1054,7 +1054,8 @@ impl GlobalConfig {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let tmp_path = path.with_extension(format!("toml.tmp.{}.{}", std::process::id(), now_nanos));
+        let tmp_path =
+            path.with_extension(format!("toml.tmp.{}.{}", std::process::id(), now_nanos));
 
         std::fs::write(&tmp_path, toml_str)?;
         std::fs::rename(&tmp_path, &path)?;
@@ -1110,17 +1111,15 @@ fn acquire_global_config_lock(config_path: &Path) -> Result<GlobalConfigLockGuar
                 return Ok(GlobalConfigLockGuard { lock_path });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if let Ok(meta) = std::fs::metadata(&lock_path) {
-                    if let Ok(modified) = meta.modified() {
-                        if modified
-                            .elapsed()
-                            .map(|age| age > stale_after)
-                            .unwrap_or(false)
-                        {
-                            let _ = std::fs::remove_file(&lock_path);
-                            continue;
-                        }
-                    }
+                if let Ok(meta) = std::fs::metadata(&lock_path)
+                    && let Ok(modified) = meta.modified()
+                    && modified
+                        .elapsed()
+                        .map(|age| age > stale_after)
+                        .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
                 }
 
                 if start.elapsed() > timeout {
