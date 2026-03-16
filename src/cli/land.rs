@@ -1,8 +1,20 @@
 use crate::error::{Result, TuttiError};
+use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
+const ENFORCE_MERGE_GATE_ENV: &str = "TT_ENFORCE_MERGE_GATE";
+
 pub fn run(agent_ref: &str, pr: bool, force: bool) -> Result<()> {
+    run_with_options(agent_ref, pr, force, merge_gate_enabled())
+}
+
+pub fn run_with_options(
+    agent_ref: &str,
+    pr: bool,
+    force: bool,
+    enforce_merge_gate: bool,
+) -> Result<()> {
     let resolved = super::agent_ref::resolve(agent_ref)?;
     let agent = resolved.agent_config()?;
     let branch = agent.resolved_branch();
@@ -24,6 +36,7 @@ pub fn run(agent_ref: &str, pr: bool, force: bool) -> Result<()> {
         ensure_git_clean(&resolved.project_root)?;
     }
     ensure_branch_exists(&resolved.project_root, &branch)?;
+    maybe_enforce_merge_gate(&resolved.project_root, &branch, enforce_merge_gate)?;
     let wip_committed = commit_wip_if_needed(&worktree_path, &resolved.agent_name)?;
 
     if pr {
@@ -103,6 +116,213 @@ pub fn run(agent_ref: &str, pr: bool, force: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn maybe_enforce_merge_gate(project_root: &Path, branch: &str, enabled: bool) -> Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+
+    if which::which("gh").is_err() {
+        return Err(TuttiError::ConfigValidation(
+            "merge gate enabled, but `gh` is not installed. Install GitHub CLI or disable TT_ENFORCE_MERGE_GATE."
+                .to_string(),
+        ));
+    }
+
+    let pr_number = find_open_pr_number(project_root, branch)?;
+    ensure_required_checks_green(project_root, pr_number)?;
+    ensure_all_review_threads_resolved(project_root, pr_number)?;
+
+    println!(
+        "Merge gate passed for PR #{} on branch '{}': required checks green, review threads resolved.",
+        pr_number, branch
+    );
+    Ok(())
+}
+
+fn merge_gate_enabled() -> bool {
+    matches!(
+        std::env::var(ENFORCE_MERGE_GATE_ENV)
+            .ok()
+            .as_deref()
+            .map(|v| v.trim().to_ascii_lowercase()),
+        Some(v) if v == "1" || v == "true" || v == "yes" || v == "on"
+    )
+}
+
+fn find_open_pr_number(project_root: &Path, branch: &str) -> Result<u64> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--limit",
+            "1",
+            "--json",
+            "number,url",
+        ])
+        .current_dir(project_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::Git(format!(
+            "merge gate failed to query PR for branch '{}': {}",
+            branch,
+            stderr.trim()
+        )));
+    }
+
+    let prs: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+        TuttiError::State(format!("merge gate failed to parse `gh pr list` output: {e}"))
+    })?;
+    let number = parse_pr_number(&prs).ok_or_else(|| {
+        TuttiError::Git(format!(
+            "merge gate requires an open PR for branch '{}', but none was found.",
+            branch
+        ))
+    })?;
+
+    Ok(number)
+}
+
+fn ensure_required_checks_green(project_root: &Path, pr_number: u64) -> Result<()> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "checks",
+            &pr_number.to_string(),
+            "--required",
+        ])
+        .current_dir(project_root)
+        .output()?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+
+    Err(TuttiError::Git(format!(
+        "merge gate blocked: required checks are not green for PR #{}{}",
+        pr_number,
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" ({detail})")
+        }
+    )))
+}
+
+fn ensure_all_review_threads_resolved(project_root: &Path, pr_number: u64) -> Result<()> {
+    let repo = gh_repo_name_with_owner(project_root)?;
+    let (owner, name) = split_name_with_owner(&repo)?;
+
+    let query = r#"query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          isResolved
+        }
+      }
+    }
+  }
+}"#;
+
+    let output = Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={query}")])
+        .args(["-F", &format!("owner={owner}")])
+        .args(["-F", &format!("name={name}")])
+        .args(["-F", &format!("number={pr_number}")])
+        .current_dir(project_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::Git(format!(
+            "merge gate failed to query review threads for PR #{}: {}",
+            pr_number,
+            stderr.trim()
+        )));
+    }
+
+    let payload: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+        TuttiError::State(format!(
+            "merge gate failed to parse review thread payload for PR #{}: {e}",
+            pr_number
+        ))
+    })?;
+
+    let unresolved = unresolved_review_thread_count(&payload).ok_or_else(|| {
+        TuttiError::State(format!(
+            "merge gate could not determine unresolved review thread count for PR #{}",
+            pr_number
+        ))
+    })?;
+
+    if unresolved == 0 {
+        Ok(())
+    } else {
+        Err(TuttiError::Git(format!(
+            "merge gate blocked: PR #{} has {} unresolved review thread(s). Resolve all threads before land/merge.",
+            pr_number, unresolved
+        )))
+    }
+}
+
+fn gh_repo_name_with_owner(project_root: &Path) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+        .current_dir(project_root)
+        .output()?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(TuttiError::Git(format!(
+            "merge gate failed to detect repo owner/name: {}",
+            stderr.trim()
+        )))
+    }
+}
+
+fn split_name_with_owner(name_with_owner: &str) -> Result<(String, String)> {
+    let (owner, name) = name_with_owner.split_once('/').ok_or_else(|| {
+        TuttiError::State(format!(
+            "invalid GitHub repo slug '{}'; expected owner/name",
+            name_with_owner
+        ))
+    })?;
+    Ok((owner.to_string(), name.to_string()))
+}
+
+fn parse_pr_number(payload: &Value) -> Option<u64> {
+    payload.as_array()?.first()?.get("number")?.as_u64()
+}
+
+fn unresolved_review_thread_count(payload: &Value) -> Option<usize> {
+    let nodes = payload
+        .get("data")?
+        .get("repository")?
+        .get("pullRequest")?
+        .get("reviewThreads")?
+        .get("nodes")?
+        .as_array()?;
+
+    Some(
+        nodes
+            .iter()
+            .filter(|node| node.get("isResolved").and_then(Value::as_bool) == Some(false))
+            .count(),
+    )
 }
 
 fn push_and_open_pr(project_root: &Path, branch: &str) -> Result<()> {
@@ -273,4 +493,52 @@ fn git_success(args: &[&str], cwd: &Path, exit_one_is_false: bool) -> Result<boo
         args.join(" "),
         stderr.trim()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pr_number_returns_first_open_pr() {
+        let payload: Value = serde_json::from_str(
+            r#"[
+                {"number": 42, "url": "https://github.com/nutthouse/tutti/pull/42"}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(parse_pr_number(&payload), Some(42));
+    }
+
+    #[test]
+    fn unresolved_review_thread_count_counts_false_flags() {
+        let payload: Value = serde_json::from_str(
+            r#"{
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [
+                                    {"isResolved": true},
+                                    {"isResolved": false},
+                                    {"isResolved": false}
+                                ]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(unresolved_review_thread_count(&payload), Some(2));
+    }
+
+    #[test]
+    fn split_name_with_owner_validates_repo_slug() {
+        let (owner, repo) = split_name_with_owner("nutthouse/tutti").unwrap();
+        assert_eq!(owner, "nutthouse");
+        assert_eq!(repo, "tutti");
+    }
 }

@@ -59,6 +59,8 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 - Enforce docs/version updates in implementation prompt
 - Require test pass before PR open and before merge/land
 - If CodeRabbit fails, gather feedback and route to Codex fix step
+- Follow the canonical PR reproducibility loop in `docs/pr-review-loop.md`
+- Automation `land` steps enforce merge gate checks (required checks + resolved review threads)
 
 ## Suggested runbook
 
@@ -72,4 +74,5 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 
 - Start with `fail_mode = "closed"` on command steps
 - Keep PR creation and land as explicit steps (no hidden auto-merge)
-- Add approval gate before land for now
+- Keep approval checks in your reviewer/final summary prompts
+- Keep merge gate enabled before `land` (required checks green + no unresolved review threads)

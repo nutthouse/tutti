@@ -1465,7 +1465,7 @@ impl<'a> WorkflowExecutor<'a> {
                         }
 
                         match with_project_root(self.project_root, || {
-                            crate::cli::land::run(agent, *pr, *force)
+                            crate::cli::land::run_with_options(agent, *pr, *force, true)
                         }) {
                             Ok(()) => step_results.push(StepResult {
                                 index: step_index,
@@ -2696,7 +2696,11 @@ fn execute_control_step(
             if *force {
                 args.push("--force".to_string());
             }
-            let run_result = run_tt_subcommand(project_root, &args);
+            let run_result = run_tt_subcommand_with_env(
+                project_root,
+                &args,
+                &[("TT_ENFORCE_MERGE_GATE", "1")],
+            );
             match (run_result, *fail_mode) {
                 (Ok(_), _) => Ok(ControlStepOutcome {
                     index: step_index,
@@ -2757,11 +2761,21 @@ fn control_error_outcome(
 }
 
 fn run_tt_subcommand(project_root: &Path, args: &[String]) -> Result<()> {
+    run_tt_subcommand_with_env(project_root, args, &[])
+}
+
+fn run_tt_subcommand_with_env(
+    project_root: &Path,
+    args: &[String],
+    env: &[(&str, &str)],
+) -> Result<()> {
     let bin = std::env::current_exe()?;
-    let output = Command::new(bin)
-        .args(args)
-        .current_dir(project_root)
-        .output()?;
+    let mut cmd = Command::new(bin);
+    cmd.args(args).current_dir(project_root);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = cmd.output()?;
     if output.status.success() {
         return Ok(());
     }

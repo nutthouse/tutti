@@ -137,6 +137,7 @@ source ~/.zshrc
 - OpenClaw skill contract: `docs/OPENCLAW_SKILL_CONTRACT.md`
 - OpenClaw skill starter: `skills/openclaw/SKILL.md`
 - OpenClaw integration bundle: `integrations/openclaw/README.md`
+- PR reproducibility loop (CodeRabbit + checks + merge gate): `docs/pr-review-loop.md`
 - Versioning and release policy: `VERSIONING.md`
 
 ## tutti.toml
@@ -299,6 +300,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
 - Workflow `review`/`land` steps auto-start required sessions when they are not already running
+- Workflow `land` steps enforce a GitHub merge gate (required checks green + all PR review threads resolved)
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 - `tt serve` local control API endpoints:

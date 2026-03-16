@@ -222,3 +222,10 @@ inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/bran
 wait_for_idle = true
 wait_timeout_secs = 900
 text = "Summarize final readiness, residual risks, and merge recommendation."
+
+# 10) Land (merge gate enforced by automation)
+[[workflow.step]]
+id = "land_changes"
+type = "land"
+agent = "implementer"
+fail_mode = "closed"
