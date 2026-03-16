@@ -506,6 +506,22 @@ workflow = "child"
     #[test]
     #[serial]
     fn suggest_apply_writes_global_permissions_and_json_shape_is_stable() {
+        struct HomeGuard(Option<String>);
+
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                if let Some(value) = self.0.take() {
+                    unsafe {
+                        std::env::set_var("HOME", value);
+                    }
+                } else {
+                    unsafe {
+                        std::env::remove_var("HOME");
+                    }
+                }
+            }
+        }
+
         let temp = std::env::temp_dir().join(format!(
             "tutti-test-permissions-suggest-apply-{}",
             std::process::id()
@@ -513,7 +529,7 @@ workflow = "child"
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).unwrap();
 
-        let old_home = std::env::var("HOME").ok();
+        let _home_guard = HomeGuard(std::env::var("HOME").ok());
         unsafe {
             std::env::set_var("HOME", &temp);
         }
@@ -555,16 +571,6 @@ run = "echo blocked"
 
         let saved = std::fs::read_to_string(global_config_path()).unwrap();
         assert!(saved.contains("echo blocked *"));
-
-        if let Some(value) = old_home {
-            unsafe {
-                std::env::set_var("HOME", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("HOME");
-            }
-        }
 
         let _ = std::fs::remove_dir_all(&temp);
     }
