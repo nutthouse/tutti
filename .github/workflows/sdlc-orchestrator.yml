@@ -1,0 +1,75 @@
+name: Tutti SDLC Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Workflow mode to execute"
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - auto
+      issue_label:
+        description: "GitHub issue label to select (for automation scripts)"
+        required: false
+        default: "agent-ops"
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: sdlc-orchestrator-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create automation config
+        run: |
+          cp docs/examples/tutti-codex-sdlc.toml tutti.toml
+
+      - name: Verify gh auth
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth status
+
+      - name: Preflight tests
+        run: cargo test -q
+
+      - name: Run smoke workflow
+        if: ${{ inputs.mode == 'smoke' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_LABEL: ${{ inputs.issue_label }}
+        run: |
+          cargo run --quiet -- run sdlc-smoke --strict
+
+      - name: Verify codex CLI is available
+        if: ${{ inputs.mode == 'auto' }}
+        run: |
+          command -v codex >/dev/null || { echo "codex CLI not found on runner"; exit 1; }
+
+      - name: Run full auto workflow
+        if: ${{ inputs.mode == 'auto' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_LABEL: ${{ inputs.issue_label }}
+        run: |
+          cargo run --quiet -- run sdlc-auto --strict

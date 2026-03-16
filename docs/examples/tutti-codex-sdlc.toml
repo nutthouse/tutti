@@ -1,0 +1,218 @@
+[workspace]
+name = "tutti"
+description = "Codex-driven SDLC automation with Claude planning"
+
+[defaults]
+runtime = "codex"
+worktree = true
+
+# Specialized agents: each owns one SDLC concern.
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+worktree = true
+persistent = true
+prompt = "You are the planning specialist. Translate the issue into an implementation plan, risks, test strategy, and release notes checklist. Do not implement code."
+
+[[agent]]
+name = "conductor"
+runtime = "codex"
+worktree = true
+persistent = true
+prompt = "You orchestrate workflow state and handoffs only. You do not implement features directly."
+
+[[agent]]
+name = "implementer"
+runtime = "codex"
+worktree = true
+persistent = true
+scope = "src/**"
+prompt = "Implement feature/code changes for the selected issue. Keep changes minimal and aligned to issue scope."
+
+[[agent]]
+name = "tester"
+runtime = "codex"
+worktree = true
+persistent = true
+scope = "tests/**"
+prompt = "Own test strategy and test updates. Ensure failing tests are fixed and coverage reflects behavior changes."
+
+[[agent]]
+name = "docs-release"
+runtime = "codex"
+worktree = true
+persistent = true
+scope = "**"
+prompt = "Own docs, changelog, and version bump policy. Update README/docs/CHANGELOG and Cargo.toml when required."
+
+[[agent]]
+name = "reviewer"
+runtime = "codex"
+worktree = true
+persistent = false
+prompt = "Perform strict review and release-readiness validation. Block if risk is unresolved."
+
+[[workflow]]
+name = "sdlc-smoke"
+description = "Preflight test run before unattended automation"
+
+[[workflow.step]]
+id = "select_issue"
+type = "command"
+run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json \"${ISSUE_LABEL:-agent-ops}\""
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "create_branch"
+type = "command"
+agent = "implementer"
+run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "validate_smoke"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow]]
+name = "sdlc-auto"
+description = "Full issue -> plan -> branch -> code -> test -> docs/version -> PR -> CodeRabbit -> fix loop"
+
+# 1) Ensure specialized agents are running
+[[workflow.step]]
+id = "ensure_planner"
+type = "ensure_running"
+agent = "planner"
+
+[[workflow.step]]
+id = "ensure_conductor"
+type = "ensure_running"
+agent = "conductor"
+
+[[workflow.step]]
+id = "ensure_implementer"
+type = "ensure_running"
+agent = "implementer"
+
+[[workflow.step]]
+id = "ensure_tester"
+type = "ensure_running"
+agent = "tester"
+
+[[workflow.step]]
+id = "ensure_docs_release"
+type = "ensure_running"
+agent = "docs-release"
+
+# 2) Intake and branch setup
+[[workflow.step]]
+id = "select_issue"
+type = "command"
+run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json \"${ISSUE_LABEL:-agent-ops}\""
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "create_branch"
+type = "command"
+agent = "implementer"
+run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+# 3) Planning first (Claude)
+[[workflow.step]]
+id = "plan_issue"
+type = "prompt"
+agent = "planner"
+inject_files = [".tutti/state/auto/selected_issue.json"]
+wait_for_idle = true
+wait_timeout_secs = 1200
+text = "Create a concrete execution plan for the selected issue. Include: scope, constraints, implementation tasks, tests to add/update, docs/changelog/version actions, and potential risks. Summarize key steps in your final response for downstream agents."
+
+# 4) Implementation specialization (Codex)
+[[workflow.step]]
+id = "implement_code"
+type = "prompt"
+agent = "implementer"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 3600
+text = "Implement the selected issue in src/ using the provided plan. Keep scope tight. Commit code changes when done and ensure branch is pushed."
+
+[[workflow.step]]
+id = "test_update_and_validate"
+type = "prompt"
+agent = "tester"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 2400
+text = "Update/add tests for the implemented behavior and run test suite. Fix test failures. Commit test changes and push."
+
+[[workflow.step]]
+id = "docs_and_version"
+type = "prompt"
+agent = "docs-release"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 1800
+text = "Update docs and changelog. If behavior changed, increment version in Cargo.toml and note release impact. Commit docs/release changes and push."
+
+# 5) Hard validation gate
+[[workflow.step]]
+id = "validate"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+# 6) Ensure branch has commits before PR
+[[workflow.step]]
+id = "verify_branch_has_changes"
+type = "command"
+run = "python3 scripts/automation/verify_branch_has_changes.py .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+# 7) Open PR
+[[workflow.step]]
+id = "open_pr"
+type = "command"
+run = "python3 scripts/automation/open_or_create_pr.py .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json main"
+fail_mode = "closed"
+
+# 8) Review loop
+[[workflow.step]]
+id = "wait_coderabbit"
+type = "command"
+run = "python3 scripts/automation/wait_and_collect_coderabbit.py .tutti/state/auto/branch.json 45 .tutti/state/auto/coderabbit_status.json .tutti/state/auto/coderabbit-feedback.md"
+fail_mode = "open"
+
+[[workflow.step]]
+id = "apply_coderabbit_feedback"
+type = "prompt"
+agent = "implementer"
+inject_files = [".tutti/state/auto/coderabbit-feedback.md", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 2400
+text = "Apply CodeRabbit feedback if actionable, rerun tests, and push changes. If no actionable items, state that explicitly."
+
+[[workflow.step]]
+id = "revalidate"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+# 9) Final review + summary
+[[workflow.step]]
+id = "final_review"
+type = "review"
+agent = "implementer"
+reviewer = "reviewer"
+
+[[workflow.step]]
+id = "ready_summary"
+type = "prompt"
+agent = "conductor"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json", ".tutti/state/auto/coderabbit-feedback.md"]
+wait_for_idle = true
+wait_timeout_secs = 900
+text = "Summarize final readiness, residual risks, and merge recommendation."
