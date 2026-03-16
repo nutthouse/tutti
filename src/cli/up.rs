@@ -2013,7 +2013,7 @@ mod tests {
         .expect("command should build");
 
         assert!(cmd.contains("'-a' 'never' '-s' 'workspace-write'"));
-        assert!(cmd.contains("--prompt"));
+        assert!(!cmd.contains("--prompt"));
         assert!(cmd.contains("Tutti policy constraints"));
         assert!(cmd.contains("PATH='"));
         assert!(warnings.constrained_policy_via_shim);

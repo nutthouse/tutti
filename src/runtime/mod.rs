@@ -514,7 +514,8 @@ mod tests {
         let a = adapter("codex");
         let cmd = a.build_spawn_command(Some("You are a backend developer"));
         assert!(cmd.contains("codex"));
-        assert!(cmd.contains("--prompt"));
+        assert!(!cmd.contains("--prompt"));
+        assert!(cmd.contains("'You are a backend developer'"));
     }
 
     #[test]
