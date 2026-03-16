@@ -158,15 +158,64 @@ struct PermissionSuggestReport {
     applied_rules: Vec<String>,
 }
 
-fn run_suggest(workflow: &str, apply: bool, as_json: bool) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let (config, config_path) = TuttiConfig::load(&cwd)?;
-    config.validate()?;
-    let project_root = config_path.parent().ok_or_else(|| {
-        TuttiError::ConfigValidation("could not determine workspace root".to_string())
-    })?;
+fn collect_blocked_commands(
+    resolver: &WorkflowResolver,
+    workflow: &str,
+    options: &ExecuteOptions,
+    seen_workflows: &mut std::collections::BTreeSet<String>,
+    seen_commands: &mut std::collections::BTreeSet<String>,
+    blocked: &mut Vec<PermissionSuggestion>,
+    global: &GlobalConfig,
+    total_commands: &mut usize,
+) -> Result<()> {
+    if !seen_workflows.insert(workflow.to_string()) {
+        return Ok(());
+    }
 
-    let mut global = GlobalConfig::load()?;
+    let resolved = resolver.resolve(workflow, None, options)?;
+    for step in resolved.steps {
+        match step {
+            ResolvedStep::Command { run, .. } => {
+                *total_commands += 1;
+                let cmd = normalize(run);
+                if cmd.is_empty() {
+                    continue;
+                }
+                let decision = evaluate_command_policy(global.permissions.as_ref(), &cmd);
+                if !decision.allowed && seen_commands.insert(cmd.clone()) {
+                    blocked.push(PermissionSuggestion {
+                        command: cmd.clone(),
+                        suggested_rule: format!("{cmd} *"),
+                        reason: decision.reason,
+                    });
+                }
+            }
+            ResolvedStep::Workflow { workflow, .. } => {
+                collect_blocked_commands(
+                    resolver,
+                    &workflow,
+                    options,
+                    seen_workflows,
+                    seen_commands,
+                    blocked,
+                    global,
+                    total_commands,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn suggest_workflow_permissions(
+    workflow: &str,
+    apply: bool,
+    config: &TuttiConfig,
+    project_root: &std::path::Path,
+    global: &mut GlobalConfig,
+) -> Result<PermissionSuggestReport> {
     let options = ExecuteOptions {
         strict: false,
         force_open_commands: false,
@@ -177,30 +226,22 @@ fn run_suggest(workflow: &str, apply: bool, as_json: bool) -> Result<()> {
         hook_agent: None,
     };
 
-    let resolved =
-        WorkflowResolver::new(&config, project_root).resolve(workflow, None, &options)?;
-
+    let resolver = WorkflowResolver::new(config, project_root);
     let mut blocked: Vec<PermissionSuggestion> = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen_commands = std::collections::BTreeSet::new();
+    let mut seen_workflows = std::collections::BTreeSet::new();
     let mut total_commands = 0usize;
 
-    for step in resolved.steps {
-        if let ResolvedStep::Command { run, .. } = step {
-            total_commands += 1;
-            let cmd = normalize(run);
-            if cmd.is_empty() {
-                continue;
-            }
-            let decision = evaluate_command_policy(global.permissions.as_ref(), &cmd);
-            if !decision.allowed && seen.insert(cmd.clone()) {
-                blocked.push(PermissionSuggestion {
-                    command: cmd.clone(),
-                    suggested_rule: format!("{cmd} *"),
-                    reason: decision.reason,
-                });
-            }
-        }
-    }
+    collect_blocked_commands(
+        &resolver,
+        workflow,
+        &options,
+        &mut seen_workflows,
+        &mut seen_commands,
+        &mut blocked,
+        global,
+        &mut total_commands,
+    )?;
 
     let mut applied_rules = Vec::new();
     if apply && !blocked.is_empty() {
@@ -222,33 +263,46 @@ fn run_suggest(workflow: &str, apply: bool, as_json: bool) -> Result<()> {
         }
     }
 
+    Ok(PermissionSuggestReport {
+        workflow: workflow.to_string(),
+        total_commands,
+        blocked,
+        applied_rules,
+    })
+}
+
+fn run_suggest(workflow: &str, apply: bool, as_json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (config, config_path) = TuttiConfig::load(&cwd)?;
+    config.validate()?;
+    let project_root = config_path.parent().ok_or_else(|| {
+        TuttiError::ConfigValidation("could not determine workspace root".to_string())
+    })?;
+
+    let mut global = GlobalConfig::load()?;
+    let report = suggest_workflow_permissions(workflow, apply, &config, project_root, &mut global)?;
+
     if as_json {
-        let report = PermissionSuggestReport {
-            workflow: workflow.to_string(),
-            total_commands,
-            blocked,
-            applied_rules,
-        };
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
-    if blocked.is_empty() {
+    if report.blocked.is_empty() {
         println!("No blocked workflow commands detected for '{}'.", workflow);
     } else {
         println!("The following commands should be added to [permissions].allow:");
-        for item in &blocked {
+        for item in &report.blocked {
             println!("  {}", item.suggested_rule);
         }
     }
 
     if apply {
-        if applied_rules.is_empty() {
+        if report.applied_rules.is_empty() {
             println!("No new rules were applied.");
         } else {
             println!(
                 "Applied {} rule(s) to {}",
-                applied_rules.len(),
+                report.applied_rules.len(),
                 global_config_path().display()
             );
         }
@@ -377,5 +431,122 @@ mod tests {
         assert_eq!(records[0].decision, "allow");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suggest_reports_blocked_commands_including_nested_workflow_and_deduplicates() {
+        let temp = std::env::temp_dir().join(format!(
+            "tutti-test-permissions-suggest-nested-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let config_text = r#"
+[workspace]
+name = "ws"
+
+[[workflow]]
+name = "child"
+
+[[workflow.step]]
+type = "command"
+run = "echo nested"
+
+[[workflow]]
+name = "root"
+
+[[workflow.step]]
+type = "command"
+run = "echo top"
+
+[[workflow.step]]
+type = "command"
+run = "echo top"
+
+[[workflow.step]]
+type = "workflow"
+workflow = "child"
+"#;
+        std::fs::write(temp.join("tutti.toml"), config_text).unwrap();
+
+        let (config, config_path) = TuttiConfig::load(&temp).unwrap();
+        config.validate().unwrap();
+        let project_root = config_path.parent().unwrap();
+        let mut global = GlobalConfig {
+            permissions: Some(PermissionsConfig {
+                allow: vec!["echo top".to_string()],
+            }),
+            ..Default::default()
+        };
+
+        let report = suggest_workflow_permissions("root", false, &config, project_root, &mut global)
+            .expect("suggest should work");
+
+        assert_eq!(report.total_commands, 3);
+        assert_eq!(report.blocked.len(), 1);
+        assert_eq!(report.blocked[0].command, "echo nested");
+        assert_eq!(report.blocked[0].suggested_rule, "echo nested *");
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn suggest_apply_writes_global_permissions_and_json_shape_is_stable() {
+        let temp = std::env::temp_dir().join(format!(
+            "tutti-test-permissions-suggest-apply-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &temp); }
+
+        let config_text = r#"
+[workspace]
+name = "ws"
+
+[[workflow]]
+name = "root"
+
+[[workflow.step]]
+type = "command"
+run = "echo blocked"
+"#;
+        std::fs::write(temp.join("tutti.toml"), config_text).unwrap();
+
+        let (config, config_path) = TuttiConfig::load(&temp).unwrap();
+        config.validate().unwrap();
+        let project_root = config_path.parent().unwrap();
+        let mut global = GlobalConfig {
+            permissions: Some(PermissionsConfig::default()),
+            ..Default::default()
+        };
+
+        let report = suggest_workflow_permissions("root", true, &config, project_root, &mut global)
+            .expect("suggest should work");
+
+        assert_eq!(report.workflow, "root");
+        assert_eq!(report.total_commands, 1);
+        assert_eq!(report.blocked.len(), 1);
+        assert_eq!(report.applied_rules, vec!["echo blocked *".to_string()]);
+
+        let report_json = serde_json::to_value(&report).unwrap();
+        assert_eq!(report_json["workflow"], "root");
+        assert_eq!(report_json["total_commands"], 1);
+        assert!(report_json["blocked"].is_array());
+        assert!(report_json["applied_rules"].is_array());
+
+        let saved = std::fs::read_to_string(global_config_path()).unwrap();
+        assert!(saved.contains("echo blocked *"));
+
+        if let Some(value) = old_home {
+            unsafe { std::env::set_var("HOME", value); }
+        } else {
+            unsafe { std::env::remove_var("HOME"); }
+        }
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }
