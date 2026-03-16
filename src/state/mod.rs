@@ -487,7 +487,13 @@ pub fn save_sdlc_run_ledger(project_root: &Path, ledger: &SdlcRunLedgerRecord) -
     let dir = project_root.join(".tutti").join("state").join("run-ledger");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.json", ledger.run_id));
-    let tmp_path = dir.join(format!("{}.json.tmp", ledger.run_id));
+    let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    let tmp_path = dir.join(format!(
+        "{}.json.tmp.{}.{}",
+        ledger.run_id,
+        std::process::id(),
+        nanos
+    ));
     let body = serde_json::to_string_pretty(ledger)?;
     std::fs::write(&tmp_path, body)?;
     std::fs::rename(&tmp_path, &path)?;
