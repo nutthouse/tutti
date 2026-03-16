@@ -1,6 +1,9 @@
 name: Tutti SDLC Orchestrator
 
 on:
+  schedule:
+    # Sweep stale claims every 30 minutes
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -17,7 +20,27 @@ on:
         default: "agent-ops"
 
 jobs:
+  # Periodic sweep of stale issue claim leases
+  sweep-stale-claims:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Sweep stale claims
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo run --quiet -- issue-claim sweep
+
   orchestrate:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     concurrency:
       group: sdlc-orchestrator-${{ github.repository }}
@@ -53,12 +76,27 @@ jobs:
       - name: Preflight tests
         run: cargo test -q
 
-      - name: Run smoke workflow
+      - name: Run smoke workflow with claim lifecycle
         if: ${{ inputs.mode == 'smoke' }}
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
+          STATE_FILE=".tutti/state/auto/selected_issue.json"
+          cleanup() {
+            if [ -f "$STATE_FILE" ]; then
+              cargo run --quiet -- issue-claim release --state "$STATE_FILE" \
+                --reason "workflow finished for run $GITHUB_RUN_ID" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          # Start heartbeat in background (every 5 min)
+          ( while true; do sleep 300; [ -f "$STATE_FILE" ] && cargo run --quiet -- issue-claim heartbeat --state "$STATE_FILE" 2>/dev/null || true; done ) &
+          HEARTBEAT_PID=$!
+          trap "kill $HEARTBEAT_PID 2>/dev/null; cleanup" EXIT
+
           cargo run --quiet -- run sdlc-smoke --strict
 
       - name: Verify codex CLI is available
@@ -66,10 +104,25 @@ jobs:
         run: |
           command -v codex >/dev/null || { echo "codex CLI not found on runner"; exit 1; }
 
-      - name: Run full auto workflow
+      - name: Run full auto workflow with claim lifecycle
         if: ${{ inputs.mode == 'auto' }}
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_LABEL: ${{ inputs.issue_label }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
+          STATE_FILE=".tutti/state/auto/selected_issue.json"
+          cleanup() {
+            if [ -f "$STATE_FILE" ]; then
+              cargo run --quiet -- issue-claim release --state "$STATE_FILE" \
+                --reason "workflow finished for run $GITHUB_RUN_ID" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          # Start heartbeat in background (every 5 min)
+          ( while true; do sleep 300; [ -f "$STATE_FILE" ] && cargo run --quiet -- issue-claim heartbeat --state "$STATE_FILE" 2>/dev/null || true; done ) &
+          HEARTBEAT_PID=$!
+          trap "kill $HEARTBEAT_PID 2>/dev/null; cleanup" EXIT
+
           cargo run --quiet -- run sdlc-auto --strict

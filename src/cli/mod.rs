@@ -9,6 +9,7 @@ pub mod down;
 pub mod handoff;
 pub mod health;
 pub mod init;
+pub mod issue_claim;
 pub mod land;
 pub mod logs;
 pub mod peek;
@@ -360,6 +361,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<WorkspacesSubcommand>,
     },
+
+    /// Manage issue claim leases for automation
+    IssueClaim {
+        #[command(subcommand)]
+        command: IssueClaimSubcommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -403,6 +410,42 @@ pub enum PermissionsSubcommand {
         #[arg(long)]
         output: Option<std::path::PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum IssueClaimSubcommand {
+    /// Acquire an exclusive lease on the next unclaimed issue
+    Acquire {
+        /// Output JSON path for selected issue state
+        #[arg(long, default_value = ".tutti/state/auto/selected_issue.json")]
+        output: std::path::PathBuf,
+
+        /// GitHub issue label to filter
+        #[arg(long, default_value = "agent-ops")]
+        label: String,
+
+        /// Lease time-to-live in seconds (default: 1800 = 30 min)
+        #[arg(long)]
+        lease_ttl_secs: Option<u64>,
+    },
+    /// Renew an active lease (call periodically during workflow)
+    Heartbeat {
+        /// Path to selected issue state JSON
+        #[arg(long, default_value = ".tutti/state/auto/selected_issue.json")]
+        state: std::path::PathBuf,
+    },
+    /// Release a claim when workflow completes or fails
+    Release {
+        /// Path to selected issue state JSON
+        #[arg(long, default_value = ".tutti/state/auto/selected_issue.json")]
+        state: std::path::PathBuf,
+
+        /// Reason for releasing
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Sweep and release all stale (expired) claims
+    Sweep,
 }
 
 #[derive(Subcommand)]

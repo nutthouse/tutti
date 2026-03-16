@@ -60,7 +60,7 @@ description = "Preflight test run before unattended automation"
 [[workflow.step]]
 id = "select_issue"
 type = "command"
-run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json \"${ISSUE_LABEL:-agent-ops}\""
+run = "cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -110,7 +110,7 @@ agent = "docs-release"
 [[workflow.step]]
 id = "select_issue"
 type = "command"
-run = "scripts/automation/select_issue.sh .tutti/state/auto/selected_issue.json \"${ISSUE_LABEL:-agent-ops}\""
+run = "cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800"
 fail_mode = "closed"
 
 [[workflow.step]]
