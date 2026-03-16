@@ -70,6 +70,140 @@ pub struct WorkflowStepOutcomeRecord {
     pub side_effects: Option<Value>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SdlcRunState {
+    Selected,
+    Branched,
+    Implemented,
+    Tested,
+    Docs,
+    PrOpen,
+    Reviewed,
+    ReadyToMerge,
+    Merged,
+}
+
+impl SdlcRunState {
+    #[allow(dead_code)]
+    fn can_transition_to(&self, next: &SdlcRunState) -> bool {
+        matches!(
+            (self, next),
+            (SdlcRunState::Selected, SdlcRunState::Branched)
+                | (SdlcRunState::Branched, SdlcRunState::Implemented)
+                | (SdlcRunState::Implemented, SdlcRunState::Tested)
+                | (SdlcRunState::Tested, SdlcRunState::Docs)
+                | (SdlcRunState::Docs, SdlcRunState::PrOpen)
+                | (SdlcRunState::PrOpen, SdlcRunState::Reviewed)
+                | (SdlcRunState::Reviewed, SdlcRunState::ReadyToMerge)
+                | (SdlcRunState::ReadyToMerge, SdlcRunState::Merged)
+        )
+    }
+}
+
+fn is_valid_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn validate_run_id(run_id: &str) -> Result<()> {
+    if !is_valid_id(run_id) {
+        return Err(TuttiError::State(format!(
+            "invalid run_id '{run_id}': only [A-Za-z0-9_-] allowed"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_step_id(step_id: &str) -> Result<()> {
+    if !is_valid_id(step_id) {
+        return Err(TuttiError::State(format!(
+            "invalid step_id '{step_id}': only [A-Za-z0-9_-] allowed"
+        )));
+    }
+    Ok(())
+}
+
+struct RunLedgerLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for RunLedgerLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) -> Result<T> {
+    let lock_dir = project_root.join(".tutti").join("state").join("run-ledger");
+    std::fs::create_dir_all(&lock_dir)?;
+    let lock_path = lock_dir.join(".transition.lock");
+    let stale_after = std::time::Duration::from_secs(30);
+
+    let mut acquired = false;
+    for _ in 0..50 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => {
+                acquired = true;
+                break;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Ok(meta) = std::fs::metadata(&lock_path)
+                    && let Ok(modified) = meta.modified()
+                    && let Ok(age) = std::time::SystemTime::now().duration_since(modified)
+                    && age > stale_after
+                {
+                    let _ = std::fs::remove_file(&lock_path);
+                    continue;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    if !acquired {
+        return Err(TuttiError::State(
+            "timed out waiting for run-ledger transition lock".to_string(),
+        ));
+    }
+
+    let _guard = RunLedgerLockGuard { path: lock_path };
+    op()
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdlcTransitionRecord {
+    pub from: SdlcRunState,
+    pub to: SdlcRunState,
+    pub timestamp: DateTime<Utc>,
+    pub actor: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdlcRunLedgerRecord {
+    pub run_id: String,
+    pub issue_number: u64,
+    pub repository: String,
+    pub workflow_name: String,
+    pub state: SdlcRunState,
+    pub updated_at: DateTime<Utc>,
+    pub actor: String,
+    #[serde(default)]
+    pub transitions: Vec<SdlcTransitionRecord>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityState {
@@ -144,6 +278,7 @@ pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
         "state/workflow-checkpoints",
         "state/workflow-intents",
         "state/workflow-outputs",
+        "state/run-ledger",
         "worktrees",
         "handoffs",
         "logs",
@@ -301,6 +436,8 @@ pub fn save_workflow_output(
     step_id: &str,
     json: &serde_json::Value,
 ) -> Result<PathBuf> {
+    validate_run_id(run_id)?;
+    validate_step_id(step_id)?;
     let dir = project_root
         .join(".tutti")
         .join("state")
@@ -318,6 +455,7 @@ pub fn save_workflow_checkpoint(
     run_id: &str,
     json: &serde_json::Value,
 ) -> Result<PathBuf> {
+    validate_run_id(run_id)?;
     let dir = project_root
         .join(".tutti")
         .join("state")
@@ -333,6 +471,7 @@ pub fn load_workflow_checkpoint(
     project_root: &Path,
     run_id: &str,
 ) -> Result<Option<serde_json::Value>> {
+    validate_run_id(run_id)?;
     let path = project_root
         .join(".tutti")
         .join("state")
@@ -346,12 +485,93 @@ pub fn load_workflow_checkpoint(
     Ok(Some(value))
 }
 
+pub fn save_sdlc_run_ledger(project_root: &Path, ledger: &SdlcRunLedgerRecord) -> Result<PathBuf> {
+    validate_run_id(&ledger.run_id)?;
+    let dir = project_root.join(".tutti").join("state").join("run-ledger");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.json", ledger.run_id));
+    let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    let tmp_path = dir.join(format!(
+        "{}.json.tmp.{}.{}",
+        ledger.run_id,
+        std::process::id(),
+        nanos
+    ));
+    let body = serde_json::to_string_pretty(ledger)?;
+    std::fs::write(&tmp_path, body)?;
+    std::fs::rename(&tmp_path, &path)?;
+    Ok(path)
+}
+
+#[allow(dead_code)]
+pub fn load_sdlc_run_ledger(
+    project_root: &Path,
+    run_id: &str,
+) -> Result<Option<SdlcRunLedgerRecord>> {
+    validate_run_id(run_id)?;
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("run-ledger")
+        .join(format!("{run_id}.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = std::fs::read_to_string(path)?;
+    let record = serde_json::from_str(&body).map_err(|e| TuttiError::State(e.to_string()))?;
+    Ok(Some(record))
+}
+
+#[allow(dead_code)]
+pub fn transition_sdlc_run_ledger(
+    project_root: &Path,
+    run_id: &str,
+    next: SdlcRunState,
+    actor: &str,
+    reason: Option<String>,
+) -> Result<SdlcRunLedgerRecord> {
+    validate_run_id(run_id)?;
+    with_run_ledger_lock(project_root, || {
+        let mut ledger = load_sdlc_run_ledger(project_root, run_id)?.ok_or_else(|| {
+            TuttiError::State(format!("missing SDLC run ledger for run_id '{run_id}'"))
+        })?;
+        let previous = ledger.state.clone();
+
+        if previous == next {
+            return Ok(ledger);
+        }
+
+        if !previous.can_transition_to(&next) {
+            return Err(TuttiError::State(format!(
+                "invalid SDLC transition: {:?} -> {:?}",
+                previous, next
+            )));
+        }
+
+        let now = Utc::now();
+        ledger.transitions.push(SdlcTransitionRecord {
+            from: previous,
+            to: next.clone(),
+            timestamp: now,
+            actor: actor.to_string(),
+            reason,
+        });
+        ledger.state = next;
+        ledger.updated_at = now;
+        ledger.actor = actor.to_string();
+        save_sdlc_run_ledger(project_root, &ledger)?;
+        Ok(ledger)
+    })
+}
+
 pub fn save_workflow_intent(
     project_root: &Path,
     run_id: &str,
     step_id: &str,
     record: &WorkflowStepIntentRecord,
 ) -> Result<PathBuf> {
+    validate_run_id(run_id)?;
+    validate_step_id(step_id)?;
     let dir = project_root
         .join(".tutti")
         .join("state")
@@ -369,6 +589,8 @@ pub fn load_workflow_intent(
     run_id: &str,
     step_id: &str,
 ) -> Result<Option<WorkflowStepIntentRecord>> {
+    validate_run_id(run_id)?;
+    validate_step_id(step_id)?;
     let path = project_root
         .join(".tutti")
         .join("state")
@@ -586,6 +808,7 @@ mod tests {
         assert!(dir.join(".tutti/state/runtime-settings").exists());
         assert!(dir.join(".tutti/state/workflow-checkpoints").exists());
         assert!(dir.join(".tutti/state/workflow-intents").exists());
+        assert!(dir.join(".tutti/state/run-ledger").exists());
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());
@@ -821,5 +1044,151 @@ mod tests {
         assert_eq!(loaded[0].enforcement, "hard");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sdlc_ledger_round_trip_and_transition() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-sdlc-ledger-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let record = SdlcRunLedgerRecord {
+            run_id: "run-ledger-1".to_string(),
+            issue_number: 30,
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "readiness".to_string(),
+            state: SdlcRunState::Selected,
+            updated_at: Utc::now(),
+            actor: "wren".to_string(),
+            transitions: vec![],
+        };
+
+        let path = save_sdlc_run_ledger(&dir, &record).unwrap();
+        assert!(path.exists());
+
+        let updated = transition_sdlc_run_ledger(
+            &dir,
+            "run-ledger-1",
+            SdlcRunState::Branched,
+            "wren",
+            Some("created branch".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(updated.state, SdlcRunState::Branched);
+        assert_eq!(updated.transitions.len(), 1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sdlc_ledger_rejects_invalid_transition() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-sdlc-ledger-invalid-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let record = SdlcRunLedgerRecord {
+            run_id: "run-ledger-2".to_string(),
+            issue_number: 30,
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "readiness".to_string(),
+            state: SdlcRunState::Selected,
+            updated_at: Utc::now(),
+            actor: "wren".to_string(),
+            transitions: vec![],
+        };
+
+        save_sdlc_run_ledger(&dir, &record).unwrap();
+        let err =
+            transition_sdlc_run_ledger(&dir, "run-ledger-2", SdlcRunState::Reviewed, "wren", None)
+                .unwrap_err();
+
+        assert!(err.to_string().contains("invalid SDLC transition"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sdlc_ledger_allows_idempotent_transition_retry() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-sdlc-ledger-idempotent-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let record = SdlcRunLedgerRecord {
+            run_id: "run-ledger-3".to_string(),
+            issue_number: 30,
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "readiness".to_string(),
+            state: SdlcRunState::Branched,
+            updated_at: Utc::now(),
+            actor: "wren".to_string(),
+            transitions: vec![],
+        };
+
+        save_sdlc_run_ledger(&dir, &record).unwrap();
+        let updated = transition_sdlc_run_ledger(
+            &dir,
+            "run-ledger-3",
+            SdlcRunState::Branched,
+            "retry-agent",
+            Some("network retry".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(updated.state, SdlcRunState::Branched);
+        assert!(updated.transitions.is_empty());
+        assert_eq!(updated.actor, "wren");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_id_with_path_segments_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-runid-validation-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let err = load_workflow_checkpoint(&dir, "../escape").unwrap_err();
+        assert!(err.to_string().contains("invalid run_id"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn step_id_with_path_segments_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-stepid-validation-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let payload = serde_json::json!({"ok": true});
+        let err = save_workflow_output(&dir, "run123", "../escape", &payload).unwrap_err();
+        assert!(err.to_string().contains("invalid step_id"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_id_allowlist_rejects_special_chars_and_accepts_safe_values() {
+        assert!(validate_run_id("run_123-ABC").is_ok());
+
+        let bad = validate_run_id("run:123").unwrap_err();
+        assert!(bad.to_string().contains("only [A-Za-z0-9_-] allowed"));
+
+        let bad_ctrl = validate_run_id("run\n123").unwrap_err();
+        assert!(bad_ctrl.to_string().contains("invalid run_id"));
+    }
+
+    #[test]
+    fn step_id_allowlist_rejects_special_chars_and_accepts_safe_values() {
+        assert!(validate_step_id("step_1-OK").is_ok());
+
+        let bad = validate_step_id("step*1").unwrap_err();
+        assert!(bad.to_string().contains("only [A-Za-z0-9_-] allowed"));
     }
 }
