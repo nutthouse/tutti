@@ -316,6 +316,7 @@ enum DryRunStep {
         agent: Option<String>,
         cwd: String,
         fail_mode: String,
+        command: String,
         summary: String,
     },
     EnsureRunning {
@@ -371,6 +372,7 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 agent: agent.clone(),
                 cwd: cwd.display().to_string(),
                 fail_mode: format!("{:?}", fail_mode).to_lowercase(),
+                command: run.clone(),
                 summary: run.clone(),
             }),
             ResolvedStep::EnsureRunning {
@@ -536,11 +538,13 @@ mod tests {
         match &plan.steps[1] {
             DryRunStep::Command {
                 index,
+                command,
                 summary,
                 fail_mode,
                 ..
             } => {
                 assert_eq!(*index, 2);
+                assert_eq!(command, "cargo test");
                 assert_eq!(summary, "cargo test");
                 assert_eq!(fail_mode, "closed");
             }
