@@ -163,51 +163,57 @@ fn collect_blocked_commands(
     resolver: &WorkflowResolver,
     workflow: &str,
     options: &ExecuteOptions,
-    seen_workflows: &mut std::collections::BTreeSet<String>,
+    active_workflows: &mut std::collections::BTreeSet<String>,
     seen_commands: &mut std::collections::BTreeSet<String>,
     blocked: &mut Vec<PermissionSuggestion>,
     global: &GlobalConfig,
     total_commands: &mut usize,
 ) -> Result<()> {
-    if !seen_workflows.insert(workflow.to_string()) {
+    // Cycle detection only for the current recursion stack.
+    if active_workflows.contains(workflow) {
         return Ok(());
     }
+    active_workflows.insert(workflow.to_string());
 
-    let resolved = resolver.resolve(workflow, None, options)?;
-    for step in resolved.steps {
-        match step {
-            ResolvedStep::Command { run, .. } => {
-                *total_commands += 1;
-                let cmd = normalize(run);
-                if cmd.is_empty() {
-                    continue;
+    let result = (|| -> Result<()> {
+        let resolved = resolver.resolve(workflow, None, options)?;
+        for step in resolved.steps {
+            match step {
+                ResolvedStep::Command { run, .. } => {
+                    *total_commands += 1;
+                    let cmd = normalize(run);
+                    if cmd.is_empty() {
+                        continue;
+                    }
+                    let decision = evaluate_command_policy(global.permissions.as_ref(), &cmd);
+                    if !decision.allowed && seen_commands.insert(cmd.clone()) {
+                        blocked.push(PermissionSuggestion {
+                            command: cmd.clone(),
+                            suggested_rule: format!("{cmd} *"),
+                            reason: decision.reason,
+                        });
+                    }
                 }
-                let decision = evaluate_command_policy(global.permissions.as_ref(), &cmd);
-                if !decision.allowed && seen_commands.insert(cmd.clone()) {
-                    blocked.push(PermissionSuggestion {
-                        command: cmd.clone(),
-                        suggested_rule: format!("{cmd} *"),
-                        reason: decision.reason,
-                    });
+                ResolvedStep::Workflow { workflow, .. } => {
+                    collect_blocked_commands(
+                        resolver,
+                        &workflow,
+                        options,
+                        active_workflows,
+                        seen_commands,
+                        blocked,
+                        global,
+                        total_commands,
+                    )?;
                 }
+                _ => {}
             }
-            ResolvedStep::Workflow { workflow, .. } => {
-                collect_blocked_commands(
-                    resolver,
-                    &workflow,
-                    options,
-                    seen_workflows,
-                    seen_commands,
-                    blocked,
-                    global,
-                    total_commands,
-                )?;
-            }
-            _ => {}
         }
-    }
+        Ok(())
+    })();
 
-    Ok(())
+    active_workflows.remove(workflow);
+    result
 }
 
 fn suggest_workflow_permissions(
@@ -230,14 +236,14 @@ fn suggest_workflow_permissions(
     let resolver = WorkflowResolver::new(config, project_root);
     let mut blocked: Vec<PermissionSuggestion> = Vec::new();
     let mut seen_commands = std::collections::BTreeSet::new();
-    let mut seen_workflows = std::collections::BTreeSet::new();
+    let mut active_workflows = std::collections::BTreeSet::new();
     let mut total_commands = 0usize;
 
     collect_blocked_commands(
         &resolver,
         workflow,
         &options,
-        &mut seen_workflows,
+        &mut active_workflows,
         &mut seen_commands,
         &mut blocked,
         global,
@@ -277,7 +283,10 @@ fn run_suggest(workflow: &str, apply: bool, as_json: bool) -> Result<()> {
     let (config, config_path) = TuttiConfig::load(&cwd)?;
     config.validate()?;
     let project_root = config_path.parent().ok_or_else(|| {
-        TuttiError::ConfigValidation("could not determine workspace root".to_string())
+        TuttiError::ConfigValidation(
+            "could not determine workspace root; run `tt permissions suggest` from a workspace containing tutti.toml"
+                .to_string(),
+        )
     })?;
 
     let mut global = GlobalConfig::load()?;
@@ -345,6 +354,7 @@ fn render_export(runtime: &str, policy: &PermissionsConfig) -> Result<String> {
 mod tests {
     use super::*;
     use crate::state::load_policy_decisions;
+    use serial_test::serial;
 
     #[test]
     fn matching_rule_supports_exact_and_prefix() {
@@ -494,6 +504,7 @@ workflow = "child"
     }
 
     #[test]
+    #[serial]
     fn suggest_apply_writes_global_permissions_and_json_shape_is_stable() {
         let temp = std::env::temp_dir().join(format!(
             "tutti-test-permissions-suggest-apply-{}",
