@@ -115,7 +115,7 @@ source ~/.zshrc
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
-- Runtime adapters: Claude Code, Codex CLI, Aider
+- Runtime adapters: Claude Code, Codex CLI, Aider, OpenClaw
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
 - Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
@@ -123,6 +123,7 @@ source ~/.zshrc
 - `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
 - Workspace `[[tool_pack]]` declarations + `tt doctor` prerequisite checks (commands/env/profile/runtime)
 - API-profile budget guardrails (`[budget]`) with pre-exec checks on `tt up/send/run/verify`
+- Codex SDLC orchestration framework with specialized agent topology and CI automation (`docs/CODEX_SDLC_ORCHESTRATION.md`)
 
 ### Planned / in progress
 - Session replacement flow (`tt handoff apply`) hardening and richer packet templates
@@ -137,6 +138,8 @@ source ~/.zshrc
 - OpenClaw skill contract: `docs/OPENCLAW_SKILL_CONTRACT.md`
 - OpenClaw skill starter: `skills/openclaw/SKILL.md`
 - OpenClaw integration bundle: `integrations/openclaw/README.md`
+- Codex SDLC orchestration: `docs/CODEX_SDLC_ORCHESTRATION.md`
+- Agent operations roadmap: `docs/AGENT_OPS_ROADMAP.md`
 
 ## tutti.toml
 

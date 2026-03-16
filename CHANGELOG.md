@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.4 - 2026-03-16
+
+### Added
+- Codex SDLC orchestration framework with specialized 6-agent topology (planner, conductor, implementer, tester, docs-release, reviewer).
+- Automation helper scripts: `select_issue.sh`, `create_issue_branch.sh`, `wait_coderabbit.sh`, `collect_coderabbit_feedback.sh`.
+- `workflow_dispatch` CI orchestrator for SDLC smoke and auto runs.
+- Agent operations roadmap and telemetry plan (`docs/AGENT_OPS_ROADMAP.md`).
+- Claude planner lane and no-commit guard to SDLC choir workflow.
+
+### Fixed
+- Codex runtime now passes prompts positionally instead of unsupported `--prompt` flag.
+- Automation includes issue body in implementation prompts and fails fast when no changes are produced.
+- CodeRabbit wait/collect scripts hardened for error handling and inline comment collection.
+- SDLC orchestration flow hardened for reruns and worktree alignment.
+- Duplicate issue preselection removed; `issue_label` wired through workflows.
+- Missing plan-file dependency removed from SDLC cycle.
+- GitHub Actions workflow permissions added for code scanning compliance.
+
+### Changed
+- Extracted SDLC inline Python blocks into standalone automation scripts.
+- Implementer prompt now requires evidence of changes in output.
+
+## 0.2.3 - 2026-03-15
+
+### Added
+- Runtime detection hardening with diagnostics and transcript fixtures (Issue #11).
+- `tt detect` diagnostics output includes confidence scores and matched pattern labels.
+
+## 0.2.2 - 2026-03-14
+
+### Added
+- Resume intent log and compensator preflight for workflow recovery (Issue #10).
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:
