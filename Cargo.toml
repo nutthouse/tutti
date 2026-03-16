@@ -5,6 +5,10 @@ edition = "2024" # intentional: codebase uses Rust 2024 let-chain syntax
 description = "Multi-agent orchestration CLI — your agents, all together"
 license = "MIT"
 repository = "https://github.com/nutthouse/tutti"
+homepage = "https://github.com/nutthouse/tutti"
+keywords = ["cli", "ai", "agents", "orchestration", "tmux"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [[bin]]
 name = "tt"
@@ -20,7 +24,7 @@ comfy-table = "7"
 colored = "3"
 chrono = { version = "0.4", features = ["serde"] }
 which = "7"
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.29"
 fuzzy-matcher = "0.3"
 wait-timeout = "0.2"
