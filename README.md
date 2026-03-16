@@ -137,6 +137,7 @@ source ~/.zshrc
 - OpenClaw skill contract: `docs/OPENCLAW_SKILL_CONTRACT.md`
 - OpenClaw skill starter: `skills/openclaw/SKILL.md`
 - OpenClaw integration bundle: `integrations/openclaw/README.md`
+- Versioning and release policy: `VERSIONING.md`
 
 ## tutti.toml
 
