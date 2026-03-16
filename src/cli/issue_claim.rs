@@ -64,7 +64,10 @@ impl ClaimRecord {
     }
 
     fn expires_at(&self) -> DateTime<Utc> {
-        self.last_heartbeat_at + chrono::Duration::seconds(self.lease_ttl_secs as i64)
+        {
+            let secs = i64::try_from(self.lease_ttl_secs).unwrap_or(i64::MAX);
+            self.last_heartbeat_at + chrono::Duration::seconds(secs)
+        }
     }
 
     fn is_expired(&self) -> bool {
@@ -336,13 +339,13 @@ fn gh_issues_with_label(repo: &str, label: &str) -> Result<Vec<u64>> {
 // Claim comment encoding
 // ---------------------------------------------------------------------------
 
-fn encode_claim_comment(record: &ClaimRecord) -> String {
-    let json = serde_json::to_string(record).unwrap_or_default();
+fn encode_claim_comment(record: &ClaimRecord) -> Result<String> {
+    let json = serde_json::to_string(record)?;
     let status_emoji = match record.status {
         ClaimStatus::Active => "🔒",
         ClaimStatus::Released => "🔓",
     };
-    format!(
+    Ok(format!(
         "{CLAIM_MARKER_START}{json}{CLAIM_MARKER_END}\n\n\
          {status_emoji} **Claim** — run `{}` | status: `{:?}` | \
          expires: {} | heartbeat: {}",
@@ -350,7 +353,7 @@ fn encode_claim_comment(record: &ClaimRecord) -> String {
         record.status,
         record.expires_at().format("%Y-%m-%dT%H:%M:%SZ"),
         record.last_heartbeat_at.format("%Y-%m-%dT%H:%M:%SZ"),
-    )
+    ))
 }
 
 fn decode_claim_comment(body: &str) -> Option<ClaimRecord> {
@@ -390,7 +393,7 @@ fn release_stale_claims(repo: &str, issue_number: u64) -> Result<u32> {
             record.released_at = Some(Utc::now());
             record.release_reason = Some("lease expired (stale)".into());
             record.push_event("Released", Some("lease expired".into()));
-            let body = encode_claim_comment(&record);
+            let body = encode_claim_comment(&record)?;
             gh_update_comment(repo, comment_id, &body)?;
             released += 1;
             eprintln!(
@@ -490,12 +493,19 @@ pub fn acquire(output_path: &Path, label: &str, lease_ttl_secs: Option<u64>) -> 
 
     // Create claim record and post as comment
     let record = ClaimRecord::new(&run_id, ttl);
-    let comment_body = encode_claim_comment(&record);
+    let comment_body = encode_claim_comment(&record)?;
 
     // Add label first to prevent races
     gh_add_label(&repo, number, "automation-claimed")?;
 
-    let comment_id = gh_create_comment(&repo, number, &comment_body)?;
+    let comment_id = match gh_create_comment(&repo, number, &comment_body) {
+        Ok(id) => id,
+        Err(err) => {
+            // Best-effort cleanup to avoid stranded labels when comment creation fails.
+            let _ = gh_remove_label(&repo, number, "automation-claimed");
+            return Err(err);
+        }
+    };
 
     // Verify we won the race (check all claims, find winner)
     let claims = find_claim_comments(&repo, number)?;
@@ -508,7 +518,7 @@ pub fn acquire(output_path: &Path, label: &str, lease_ttl_secs: Option<u64>) -> 
         our_record.released_at = Some(Utc::now());
         our_record.release_reason = Some("lost claim race".into());
         our_record.push_event("Released", Some("lost claim race".into()));
-        let body = encode_claim_comment(&our_record);
+        let body = encode_claim_comment(&our_record)?;
         gh_update_comment(&repo, comment_id, &body)?;
 
         return Err(TuttiError::IssueClaim(format!(
@@ -587,7 +597,7 @@ pub fn heartbeat(state_path: &Path) -> Result<()> {
                 }
                 record.last_heartbeat_at = Utc::now();
                 record.push_event("Renewed", None);
-                let new_body = encode_claim_comment(&record);
+                let new_body = encode_claim_comment(&record)?;
                 gh_update_comment(&repo, comment_id, &new_body)?;
                 found = true;
 
@@ -596,7 +606,9 @@ pub fn heartbeat(state_path: &Path) -> Result<()> {
                 updated_output["last_heartbeat_at"] =
                     serde_json::Value::String(record.last_heartbeat_at.to_rfc3339());
                 let json = serde_json::to_string_pretty(&updated_output)?;
-                std::fs::write(state_path, json)?;
+                let tmp_path = state_path.with_extension("json.tmp");
+                std::fs::write(&tmp_path, &json)?;
+                std::fs::rename(&tmp_path, state_path)?;
 
                 eprintln!(
                     "heartbeat renewed for #{} (expires {})",
@@ -642,7 +654,7 @@ pub fn release(state_path: &Path, reason: Option<&str>) -> Result<()> {
                 record.released_at = Some(Utc::now());
                 record.release_reason = Some(release_reason.to_string());
                 record.push_event("Released", Some(release_reason.to_string()));
-                let new_body = encode_claim_comment(&record);
+                let new_body = encode_claim_comment(&record)?;
                 gh_update_comment(&repo, comment_id, &new_body)?;
                 released = true;
             }
@@ -743,7 +755,7 @@ mod tests {
     #[test]
     fn test_encode_decode_roundtrip() {
         let record = ClaimRecord::new("run-abc", 1800);
-        let encoded = encode_claim_comment(&record);
+        let encoded = encode_claim_comment(&record).expect("encode should succeed");
         let decoded = decode_claim_comment(&encoded).expect("should decode");
         assert_eq!(decoded.run_id, "run-abc");
         assert_eq!(decoded.lease_ttl_secs, 1800);

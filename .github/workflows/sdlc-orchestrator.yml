@@ -93,7 +93,7 @@ jobs:
           trap cleanup EXIT
 
           # Start heartbeat in background (every 5 min)
-          ( while true; do sleep 300; cargo run --quiet -- issue-claim heartbeat --state "$STATE_FILE" 2>/dev/null || true; done ) &
+          ( while true; do sleep 300; [ -f "$STATE_FILE" ] && cargo run --quiet -- issue-claim heartbeat --state "$STATE_FILE" 2>/dev/null || true; done ) &
           HEARTBEAT_PID=$!
           trap "kill $HEARTBEAT_PID 2>/dev/null; cleanup" EXIT
 
@@ -121,7 +121,7 @@ jobs:
           trap cleanup EXIT
 
           # Start heartbeat in background (every 5 min)
-          ( while true; do sleep 300; cargo run --quiet -- issue-claim heartbeat --state "$STATE_FILE" 2>/dev/null || true; done ) &
+          ( while true; do sleep 300; [ -f "$STATE_FILE" ] && cargo run --quiet -- issue-claim heartbeat --state "$STATE_FILE" 2>/dev/null || true; done ) &
           HEARTBEAT_PID=$!
           trap "kill $HEARTBEAT_PID 2>/dev/null; cleanup" EXIT
 
