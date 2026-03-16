@@ -1,3 +1,4 @@
+use crate::automation::{ExecuteOptions, ExecutionOrigin, ResolvedStep, WorkflowResolver};
 use crate::cli::PermissionsSubcommand;
 use crate::config::{GlobalConfig, PermissionsConfig, TuttiConfig, global_config_path};
 use crate::error::{Result, TuttiError};
@@ -11,6 +12,11 @@ use std::path::Path;
 pub fn run(command: PermissionsSubcommand) -> Result<()> {
     match command {
         PermissionsSubcommand::Check { command, json } => run_check(&command, json),
+        PermissionsSubcommand::Suggest {
+            workflow,
+            apply,
+            json,
+        } => run_suggest(&workflow, apply, json),
         PermissionsSubcommand::Export { runtime, output } => {
             run_export(&runtime, output.as_deref())
         }
@@ -135,6 +141,120 @@ fn persist_permission_check_decision(
             })),
         },
     );
+}
+
+#[derive(Debug, Serialize)]
+struct PermissionSuggestion {
+    command: String,
+    suggested_rule: String,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PermissionSuggestReport {
+    workflow: String,
+    total_commands: usize,
+    blocked: Vec<PermissionSuggestion>,
+    applied_rules: Vec<String>,
+}
+
+fn run_suggest(workflow: &str, apply: bool, as_json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (config, config_path) = TuttiConfig::load(&cwd)?;
+    config.validate()?;
+    let project_root = config_path.parent().ok_or_else(|| {
+        TuttiError::ConfigValidation("could not determine workspace root".to_string())
+    })?;
+
+    let mut global = GlobalConfig::load()?;
+    let options = ExecuteOptions {
+        strict: false,
+        force_open_commands: false,
+        command_policy: global.permissions.clone(),
+        retry_policy: None,
+        origin: ExecutionOrigin::Run,
+        hook_event: None,
+        hook_agent: None,
+    };
+
+    let resolved =
+        WorkflowResolver::new(&config, project_root).resolve(workflow, None, &options)?;
+
+    let mut blocked: Vec<PermissionSuggestion> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total_commands = 0usize;
+
+    for step in resolved.steps {
+        if let ResolvedStep::Command { run, .. } = step {
+            total_commands += 1;
+            let cmd = normalize(run);
+            if cmd.is_empty() {
+                continue;
+            }
+            let decision = evaluate_command_policy(global.permissions.as_ref(), &cmd);
+            if !decision.allowed && seen.insert(cmd.clone()) {
+                blocked.push(PermissionSuggestion {
+                    command: cmd.clone(),
+                    suggested_rule: format!("{cmd} *"),
+                    reason: decision.reason,
+                });
+            }
+        }
+    }
+
+    let mut applied_rules = Vec::new();
+    if apply && !blocked.is_empty() {
+        let policy = global
+            .permissions
+            .get_or_insert_with(PermissionsConfig::default);
+        for item in &blocked {
+            if !policy
+                .allow
+                .iter()
+                .any(|existing| existing == &item.suggested_rule)
+            {
+                policy.allow.push(item.suggested_rule.clone());
+                applied_rules.push(item.suggested_rule.clone());
+            }
+        }
+        if !applied_rules.is_empty() {
+            global.save()?;
+        }
+    }
+
+    if as_json {
+        let report = PermissionSuggestReport {
+            workflow: workflow.to_string(),
+            total_commands,
+            blocked,
+            applied_rules,
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    if blocked.is_empty() {
+        println!("No blocked workflow commands detected for '{}'.", workflow);
+    } else {
+        println!("The following commands should be added to [permissions].allow:");
+        for item in &blocked {
+            println!("  {}", item.suggested_rule);
+        }
+    }
+
+    if apply {
+        if applied_rules.is_empty() {
+            println!("No new rules were applied.");
+        } else {
+            println!(
+                "Applied {} rule(s) to {}",
+                applied_rules.len(),
+                global_config_path().display()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn run_export(runtime: &str, output: Option<&Path>) -> Result<()> {

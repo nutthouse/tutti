@@ -400,6 +400,19 @@ pub enum PermissionsSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Suggest permission rules required for a workflow's command steps
+    Suggest {
+        /// Workflow name to inspect
+        workflow: String,
+
+        /// Append suggested rules to global config
+        #[arg(long)]
+        apply: bool,
+
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Export runtime scaffolding from policy
     Export {
         /// Target runtime settings format
