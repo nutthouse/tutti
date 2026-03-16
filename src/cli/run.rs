@@ -5,6 +5,7 @@ use crate::automation::{
 };
 use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::{Result, TuttiError};
+use crate::state::{load_sdlc_run_ledger, sdlc_pr_comment_summary};
 use crate::{budget, budget::BudgetGuardOutcome};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
@@ -88,6 +89,21 @@ pub fn run(
         let plan = build_resume_compensator_plan(&config, project_root, &resolved, ctx)?;
         if !plan.is_empty() {
             print_resume_plan(&ctx.run_id, &plan);
+        }
+        match load_sdlc_run_ledger(project_root, &ctx.run_id) {
+            Ok(Some(ledger)) => match sdlc_pr_comment_summary(&ledger) {
+                Ok(summary) => eprintln!("{summary}"),
+                Err(err) => {
+                    eprintln!("warn: failed to format SDLC run ledger summary: {err}");
+                }
+            },
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!(
+                    "warn: failed to load SDLC run ledger for '{}': {err}",
+                    ctx.run_id
+                );
+            }
         }
     }
 

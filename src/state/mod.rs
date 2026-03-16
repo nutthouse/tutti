@@ -179,6 +179,7 @@ fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) 
     op()
 }
 
+/// A single state transition recorded for an SDLC run.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdlcTransitionRecord {
@@ -190,6 +191,7 @@ pub struct SdlcTransitionRecord {
     pub reason: Option<String>,
 }
 
+/// Persisted state for an SDLC-tracked run, including transition history.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdlcRunLedgerRecord {
@@ -202,6 +204,43 @@ pub struct SdlcRunLedgerRecord {
     pub actor: String,
     #[serde(default)]
     pub transitions: Vec<SdlcTransitionRecord>,
+}
+
+/// Render a reusable PR comment summary for the provided SDLC run ledger.
+///
+/// The output includes the current run state and a chronological transition list
+/// suitable for posting in PR status updates.
+pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> Result<String> {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "SDLC run `{}` for #{} is currently `{:?}` (updated {} by {}).\n",
+        ledger.run_id,
+        ledger.issue_number,
+        ledger.state,
+        ledger.updated_at.to_rfc3339(),
+        ledger.actor
+    ));
+    if ledger.transitions.is_empty() {
+        out.push_str("No transitions recorded yet.");
+        return Ok(out);
+    }
+
+    out.push_str("\nTransitions:\n");
+    for transition in &ledger.transitions {
+        out.push_str(&format!(
+            "- {:?} → {:?} @ {} by {}{}\n",
+            transition.from,
+            transition.to,
+            transition.timestamp.to_rfc3339(),
+            transition.actor,
+            transition
+                .reason
+                .as_ref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(out.trim_end().to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1190,5 +1229,31 @@ mod tests {
 
         let bad = validate_step_id("step*1").unwrap_err();
         assert!(bad.to_string().contains("only [A-Za-z0-9_-] allowed"));
+    }
+
+    #[test]
+    fn sdlc_pr_comment_summary_renders_transitions() {
+        let now = Utc::now();
+        let ledger = SdlcRunLedgerRecord {
+            run_id: "run-ledger-summary".to_string(),
+            issue_number: 30,
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "readiness".to_string(),
+            state: SdlcRunState::Tested,
+            updated_at: now,
+            actor: "wren".to_string(),
+            transitions: vec![SdlcTransitionRecord {
+                from: SdlcRunState::Implemented,
+                to: SdlcRunState::Tested,
+                timestamp: now,
+                actor: "wren".to_string(),
+                reason: Some("tests passed".to_string()),
+            }],
+        };
+
+        let summary = sdlc_pr_comment_summary(&ledger).unwrap();
+        assert!(summary.contains("run-ledger-summary"));
+        assert!(summary.contains("Transitions:"));
+        assert!(summary.contains("tests passed"));
     }
 }
