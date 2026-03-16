@@ -179,6 +179,7 @@ fn with_run_ledger_lock<T>(project_root: &Path, op: impl FnOnce() -> Result<T>) 
     op()
 }
 
+/// A single state transition recorded for an SDLC run.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdlcTransitionRecord {
@@ -190,6 +191,7 @@ pub struct SdlcTransitionRecord {
     pub reason: Option<String>,
 }
 
+/// Persisted state for an SDLC-tracked run, including transition history.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdlcRunLedgerRecord {
@@ -204,6 +206,10 @@ pub struct SdlcRunLedgerRecord {
     pub transitions: Vec<SdlcTransitionRecord>,
 }
 
+/// Render a reusable PR comment summary for the provided SDLC run ledger.
+///
+/// The output includes the current run state and a chronological transition list
+/// suitable for posting in PR status updates.
 pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> Result<String> {
     let mut out = String::new();
     out.push_str(&format!(
