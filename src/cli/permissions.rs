@@ -171,7 +171,9 @@ fn collect_blocked_commands(
 ) -> Result<()> {
     // Cycle detection only for the current recursion stack.
     if active_workflows.contains(workflow) {
-        return Ok(());
+        return Err(TuttiError::ConfigValidation(format!(
+            "cyclic workflow reference detected at '{workflow}'; remove or fix the cycle before running `tt permissions suggest`"
+        )));
     }
     active_workflows.insert(workflow.to_string());
 

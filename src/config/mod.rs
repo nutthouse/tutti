@@ -1045,9 +1045,19 @@ impl GlobalConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+
+        let _lock = acquire_global_config_lock(&path)?;
         let toml_str =
             toml::to_string_pretty(self).map_err(|e| TuttiError::ConfigParse(e.to_string()))?;
-        std::fs::write(path, toml_str)?;
+
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let tmp_path = path.with_extension(format!("toml.tmp.{}.{}", std::process::id(), now_nanos));
+
+        std::fs::write(&tmp_path, toml_str)?;
+        std::fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 
@@ -1071,6 +1081,59 @@ impl GlobalConfig {
     /// Get a profile by name.
     pub fn get_profile(&self, name: &str) -> Option<&ProfileConfig> {
         self.profiles.iter().find(|p| p.name == name)
+    }
+}
+
+struct GlobalConfigLockGuard {
+    lock_path: PathBuf,
+}
+
+impl Drop for GlobalConfigLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+fn acquire_global_config_lock(config_path: &Path) -> Result<GlobalConfigLockGuard> {
+    let lock_path = config_path.with_extension("toml.lock");
+    let start = std::time::Instant::now();
+    let stale_after = std::time::Duration::from_secs(30);
+    let timeout = std::time::Duration::from_secs(5);
+
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => {
+                return Ok(GlobalConfigLockGuard { lock_path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Ok(meta) = std::fs::metadata(&lock_path) {
+                    if let Ok(modified) = meta.modified() {
+                        if modified
+                            .elapsed()
+                            .map(|age| age > stale_after)
+                            .unwrap_or(false)
+                        {
+                            let _ = std::fs::remove_file(&lock_path);
+                            continue;
+                        }
+                    }
+                }
+
+                if start.elapsed() > timeout {
+                    return Err(TuttiError::State(format!(
+                        "timed out acquiring global config lock at {}",
+                        lock_path.display()
+                    )));
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(TuttiError::Io(e)),
+        }
     }
 }
 
