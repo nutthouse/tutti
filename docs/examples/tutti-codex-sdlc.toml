@@ -138,7 +138,7 @@ agent = "implementer"
 inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 3600
-text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push. If blocked, state the exact blocker and what missing input is required."
+text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push. In your final response include changed files, test command(s) run, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
 
 [[workflow.step]]
 id = "verify_impl_progress"
