@@ -85,7 +85,10 @@ fn run_check(parts: &[String], as_json: bool) -> Result<()> {
     if decision.allowed {
         Ok(())
     } else {
-        let mut message = format!("command blocked by permissions policy: '{}'", decision.command);
+        let mut message = format!(
+            "command blocked by permissions policy: '{}'",
+            decision.command
+        );
         if let Some(rule) = decision.suggested_rule.as_deref() {
             message.push_str(&format!(" (hint: add allow rule '{rule}')"));
         }
