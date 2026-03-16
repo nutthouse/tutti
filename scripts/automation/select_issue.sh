@@ -40,6 +40,19 @@ PY
 )
 
 gh issue edit "$ISSUE_NUM" --repo "$REPO" --add-label "automation-claimed" >/dev/null
+
+ISSUE_DETAILS=$(gh issue view "$ISSUE_NUM" --repo "$REPO" --json body)
+python3 - "$OUT_FILE" "$ISSUE_DETAILS" <<'PY'
+import json,sys
+out, details_raw = sys.argv[1], sys.argv[2]
+with open(f"{out}.tmp", "r", encoding="utf-8") as f:
+    payload = json.load(f)
+details = json.loads(details_raw or "{}")
+payload["body"] = (details.get("body") or "").strip()
+with open(f"{out}.tmp", "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2)
+PY
+
 mv "${OUT_FILE}.tmp" "$OUT_FILE"
 
 echo "$OUT_FILE"
