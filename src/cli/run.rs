@@ -90,8 +90,20 @@ pub fn run(
         if !plan.is_empty() {
             print_resume_plan(&ctx.run_id, &plan);
         }
-        if let Some(ledger) = load_sdlc_run_ledger(project_root, &ctx.run_id)? {
-            eprintln!("{}", sdlc_pr_comment_summary(&ledger));
+        match load_sdlc_run_ledger(project_root, &ctx.run_id) {
+            Ok(Some(ledger)) => match sdlc_pr_comment_summary(&ledger) {
+                Ok(summary) => eprintln!("{summary}"),
+                Err(err) => {
+                    eprintln!("warn: failed to format SDLC run ledger summary: {err}");
+                }
+            },
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!(
+                    "warn: failed to load SDLC run ledger for '{}': {err}",
+                    ctx.run_id
+                );
+            }
         }
     }
 

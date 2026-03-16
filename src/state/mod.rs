@@ -204,7 +204,7 @@ pub struct SdlcRunLedgerRecord {
     pub transitions: Vec<SdlcTransitionRecord>,
 }
 
-pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> String {
+pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> Result<String> {
     let mut out = String::new();
     out.push_str(&format!(
         "SDLC run `{}` for #{} is currently `{:?}` (updated {} by {}).\n",
@@ -216,7 +216,7 @@ pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> String {
     ));
     if ledger.transitions.is_empty() {
         out.push_str("No transitions recorded yet.");
-        return out;
+        return Ok(out);
     }
 
     out.push_str("\nTransitions:\n");
@@ -234,7 +234,7 @@ pub fn sdlc_pr_comment_summary(ledger: &SdlcRunLedgerRecord) -> String {
                 .unwrap_or_default()
         ));
     }
-    out.trim_end().to_string()
+    Ok(out.trim_end().to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1245,7 +1245,7 @@ mod tests {
             }],
         };
 
-        let summary = sdlc_pr_comment_summary(&ledger);
+        let summary = sdlc_pr_comment_summary(&ledger).unwrap();
         assert!(summary.contains("run-ledger-summary"));
         assert!(summary.contains("Transitions:"));
         assert!(summary.contains("tests passed"));
