@@ -49,6 +49,9 @@ pub enum TuttiError {
 
     #[error("{0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("issue claim error: {0}")]
+    IssueClaim(String),
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;

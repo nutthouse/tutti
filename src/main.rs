@@ -13,7 +13,7 @@ mod usage;
 mod worktree;
 
 use clap::Parser;
-use cli::{Cli, Commands, WorkspacesSubcommand};
+use cli::{Cli, Commands, IssueClaimSubcommand, WorkspacesSubcommand};
 use std::process;
 
 fn main() {
@@ -143,6 +143,19 @@ fn main() {
         Commands::Workspaces { ref command } => match command {
             Some(WorkspacesSubcommand::Status) => cli::workspaces::status(),
             None => cli::workspaces::list(),
+        },
+        Commands::IssueClaim { command } => match command {
+            IssueClaimSubcommand::Acquire {
+                ref output,
+                ref label,
+                lease_ttl_secs,
+            } => cli::issue_claim::acquire(output, label, lease_ttl_secs),
+            IssueClaimSubcommand::Heartbeat { ref state } => cli::issue_claim::heartbeat(state),
+            IssueClaimSubcommand::Release {
+                ref state,
+                ref reason,
+            } => cli::issue_claim::release(state, reason.as_deref()),
+            IssueClaimSubcommand::Sweep => cli::issue_claim::sweep(),
         },
     };
 
