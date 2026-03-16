@@ -102,23 +102,26 @@ impl SdlcRunState {
     }
 }
 
+fn is_valid_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 fn validate_run_id(run_id: &str) -> Result<()> {
-    if run_id.is_empty() || run_id.contains('/') || run_id.contains('\\') || run_id.contains("..") {
+    if !is_valid_id(run_id) {
         return Err(TuttiError::State(format!(
-            "invalid run_id '{run_id}': must not contain path separators or traversal segments"
+            "invalid run_id '{run_id}': only [A-Za-z0-9_-] allowed"
         )));
     }
     Ok(())
 }
 
 fn validate_step_id(step_id: &str) -> Result<()> {
-    if step_id.is_empty()
-        || step_id.contains('/')
-        || step_id.contains('\\')
-        || step_id.contains("..")
-    {
+    if !is_valid_id(step_id) {
         return Err(TuttiError::State(format!(
-            "invalid step_id '{step_id}': must not contain path separators or traversal segments"
+            "invalid step_id '{step_id}': only [A-Za-z0-9_-] allowed"
         )));
     }
     Ok(())
@@ -1168,5 +1171,24 @@ mod tests {
         assert!(err.to_string().contains("invalid step_id"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_id_allowlist_rejects_special_chars_and_accepts_safe_values() {
+        assert!(validate_run_id("run_123-ABC").is_ok());
+
+        let bad = validate_run_id("run:123").unwrap_err();
+        assert!(bad.to_string().contains("only [A-Za-z0-9_-] allowed"));
+
+        let bad_ctrl = validate_run_id("run\n123").unwrap_err();
+        assert!(bad_ctrl.to_string().contains("invalid run_id"));
+    }
+
+    #[test]
+    fn step_id_allowlist_rejects_special_chars_and_accepts_safe_values() {
+        assert!(validate_step_id("step_1-OK").is_ok());
+
+        let bad = validate_step_id("step*1").unwrap_err();
+        assert!(bad.to_string().contains("only [A-Za-z0-9_-] allowed"));
     }
 }
