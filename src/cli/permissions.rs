@@ -158,6 +158,7 @@ struct PermissionSuggestReport {
     applied_rules: Vec<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_blocked_commands(
     resolver: &WorkflowResolver,
     workflow: &str,
