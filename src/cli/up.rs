@@ -171,11 +171,17 @@ pub fn run(
             prepare_agent_working_dir(project_root, &config.defaults, agent, fresh_worktree);
 
         // Inject persistent memory into agent working directory
-        inject_agent_memory(project_root, &working_dir, agent, &runtime_name)?;
+        let file_injected = inject_agent_memory(project_root, &working_dir, agent, &runtime_name)?;
 
-        // Build effective prompt (with memory prepended for non-Claude runtimes)
-        let effective_prompt =
-            prepend_memory_to_prompt(project_root, agent, &runtime_name, agent.prompt.as_deref())?;
+        // Build effective prompt (with memory prepended for non-Claude runtimes,
+        // or as fallback for claude-code when file injection was skipped)
+        let effective_prompt = prepend_memory_to_prompt(
+            project_root,
+            agent,
+            &runtime_name,
+            agent.prompt.as_deref(),
+            file_injected,
+        )?;
 
         // Merge workspace env with agent-level env (agent overrides workspace)
         let mut env = workspace_env.clone();
@@ -443,6 +449,28 @@ fn prepare_agent_working_dir(
 const MEMORY_SECTION_START: &str = "<!-- tutti:agent-memory:start -->";
 const MEMORY_SECTION_END: &str = "<!-- tutti:agent-memory:end -->";
 
+/// Validate that a path is not a symlink and resolves within an allowed root.
+fn validate_no_symlink(path: &Path, label: &str, allowed_root: &Path) -> Result<()> {
+    if let Ok(meta) = path.symlink_metadata()
+        && meta.file_type().is_symlink()
+    {
+        return Err(TuttiError::ConfigValidation(format!(
+            "{label} is a symlink, which is not allowed: {}",
+            path.display()
+        )));
+    }
+    if path.exists()
+        && let (Ok(canonical), Ok(root)) = (path.canonicalize(), allowed_root.canonicalize())
+        && !canonical.starts_with(&root)
+    {
+        return Err(TuttiError::ConfigValidation(format!(
+            "{label} resolves outside project root: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Inject agent memory file into the working directory.
 ///
 /// For claude-code runtimes, writes a managed memory section into CLAUDE.md
@@ -451,41 +479,51 @@ const MEMORY_SECTION_END: &str = "<!-- tutti:agent-memory:end -->";
 /// when the working dir is the project root (no worktree) to avoid
 /// mutating the workspace's own CLAUDE.md.
 ///
-/// For other runtimes, memory is handled via `prepend_memory_to_prompt`.
+/// Returns `true` if memory was successfully injected via file, `false` if
+/// skipped (caller should fall back to prompt prepending).
 fn inject_agent_memory(
     project_root: &Path,
     working_dir: &str,
     agent: &AgentConfig,
     runtime_name: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let memory_path = match &agent.memory {
         Some(p) => p.trim(),
-        None => return Ok(()),
+        None => return Ok(false),
     };
 
     // Only inject into CLAUDE.md for claude-code runtime
     if runtime_name != "claude-code" {
-        return Ok(());
+        return Ok(false);
     }
 
     let working = Path::new(working_dir);
 
     // Don't mutate the workspace's own CLAUDE.md when worktrees are disabled
     if working.canonicalize().ok() == project_root.canonicalize().ok() {
-        return Ok(());
+        return Ok(false);
     }
 
     let resolved = project_root.join(memory_path);
     if !resolved.exists() {
-        return Ok(());
+        return Ok(false);
     }
+
+    // Reject symlinked memory source
+    validate_no_symlink(&resolved, "memory file", project_root)?;
 
     let memory_contents = fs::read_to_string(&resolved)?;
     if memory_contents.trim().is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     let claude_md_path = working.join("CLAUDE.md");
+
+    // Reject symlinked CLAUDE.md destination
+    if claude_md_path.exists() {
+        validate_no_symlink(&claude_md_path, "CLAUDE.md", working)?;
+    }
+
     let existing = if claude_md_path.exists() {
         fs::read_to_string(&claude_md_path)?
     } else {
@@ -512,23 +550,27 @@ fn inject_agent_memory(
     let combined = format!("{}{memory_section}\n", base.trim_end());
     fs::write(&claude_md_path, combined)?;
 
-    Ok(())
+    Ok(true)
 }
 
-/// For non-Claude runtimes, prepend memory file contents to the agent prompt.
+/// Prepend memory file contents to the agent prompt.
+///
+/// Used for non-Claude runtimes, and as a fallback for claude-code when
+/// file injection was skipped (e.g. no worktree).
 fn prepend_memory_to_prompt(
     project_root: &Path,
     agent: &AgentConfig,
     runtime_name: &str,
     base_prompt: Option<&str>,
+    file_injected: bool,
 ) -> Result<Option<String>> {
     let memory_path = match &agent.memory {
         Some(p) => p.trim().to_string(),
         None => return Ok(base_prompt.map(String::from)),
     };
 
-    // Claude-code gets memory via CLAUDE.md injection, not prompt prepending
-    if runtime_name == "claude-code" {
+    // If CLAUDE.md injection already succeeded, skip prompt prepending
+    if runtime_name == "claude-code" && file_injected {
         return Ok(base_prompt.map(String::from));
     }
 
@@ -536,6 +578,9 @@ fn prepend_memory_to_prompt(
     if !resolved.exists() {
         return Ok(base_prompt.map(String::from));
     }
+
+    // Reject symlinked memory source
+    validate_no_symlink(&resolved, "memory file", project_root)?;
 
     let memory_contents = fs::read_to_string(&resolved)?;
     if memory_contents.trim().is_empty() {
@@ -1431,20 +1476,25 @@ fn run_all(
                     );
 
                     // Inject persistent memory (same as run())
-                    if let Err(e) =
-                        inject_agent_memory(project_root, &working_dir, agent, &runtime_name)
-                    {
-                        eprintln!(
-                            "  {} memory injection for {}: {e}",
-                            "warn".yellow(),
-                            agent.name
-                        );
-                    }
+                    let file_injected =
+                        match inject_agent_memory(project_root, &working_dir, agent, &runtime_name)
+                        {
+                            Ok(injected) => injected,
+                            Err(e) => {
+                                eprintln!(
+                                    "  {} memory injection for {}: {e}",
+                                    "warn".yellow(),
+                                    agent.name
+                                );
+                                false
+                            }
+                        };
                     let effective_prompt = prepend_memory_to_prompt(
                         project_root,
                         agent,
                         &runtime_name,
                         agent.prompt.as_deref(),
+                        file_injected,
                     )
                     .unwrap_or_else(|_| agent.prompt.clone());
 
@@ -2304,7 +2354,9 @@ mod tests {
             env: HashMap::new(),
         };
 
-        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+        let injected =
+            inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+        assert!(injected);
 
         let contents = std::fs::read_to_string(working.join("CLAUDE.md")).unwrap();
         assert!(contents.contains("Existing content"));
@@ -2480,11 +2532,22 @@ mod tests {
             env: HashMap::new(),
         };
 
-        // working_dir == project_root → should not mutate CLAUDE.md
-        inject_agent_memory(&dir, &dir.to_string_lossy(), &agent, "claude-code").unwrap();
+        // working_dir == project_root → should not mutate CLAUDE.md, returns false
+        let injected =
+            inject_agent_memory(&dir, &dir.to_string_lossy(), &agent, "claude-code").unwrap();
+        assert!(!injected);
 
         let contents = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
         assert_eq!(contents, "# Project");
+
+        // Fallback: prepend_memory_to_prompt should inject into prompt for
+        // claude-code when file_injected=false
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"), false)
+                .unwrap()
+                .unwrap();
+        assert!(result.contains("Some memory"));
+        assert!(result.contains("Original prompt"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2513,9 +2576,10 @@ mod tests {
             env: HashMap::new(),
         };
 
-        let result = prepend_memory_to_prompt(&dir, &agent, "codex", Some("You are a backend dev"))
-            .unwrap()
-            .unwrap();
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "codex", Some("You are a backend dev"), false)
+                .unwrap()
+                .unwrap();
 
         assert!(result.contains("Important learning"));
         assert!(result.contains("You are a backend dev"));
@@ -2548,11 +2612,20 @@ mod tests {
             env: HashMap::new(),
         };
 
-        let result = prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"))
-            .unwrap()
-            .unwrap();
-
+        // file_injected=true → claude-code skips prompt prepending
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"), true)
+                .unwrap()
+                .unwrap();
         assert_eq!(result, "Original prompt");
+
+        // file_injected=false → claude-code falls back to prompt prepending
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"), false)
+                .unwrap()
+                .unwrap();
+        assert!(result.contains("Some memory"));
+        assert!(result.contains("Original prompt"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
