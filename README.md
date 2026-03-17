@@ -125,6 +125,8 @@ source ~/.zshrc
 
 ## Project Status (v0.3.0 — March 2026)
 
+Current release notes: `CHANGELOG.md`
+
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
 - Runtime adapters: Claude Code, Codex CLI, Aider
