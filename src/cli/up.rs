@@ -440,10 +440,18 @@ fn prepare_agent_working_dir(
     }
 }
 
+const MEMORY_SECTION_START: &str = "<!-- tutti:agent-memory:start -->";
+const MEMORY_SECTION_END: &str = "<!-- tutti:agent-memory:end -->";
+
 /// Inject agent memory file into the working directory.
 ///
-/// For claude-code runtimes, appends memory contents to CLAUDE.md in the working dir.
-/// For other runtimes, memory is handled via `prepend_memory_to_prompt` instead.
+/// For claude-code runtimes, writes a managed memory section into CLAUDE.md
+/// in the working dir. The section is bounded by markers so it can be
+/// replaced idempotently on relaunch (no duplicates). Skips injection
+/// when the working dir is the project root (no worktree) to avoid
+/// mutating the workspace's own CLAUDE.md.
+///
+/// For other runtimes, memory is handled via `prepend_memory_to_prompt`.
 fn inject_agent_memory(
     project_root: &Path,
     working_dir: &str,
@@ -460,6 +468,13 @@ fn inject_agent_memory(
         return Ok(());
     }
 
+    let working = Path::new(working_dir);
+
+    // Don't mutate the workspace's own CLAUDE.md when worktrees are disabled
+    if working.canonicalize().ok() == project_root.canonicalize().ok() {
+        return Ok(());
+    }
+
     let resolved = project_root.join(memory_path);
     if !resolved.exists() {
         return Ok(());
@@ -470,14 +485,31 @@ fn inject_agent_memory(
         return Ok(());
     }
 
-    let claude_md_path = Path::new(working_dir).join("CLAUDE.md");
+    let claude_md_path = working.join("CLAUDE.md");
     let existing = if claude_md_path.exists() {
         fs::read_to_string(&claude_md_path)?
     } else {
         String::new()
     };
 
-    let combined = format!("{existing}\n\n# Agent Memory\n\n{memory_contents}");
+    // Strip any previous managed memory section
+    let base = if let Some(start) = existing.find(MEMORY_SECTION_START) {
+        if let Some(end) = existing.find(MEMORY_SECTION_END) {
+            let before = &existing[..start];
+            let after = &existing[end + MEMORY_SECTION_END.len()..];
+            format!("{}{}", before.trim_end(), after)
+        } else {
+            existing[..start].trim_end().to_string()
+        }
+    } else {
+        existing
+    };
+
+    let memory_section = format!(
+        "\n\n{MEMORY_SECTION_START}\n# Agent Memory\n\n{}\n{MEMORY_SECTION_END}",
+        memory_contents.trim()
+    );
+    let combined = format!("{}{memory_section}\n", base.trim_end());
     fs::write(&claude_md_path, combined)?;
 
     Ok(())
@@ -1397,6 +1429,25 @@ fn run_all(
                         agent,
                         fresh_worktree,
                     );
+
+                    // Inject persistent memory (same as run())
+                    if let Err(e) =
+                        inject_agent_memory(project_root, &working_dir, agent, &runtime_name)
+                    {
+                        eprintln!(
+                            "  {} memory injection for {}: {e}",
+                            "warn".yellow(),
+                            agent.name
+                        );
+                    }
+                    let effective_prompt = prepend_memory_to_prompt(
+                        project_root,
+                        agent,
+                        &runtime_name,
+                        agent.prompt.as_deref(),
+                    )
+                    .unwrap_or_else(|_| agent.prompt.clone());
+
                     let attempts = resolve_runtime_launch_attempts(
                         &config,
                         Some(&global),
@@ -1432,7 +1483,7 @@ fn run_all(
                             permissions_policy,
                             project_root,
                             &agent.name,
-                            agent.prompt.as_deref(),
+                            effective_prompt.as_deref(),
                         ) {
                             Ok(v) => v,
                             Err(e) => {
@@ -2222,13 +2273,12 @@ mod tests {
     }
 
     #[test]
-    fn inject_agent_memory_appends_to_claude_md() {
+    fn inject_agent_memory_writes_managed_section() {
         let dir =
             std::env::temp_dir().join(format!("tutti-test-memory-inject-{}", std::process::id()));
         let working = dir.join("worktree");
         std::fs::create_dir_all(&working).unwrap();
 
-        // Create a memory file
         let memory_dir = dir.join(".tutti/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(
@@ -2260,6 +2310,57 @@ mod tests {
         assert!(contents.contains("Existing content"));
         assert!(contents.contains("# Agent Memory"));
         assert!(contents.contains("ClickHouse LEFT JOIN"));
+        assert!(contents.contains(MEMORY_SECTION_START));
+        assert!(contents.contains(MEMORY_SECTION_END));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-memory-idempotent-{}",
+            std::process::id()
+        ));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let memory_dir = dir.join(".tutti/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Learning v1").unwrap();
+
+        std::fs::write(working.join("CLAUDE.md"), "# Project").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        // Inject twice
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+        // Update memory and re-inject
+        std::fs::write(memory_dir.join("backend.md"), "Learning v2").unwrap();
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+
+        let contents = std::fs::read_to_string(working.join("CLAUDE.md")).unwrap();
+        // Should contain v2 but NOT v1
+        assert!(contents.contains("Learning v2"));
+        assert!(!contents.contains("Learning v1"));
+        // Markers should appear exactly once
+        assert_eq!(
+            contents.matches(MEMORY_SECTION_START).count(),
+            1,
+            "start marker should appear once"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2350,6 +2451,40 @@ mod tests {
         inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
 
         assert!(!working.join("CLAUDE.md").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_skips_project_root() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-skiproot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let memory_dir = dir.join(".tutti/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
+        std::fs::write(dir.join("CLAUDE.md"), "# Project").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        // working_dir == project_root → should not mutate CLAUDE.md
+        inject_agent_memory(&dir, &dir.to_string_lossy(), &agent, "claude-code").unwrap();
+
+        let contents = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+        assert_eq!(contents, "# Project");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

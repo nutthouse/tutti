@@ -77,13 +77,22 @@ pub fn run(
     if let Some(adapter) = runtime::get_adapter(&runtime_name, None) {
         let output = TmuxSession::capture_pane(&session, 200).unwrap_or_default();
         let status = adapter.detect_status(&output);
-        if matches!(status, AgentStatus::Unknown) && !launched_via_auto_up {
-            // Unknown status + not freshly launched = likely exited to shell.
-            // Warn but don't block — the heuristic may just be uncertain.
-            eprintln!(
-                "  {} {agent_name} runtime status is unknown (may have exited); prompt may hit the shell",
-                "warn".yellow()
-            );
+        if !launched_via_auto_up {
+            match &status {
+                AgentStatus::Unknown => {
+                    eprintln!(
+                        "  {} {agent_name} runtime status is unknown (may have exited); prompt may hit the shell",
+                        "warn".yellow()
+                    );
+                }
+                AgentStatus::AuthFailed(err) => {
+                    eprintln!(
+                        "  {} {agent_name} runtime reports auth failure: {err}; re-authenticate or check credentials",
+                        "warn".yellow()
+                    );
+                }
+                _ => {}
+            }
         }
     }
 

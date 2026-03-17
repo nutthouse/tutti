@@ -1,7 +1,7 @@
 use crate::error::{Result, TuttiError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub mod defaults;
 
@@ -584,7 +584,10 @@ impl TuttiConfig {
                         agent.name
                     )));
                 }
-                if trimmed.contains("..") {
+                if Path::new(trimmed)
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir))
+                {
                     return Err(TuttiError::ConfigValidation(format!(
                         "agent '{}' memory path must not contain '..': '{trimmed}'",
                         agent.name
@@ -1751,6 +1754,21 @@ memory = "../../etc/passwd"
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("must not contain '..'"));
+    }
+
+    #[test]
+    fn memory_path_allows_double_dot_in_filename() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+memory = ".tutti/memory/notes..md"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
     }
 
     #[test]
