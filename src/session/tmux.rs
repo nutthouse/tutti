@@ -110,10 +110,12 @@ impl TmuxSession {
 
     /// Send text to a running session and press Enter.
     ///
-    /// The entire text is pasted as a single tmux buffer, then one Enter
-    /// is sent to submit it. This ensures multi-line prompts arrive
-    /// atomically instead of being interpreted line-by-line (which would
-    /// break non-TUI targets like a bare shell prompt).
+    /// The entire text is pasted as a single tmux buffer then submitted.
+    /// Multi-line text uses bracketed paste mode (`-p`) so it arrives
+    /// atomically; a second Enter is sent because some TUI applications
+    /// (e.g. codex) consume the first Enter as "finalize paste" rather
+    /// than "submit". Single-line text skips bracketed paste to avoid
+    /// that extra-Enter issue with simple shell commands.
     pub fn send_text(session: &str, text: &str) -> Result<()> {
         if !Self::session_exists(session) {
             return Err(TuttiError::TmuxError(format!(
@@ -122,18 +124,19 @@ impl TmuxSession {
             )));
         }
 
+        let is_multiline = text.contains('\n');
+
         if !text.is_empty() {
-            send_text_via_tmux_buffer(session, text)?;
+            send_text_via_tmux_buffer(session, text, is_multiline)?;
         }
 
-        let out = Command::new("tmux")
-            .args(["send-keys", "-t", session, "Enter"])
-            .output()?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(TuttiError::TmuxError(format!(
-                "failed to send Enter to '{session}': {stderr}"
-            )));
+        // First Enter: for multi-line bracketed pastes, some TUIs treat this
+        // as "close the paste bracket" rather than "submit".
+        send_enter(session)?;
+
+        // Second Enter when bracketed paste was used — actually submits.
+        if is_multiline {
+            send_enter(session)?;
         }
 
         Ok(())
@@ -186,12 +189,25 @@ fn shell_escape_value(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+fn send_enter(session: &str) -> Result<()> {
+    let out = Command::new("tmux")
+        .args(["send-keys", "-t", session, "Enter"])
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(TuttiError::TmuxError(format!(
+            "failed to send Enter to '{session}': {stderr}"
+        )));
+    }
+    Ok(())
+}
+
 /// Load text into a tmux buffer and paste it into the target session.
 ///
-/// Handles multi-line text atomically — the entire payload arrives as a
-/// single paste event so the receiving application (claude-code, codex, zsh)
-/// sees it all at once rather than line-by-line.
-fn send_text_via_tmux_buffer(session: &str, text: &str) -> Result<()> {
+/// When `bracketed` is true, uses `-p` flag for bracketed paste mode so the
+/// receiving application treats embedded newlines as part of the paste rather
+/// than as individual Enter keypresses.
+fn send_text_via_tmux_buffer(session: &str, text: &str, bracketed: bool) -> Result<()> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -216,20 +232,12 @@ fn send_text_via_tmux_buffer(session: &str, text: &str) -> Result<()> {
         )));
     }
 
-    // -p enables bracketed paste mode (\e[200~ ... \e[201~) so the
-    // receiving application treats the entire payload as a single paste
-    // event rather than splitting on embedded newlines.
-    let paste_output = Command::new("tmux")
-        .args([
-            "paste-buffer",
-            "-d",
-            "-p",
-            "-b",
-            &buffer_name,
-            "-t",
-            session,
-        ])
-        .output()?;
+    let mut paste_args = vec!["paste-buffer", "-d"];
+    if bracketed {
+        paste_args.push("-p");
+    }
+    paste_args.extend(["-b", &buffer_name, "-t", session]);
+    let paste_output = Command::new("tmux").args(&paste_args).output()?;
     if !paste_output.status.success() {
         let stderr = String::from_utf8_lossy(&paste_output.stderr);
         return Err(TuttiError::TmuxError(format!(
