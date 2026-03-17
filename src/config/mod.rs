@@ -108,6 +108,9 @@ pub struct AgentConfig {
     pub branch: Option<String>,
     #[serde(default)]
     pub persistent: bool,
+    /// Path to a persistent memory file (relative to project root).
+    #[serde(default)]
+    pub memory: Option<String>,
     /// Agent-level environment variables (override workspace env).
     #[serde(default)]
     pub env: HashMap<String, String>,
@@ -562,6 +565,31 @@ impl TuttiConfig {
                     "agent '{}' uses unknown runtime '{rt}'",
                     agent.name
                 )));
+            }
+        }
+
+        // Validate memory paths are relative and don't escape project root
+        for agent in &self.agents {
+            if let Some(ref memory) = agent.memory {
+                let trimmed = memory.trim();
+                if trimmed.is_empty() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "agent '{}' has empty memory path",
+                        agent.name
+                    )));
+                }
+                if Path::new(trimmed).is_absolute() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "agent '{}' memory path must be relative: '{trimmed}'",
+                        agent.name
+                    )));
+                }
+                if trimmed.contains("..") {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "agent '{}' memory path must not contain '..': '{trimmed}'",
+                        agent.name
+                    )));
+                }
             }
         }
 
@@ -1661,6 +1689,71 @@ inject_files = ["/tmp/snapshot.json"]
     }
 
     #[test]
+    fn memory_field_parses_from_toml() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+memory = ".tutti/memory/backend.md"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.agents[0].memory.as_deref(),
+            Some(".tutti/memory/backend.md")
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn memory_field_defaults_to_none() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.agents[0].memory.is_none());
+    }
+
+    #[test]
+    fn memory_path_must_be_relative() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+memory = "/tmp/memory.md"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("must be relative"));
+    }
+
+    #[test]
+    fn memory_path_rejects_traversal() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+memory = "../../etc/passwd"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("must not contain '..'"));
+    }
+
+    #[test]
     fn parse_tool_packs() {
         let toml_str = r#"
 [workspace]
@@ -1952,6 +2045,7 @@ workflow_source = "run"
             fresh_worktree: None,
             branch: None,
             persistent: false,
+            memory: None,
             env: HashMap::new(),
         };
         assert_eq!(
@@ -1972,6 +2066,7 @@ workflow_source = "run"
             fresh_worktree: None,
             branch: None,
             persistent: false,
+            memory: None,
             env: HashMap::new(),
         };
         assert_eq!(agent.resolved_branch(), "tutti/backend");
@@ -1989,6 +2084,7 @@ workflow_source = "run"
             fresh_worktree: None,
             branch: None,
             persistent: false,
+            memory: None,
             env: HashMap::new(),
         };
         assert!(!agent.resolved_fresh_worktree());
