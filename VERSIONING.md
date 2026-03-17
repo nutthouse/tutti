@@ -37,15 +37,15 @@ Use for:
 
 ---
 
-## v0.3.0 trigger (agreed current policy)
-Move to `v0.3.0` when all are true:
+## Post-v0.3.0 policy (current)
 
-1. `#28` shipped (stale review gate handling)
-2. `#30` shipped (state machine + run ledger)
-3. `#35` and/or `#37` shipped (permission/dry-run preflight usability)
-4. At least one full issue completed unattended with no manual rescue
+`v0.3.0` shipped on 2026-03-17 and is tagged as `v0.3.0`.
 
-Until then, continue with patch bumps on issue delivery.
+Current guidance:
+
+- Continue with patch bumps on merged issue PRs unless the change clearly adds a new user-visible capability or breaks an existing contract.
+- Docs/chore-only PRs remain `no-version-bump`.
+- Treat the remaining `#30` productization work as part of the `v0.4.0` milestone scope, not as a retroactive gate for `v0.3.0`.
 
 ---
 

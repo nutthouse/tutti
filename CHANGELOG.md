@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-03-17
+
+Highlights:
+- Added issue-claim lease workflows via `tt issue-claim acquire|heartbeat|release|sweep` for autonomous SDLC loops.
+- Added `tt permissions suggest <workflow>` to pre-compute command allowlists before unattended runs.
+- Added orchestration state machine and run-ledger foundations for deterministic recovery and resume visibility.
+- Published `tutti` on crates.io and documented `cargo install tutti` in Quick Start.
+- Updated the OpenClaw integration bundle to the v1.1.0 action contract, including `send_prompt` and `land_agent`.
+
+Notes:
+- This release focuses on operator-facing SDLC automation and release-channel packaging without changing existing workflow contracts.
+- Follow-on work for first-class run and work-unit UX continues separately under the `v0.4.0` milestone.
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:
