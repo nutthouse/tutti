@@ -67,6 +67,7 @@ fail_mode = "closed"
 id = "create_branch"
 type = "command"
 agent = "implementer"
+cwd = "agent_worktree"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
@@ -117,6 +118,7 @@ fail_mode = "closed"
 id = "create_branch"
 type = "command"
 agent = "implementer"
+cwd = "agent_worktree"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
@@ -138,7 +140,7 @@ agent = "implementer"
 inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 3600
-text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push. In your final response include changed files, test command(s) run, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
+text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Use branch.json as source of truth for the target branch and ensure your commits are made on that branch (checkout/switch if needed before committing). Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push that branch. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
 
 [[workflow.step]]
 id = "verify_impl_progress"
@@ -153,7 +155,7 @@ agent = "tester"
 inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 2400
-text = "Update/add tests for the implemented behavior and run test suite. Fix test failures. Commit test changes and push."
+text = "Update/add tests for the implemented behavior and run test suite. Use branch.json as source of truth for the target branch and commit test changes on that branch (checkout/switch first if needed), then push."
 
 [[workflow.step]]
 id = "docs_and_version"
@@ -162,7 +164,7 @@ agent = "docs-release"
 inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 1800
-text = "Update docs and changelog. If behavior changed, increment version in Cargo.toml and note release impact. Commit docs/release changes and push."
+text = "Update docs and changelog. If behavior changed, increment version in Cargo.toml and note release impact. Use branch.json as source of truth for the target branch and commit docs/release changes on that branch (checkout/switch first if needed), then push."
 
 # 5) Hard validation gate
 [[workflow.step]]
@@ -199,7 +201,7 @@ agent = "implementer"
 inject_files = [".tutti/state/auto/coderabbit-feedback.md", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 2400
-text = "Apply CodeRabbit feedback if actionable, rerun tests, and push changes. If no actionable items, state that explicitly."
+text = "Apply CodeRabbit feedback if actionable, rerun tests, and push changes on the branch named in branch.json (checkout/switch first if needed). If no actionable items, state that explicitly."
 
 [[workflow.step]]
 id = "revalidate"

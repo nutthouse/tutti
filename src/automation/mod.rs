@@ -3430,6 +3430,98 @@ mod tests {
     }
 
     #[test]
+    fn command_agent_worktree_cwd_resolves_to_agent_worktree_path() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                depends_on: vec![],
+                run: "git status --short".to_string(),
+                cwd: Some(WorkflowCommandCwd::AgentWorktree),
+                subdir: None,
+                agent: Some("backend".to_string()),
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-agent-worktree-cwd");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".tutti/worktrees/backend")).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+
+        let resolved = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap();
+        match &resolved.steps[0] {
+            ResolvedStep::Command { cwd, .. } => {
+                assert_eq!(*cwd, dir.join(".tutti/worktrees/backend"));
+            }
+            _ => panic!("expected command step"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn command_agent_worktree_cwd_requires_existing_worktree() {
+        let workflow = WorkflowConfig {
+            name: "verify".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Command {
+                id: None,
+                depends_on: vec![],
+                run: "git status --short".to_string(),
+                cwd: Some(WorkflowCommandCwd::AgentWorktree),
+                subdir: None,
+                agent: Some("backend".to_string()),
+                timeout_secs: Some(30),
+                fail_mode: Some(WorkflowFailMode::Closed),
+                output_json: None,
+            }],
+        };
+
+        let dir = std::env::temp_dir().join("tutti-test-agent-worktree-missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = sample_config(workflow, vec![]);
+        let opts = ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        };
+
+        let err = WorkflowResolver::new(&config, &dir)
+            .resolve("verify", None, &opts)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("agent worktree not found for 'backend'")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn command_policy_block_closed_fails_step() {
         let workflow = WorkflowConfig {
             name: "verify".to_string(),
