@@ -192,3 +192,177 @@ fn git_rev_parse(path: &Path) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        WorktreeSnapshot, ensure_fresh_worktree, ensure_worktree, inspect_worktree,
+        remove_worktree, worktree_path,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestRepo {
+        root: PathBuf,
+    }
+
+    impl TestRepo {
+        fn new() -> Self {
+            let unique = format!(
+                "tutti-worktree-tests-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("current time should be after epoch")
+                    .as_nanos()
+            );
+            let root = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&root).expect("temp repo dir should be created");
+
+            run_git(&root, ["init"]);
+            run_git(&root, ["config", "user.name", "Tutti Tests"]);
+            run_git(&root, ["config", "user.email", "tutti-tests@example.com"]);
+
+            fs::write(root.join("README.md"), "initial\n").expect("seed file should be written");
+            run_git(&root, ["add", "README.md"]);
+            run_git(&root, ["commit", "-m", "initial"]);
+
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn run_git<I, S>(path: &Path, args: I) -> String
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let args_vec: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_string())
+            .collect();
+        let output = Command::new("git")
+            .args(args_vec.iter().map(String::as_str))
+            .current_dir(path)
+            .output()
+            .expect("git command should run");
+
+        assert!(
+            output.status.success(),
+            "git {:?} failed in {}: {}",
+            args_vec,
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn ensure_worktree_creates_new_branch_and_reports_clean_snapshot() {
+        let repo = TestRepo::new();
+
+        let path = ensure_worktree(repo.path(), "tester", "tutti/tester")
+            .expect("worktree should be created");
+
+        assert_eq!(path, worktree_path(repo.path(), "tester"));
+        assert!(path.exists());
+        assert_eq!(
+            run_git(&path, ["rev-parse", "--abbrev-ref", "HEAD"]),
+            "tutti/tester"
+        );
+        assert_eq!(
+            inspect_worktree(repo.path(), "tester").expect("snapshot should succeed"),
+            WorktreeSnapshot {
+                exists: true,
+                dirty: false,
+                at_project_head: true,
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_worktree_detects_dirty_state_and_head_divergence() {
+        let repo = TestRepo::new();
+        let path = ensure_worktree(repo.path(), "tester", "tutti/tester")
+            .expect("worktree should be created");
+
+        fs::write(path.join("dirty.txt"), "pending\n").expect("dirty file should be written");
+
+        assert_eq!(
+            inspect_worktree(repo.path(), "tester").expect("snapshot should succeed"),
+            WorktreeSnapshot {
+                exists: true,
+                dirty: true,
+                at_project_head: true,
+            }
+        );
+
+        run_git(&path, ["add", "dirty.txt"]);
+        run_git(&path, ["commit", "-m", "diverge"]);
+
+        assert_eq!(
+            inspect_worktree(repo.path(), "tester").expect("snapshot should succeed"),
+            WorktreeSnapshot {
+                exists: true,
+                dirty: false,
+                at_project_head: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ensure_fresh_worktree_resets_diverged_branch_to_project_head() {
+        let repo = TestRepo::new();
+        let path = ensure_worktree(repo.path(), "tester", "tutti/tester")
+            .expect("worktree should be created");
+
+        fs::write(path.join("feature.txt"), "change\n").expect("feature file should be written");
+        run_git(&path, ["add", "feature.txt"]);
+        run_git(&path, ["commit", "-m", "feature"]);
+
+        let refreshed = ensure_fresh_worktree(repo.path(), "tester", "tutti/tester")
+            .expect("fresh worktree should be recreated");
+
+        assert_eq!(refreshed, worktree_path(repo.path(), "tester"));
+        assert_eq!(
+            inspect_worktree(repo.path(), "tester").expect("snapshot should succeed"),
+            WorktreeSnapshot {
+                exists: true,
+                dirty: false,
+                at_project_head: true,
+            }
+        );
+        assert!(!refreshed.join("feature.txt").exists());
+    }
+
+    #[test]
+    fn remove_worktree_is_idempotent_and_removes_existing_checkout() {
+        let repo = TestRepo::new();
+
+        remove_worktree(repo.path(), "tester").expect("missing worktree removal should succeed");
+
+        let path = ensure_worktree(repo.path(), "tester", "tutti/tester")
+            .expect("worktree should be created");
+        assert!(path.exists());
+
+        remove_worktree(repo.path(), "tester").expect("existing worktree removal should succeed");
+
+        assert!(!path.exists());
+        assert_eq!(
+            inspect_worktree(repo.path(), "tester").expect("missing snapshot should succeed"),
+            WorktreeSnapshot::default()
+        );
+    }
+}
