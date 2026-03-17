@@ -1,7 +1,9 @@
 use crate::config::TuttiConfig;
+use crate::health::{self, HealthState};
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
 use crate::state;
+use chrono::Utc;
 use colored::Colorize;
 use std::path::Path;
 
@@ -15,6 +17,10 @@ pub struct AgentSnapshot {
     pub status_display: String,
     /// Plain status string for persistence/logic.
     pub status_raw: String,
+    /// Operator-facing reason for unhealthy states.
+    pub reason: Option<String>,
+    /// Relative age since last output change.
+    pub last_change_display: String,
     /// Display-ready session field (session name or "—" when stopped).
     pub session_name: String,
     pub running: bool,
@@ -66,6 +72,9 @@ pub fn gather_workspace_snapshots_with_selected_tail(
         } else {
             (None, None)
         };
+        let persisted_health = state::load_agent_health(project_root, &agent.name)
+            .ok()
+            .flatten();
 
         snapshots.push(build_snapshot(SnapshotBuildArgs {
             workspace_name: &config.workspace.name,
@@ -74,6 +83,7 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             session,
             running,
             detected_status: detected,
+            persisted_health,
             ctx_pct,
             tail_lines: tail,
             tail_error,
@@ -90,6 +100,7 @@ struct SnapshotBuildArgs<'a> {
     session: String,
     running: bool,
     detected_status: Option<AgentStatus>,
+    persisted_health: Option<state::AgentHealth>,
     ctx_pct: Option<u8>,
     tail_lines: Option<Vec<String>>,
     tail_error: Option<String>,
@@ -101,8 +112,10 @@ fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
             workspace_name: args.workspace_name.to_string(),
             agent_name: args.agent_name.to_string(),
             runtime: args.runtime,
-            status_display: "Stopped".dimmed().to_string(),
-            status_raw: "Stopped".to_string(),
+            status_display: format_health_state(HealthState::Stopped),
+            status_raw: HealthState::Stopped.as_str().to_string(),
+            reason: None,
+            last_change_display: "--".to_string(),
             session_name: "—".to_string(),
             running: false,
             ctx_pct: None,
@@ -111,19 +124,52 @@ fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
         };
     }
 
-    let status = args.detected_status.unwrap_or(AgentStatus::Unknown);
+    let now = Utc::now();
+    let persisted_health = args
+        .persisted_health
+        .filter(|health| health.running == args.running);
+    let (status_raw, status_display, reason, last_change_display) =
+        if let Some(health_record) = persisted_health.as_ref() {
+            let summary = health::summarize(health_record, now);
+            (
+                summary.state.as_str().to_string(),
+                format_health_state(summary.state),
+                summary.reason,
+                health::format_last_change(summary.last_change_at, now),
+            )
+        } else {
+            let status = args.detected_status.unwrap_or(AgentStatus::Unknown);
+            let (raw, reason) = fallback_status(&status);
+            (
+                raw.to_string(),
+                format_health_label(raw),
+                reason,
+                "--".to_string(),
+            )
+        };
 
     AgentSnapshot {
         workspace_name: args.workspace_name.to_string(),
         agent_name: args.agent_name.to_string(),
         runtime: args.runtime,
-        status_display: format_status(&status),
-        status_raw: status.to_string(),
+        status_display,
+        status_raw,
+        reason,
+        last_change_display,
         session_name: args.session,
         running: true,
         ctx_pct: args.ctx_pct,
         tail_lines: args.tail_lines,
         tail_error: args.tail_error,
+    }
+}
+
+fn fallback_status(status: &AgentStatus) -> (&'static str, Option<String>) {
+    match status {
+        AgentStatus::Working => (HealthState::Working.as_str(), None),
+        AgentStatus::Idle => (HealthState::Idle.as_str(), None),
+        AgentStatus::AuthFailed(reason) => (HealthState::AuthFailed.as_str(), Some(reason.clone())),
+        AgentStatus::Unknown => (HealthState::Unknown.as_str(), None),
     }
 }
 
@@ -227,12 +273,18 @@ fn parse_percent_in_line(line: &str) -> Option<u8> {
     None
 }
 
-fn format_status(status: &AgentStatus) -> String {
-    match status {
-        AgentStatus::Working => "Working".green().to_string(),
-        AgentStatus::Idle => "Idle".yellow().to_string(),
-        AgentStatus::AuthFailed(msg) => format!("{} ({})", "Auth Failed".red().bold(), msg),
-        AgentStatus::Unknown => "Unknown".dimmed().to_string(),
+fn format_health_state(state: HealthState) -> String {
+    format_health_label(state.as_str())
+}
+
+fn format_health_label(label: &str) -> String {
+    match label {
+        "working" => label.green().to_string(),
+        "idle" => label.yellow().to_string(),
+        "stalled" | "rate_limited" => label.yellow().bold().to_string(),
+        "auth_failed" | "provider_down" => label.red().bold().to_string(),
+        "stopped" | "unknown" => label.dimmed().to_string(),
+        _ => label.normal().to_string(),
     }
 }
 
@@ -261,6 +313,7 @@ mod tests {
             session: "tutti-ws-backend".to_string(),
             running: true,
             detected_status: Some(AgentStatus::Working),
+            persisted_health: None,
             ctx_pct: Some(67),
             tail_lines: Some(vec!["line".to_string()]),
             tail_error: None,
@@ -268,7 +321,9 @@ mod tests {
 
         assert_eq!(snapshot.workspace_name, "ws");
         assert_eq!(snapshot.agent_name, "backend");
-        assert_eq!(snapshot.status_raw, "Working");
+        assert_eq!(snapshot.status_raw, "working");
+        assert!(snapshot.reason.is_none());
+        assert_eq!(snapshot.last_change_display, "--");
         assert_eq!(snapshot.session_name, "tutti-ws-backend");
         assert!(snapshot.running);
         assert_eq!(snapshot.ctx_pct, Some(67));
@@ -284,6 +339,7 @@ mod tests {
             session: "tutti-ws-frontend".to_string(),
             running: false,
             detected_status: Some(AgentStatus::Working),
+            persisted_health: None,
             ctx_pct: Some(52),
             tail_lines: Some(vec!["ignored".to_string()]),
             tail_error: Some("ignored".to_string()),
@@ -291,12 +347,48 @@ mod tests {
 
         assert_eq!(snapshot.workspace_name, "ws");
         assert_eq!(snapshot.agent_name, "frontend");
-        assert_eq!(snapshot.status_raw, "Stopped");
+        assert_eq!(snapshot.status_raw, "stopped");
         assert_eq!(snapshot.session_name, "—");
         assert!(!snapshot.running);
         assert!(snapshot.ctx_pct.is_none());
         assert!(snapshot.tail_lines.is_none());
         assert!(snapshot.tail_error.is_none());
+    }
+
+    #[test]
+    fn build_snapshot_prefers_health_classification_details() {
+        let now = Utc::now();
+        let snapshot = build_snapshot(SnapshotBuildArgs {
+            workspace_name: "ws",
+            agent_name: "backend",
+            runtime: "claude-code".to_string(),
+            session: "tutti-ws-backend".to_string(),
+            running: true,
+            detected_status: Some(AgentStatus::Working),
+            persisted_health: Some(state::AgentHealth {
+                workspace: "ws".to_string(),
+                agent: "backend".to_string(),
+                runtime: "claude-code".to_string(),
+                session_name: "tutti-ws-backend".to_string(),
+                running: true,
+                activity_state: state::ActivityState::Idle,
+                auth_state: state::AuthState::Ok,
+                last_output_change_at: Some(now - chrono::Duration::minutes(6)),
+                last_probe_at: now,
+                reason: None,
+                pane_hash: Some(1),
+            }),
+            ctx_pct: None,
+            tail_lines: None,
+            tail_error: None,
+        });
+
+        assert_eq!(snapshot.status_raw, "stalled");
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some("no output change detected")
+        );
+        assert_eq!(snapshot.last_change_display, "6m ago");
     }
 
     #[test]

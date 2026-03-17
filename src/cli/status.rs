@@ -1,6 +1,7 @@
 use super::snapshot::gather_workspace_snapshots;
 use crate::config::{GlobalConfig, TuttiConfig};
 use crate::error::Result;
+use crate::health;
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 
@@ -21,6 +22,7 @@ pub fn run(all: bool) -> Result<()> {
     }
 
     println!("{}", format!("Workspace: {}", config.workspace.name).bold());
+    let _ = health::probe_workspace(&config, project_root, 200);
     print_agent_table(&config, project_root);
 
     Ok(())
@@ -35,17 +37,28 @@ fn run_all() -> Result<()> {
 
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
-    table.set_header(vec!["Workspace", "Agent", "Runtime", "Status", "Session"]);
+    table.set_header(vec![
+        "Workspace",
+        "Agent",
+        "Runtime",
+        "Health",
+        "Reason",
+        "Last Change",
+        "Session",
+    ]);
 
     for ws in &global.registered_workspaces {
         match TuttiConfig::load(&ws.path) {
             Ok((config, config_path)) => {
                 let project_root = config_path.parent().unwrap();
+                let _ = health::probe_workspace(&config, project_root, 200);
                 let snapshots = gather_workspace_snapshots(&config, project_root);
                 if snapshots.is_empty() {
                     table.add_row(vec![
                         ws.name.clone(),
                         "(no agents defined)".dimmed().to_string(),
+                        "".to_string(),
+                        "".to_string(),
                         "".to_string(),
                         "".to_string(),
                         "".to_string(),
@@ -63,6 +76,8 @@ fn run_all() -> Result<()> {
                         snap.agent_name.clone(),
                         snap.runtime.clone(),
                         snap.status_display.clone(),
+                        snap.reason.clone().unwrap_or_else(|| "--".to_string()),
+                        snap.last_change_display.clone(),
                         snap.session_name.clone(),
                     ]);
                 }
@@ -71,6 +86,8 @@ fn run_all() -> Result<()> {
                 table.add_row(vec![
                     ws.name.clone(),
                     "(config error)".red().to_string(),
+                    "".to_string(),
+                    "".to_string(),
                     "".to_string(),
                     "".to_string(),
                     "".to_string(),
@@ -88,13 +105,22 @@ fn print_agent_table(config: &TuttiConfig, project_root: &std::path::Path) {
 
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
-    table.set_header(vec!["Agent", "Runtime", "Status", "Session"]);
+    table.set_header(vec![
+        "Agent",
+        "Runtime",
+        "Health",
+        "Reason",
+        "Last Change",
+        "Session",
+    ]);
 
     for snapshot in &snapshots {
         table.add_row(vec![
             &snapshot.agent_name,
             &snapshot.runtime,
             &snapshot.status_display,
+            snapshot.reason.as_deref().unwrap_or("--"),
+            &snapshot.last_change_display,
             &snapshot.session_name,
         ]);
     }

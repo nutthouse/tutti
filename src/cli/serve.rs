@@ -692,6 +692,8 @@ fn status_data(targets: &[WorkspaceTarget]) -> Result<Value> {
                 "agent": s.agent_name,
                 "runtime": s.runtime,
                 "status": s.status_raw,
+                "reason": s.reason,
+                "last_change": s.last_change_display,
                 "running": s.running,
                 "session": s.session_name,
                 "ctx": s.ctx_pct

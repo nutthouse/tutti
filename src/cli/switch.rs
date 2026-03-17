@@ -235,14 +235,16 @@ fn render_switch(
 }
 
 fn status_style(raw: &str) -> Style {
-    match raw {
-        "Working" => Style::default().fg(ratatui::style::Color::Green),
-        "Idle" => Style::default().fg(ratatui::style::Color::Yellow),
-        "Errored" => Style::default().fg(ratatui::style::Color::Red),
-        "Stopped" => Style::default().fg(ratatui::style::Color::DarkGray),
-        s if s.starts_with("Auth Failed") => Style::default()
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "working" => Style::default().fg(ratatui::style::Color::Green),
+        "idle" => Style::default().fg(ratatui::style::Color::Yellow),
+        "stalled" | "rate_limited" => Style::default()
+            .fg(ratatui::style::Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+        "errored" | "auth_failed" | "provider_down" => Style::default()
             .fg(ratatui::style::Color::Red)
             .add_modifier(Modifier::BOLD),
+        "stopped" => Style::default().fg(ratatui::style::Color::DarkGray),
         _ => Style::default().fg(ratatui::style::Color::Gray),
     }
 }

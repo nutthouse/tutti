@@ -24,7 +24,9 @@ use std::time::{Duration, Instant};
 use super::snapshot::AgentSnapshot;
 use super::snapshot::gather_workspace_snapshots_with_selected_tail;
 
-const WATCH_TABLE_HEADERS: [&str; 6] = ["", "Agent", "Runtime", "Status", "PLAN", "CTX"];
+const WATCH_TABLE_HEADERS: [&str; 8] = [
+    "", "Agent", "Runtime", "Health", "Last", "PLAN", "CTX", "Reason",
+];
 
 #[derive(Clone)]
 struct AgentPlanCell {
@@ -68,6 +70,16 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
     let handoff_cooldown = Duration::from_secs(300);
 
     loop {
+        let health_records = match health::probe_workspace(&config, project_root, 200) {
+            Ok(records) => records
+                .into_iter()
+                .map(|record| (record.agent.clone(), record))
+                .collect::<HashMap<_, _>>(),
+            Err(e) => {
+                last_event = Some(format!("health probe warning: {e}"));
+                HashMap::new()
+            }
+        };
         let selected_name = &agent_names[selected];
         let snapshots = gather_workspace_snapshots_with_selected_tail(
             &config,
@@ -113,16 +125,6 @@ pub fn run(interval: u64, restart_persistent: bool) -> Result<()> {
         )? {
             last_event = Some(event);
         }
-        let health_records = match health::probe_workspace(&config, project_root, 200) {
-            Ok(records) => records
-                .into_iter()
-                .map(|record| (record.agent.clone(), record))
-                .collect::<HashMap<_, _>>(),
-            Err(e) => {
-                last_event = Some(format!("health probe warning: {e}"));
-                HashMap::new()
-            }
-        };
         if let Some(event) = detect_and_handle_session_failures(
             &config,
             &snapshots,
@@ -220,13 +222,16 @@ fn render_watch(
             snapshot.status_raw.clone(),
             status_style(&snapshot.status_raw),
         ));
+        let reason_display = snapshot.reason.clone().unwrap_or_else(|| "--".to_string());
         Row::new(vec![
             Cell::from(marker.to_string()),
             Cell::from(snapshot.agent_name.clone()),
             Cell::from(snapshot.runtime.clone()),
             status_cell,
+            Cell::from(snapshot.last_change_display.clone()),
             Cell::from(plan_display),
             Cell::from(ctx_display),
+            Cell::from(reason_display),
         ])
     });
 
@@ -234,11 +239,13 @@ fn render_watch(
         rows,
         [
             Constraint::Length(2),
-            Constraint::Length(18),
+            Constraint::Length(16),
+            Constraint::Length(12),
             Constraint::Length(14),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Min(6),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(6),
+            Constraint::Min(16),
         ],
     )
     .header(Row::new(WATCH_TABLE_HEADERS).style(Style::default().add_modifier(Modifier::BOLD)))
@@ -446,7 +453,10 @@ fn detect_and_handle_session_failures(
                 state
                     .last_auth_recovery_attempt
                     .insert(snapshot.agent_name.clone(), Instant::now());
-                let reason = snapshot.status_raw.clone();
+                let reason = snapshot
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| snapshot.status_raw.clone());
                 let _ = emit_recovery_event(
                     policy.project_root,
                     &config.workspace.name,
@@ -520,10 +530,8 @@ fn restart_agent(config: &TuttiConfig, agent_name: &str) -> Result<()> {
 }
 
 fn is_auth_failed_status(status_raw: &str) -> bool {
-    status_raw
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("auth failed")
+    let normalized = status_raw.trim().to_ascii_lowercase();
+    normalized == "auth_failed" || normalized.starts_with("auth failed")
 }
 
 fn profile_rotation_enabled(resilience: Option<&ResilienceConfig>) -> bool {
@@ -617,14 +625,16 @@ fn is_persistent_agent(config: &TuttiConfig, agent_name: &str) -> bool {
 }
 
 fn status_style(raw: &str) -> Style {
-    match raw {
-        "Working" => Style::default().fg(ratatui::style::Color::Green),
-        "Idle" => Style::default().fg(ratatui::style::Color::Yellow),
-        "Errored" => Style::default().fg(ratatui::style::Color::Red),
-        "Stopped" => Style::default().fg(ratatui::style::Color::DarkGray),
-        s if s.starts_with("Auth Failed") => Style::default()
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "working" => Style::default().fg(ratatui::style::Color::Green),
+        "idle" => Style::default().fg(ratatui::style::Color::Yellow),
+        "stalled" | "rate_limited" => Style::default()
+            .fg(ratatui::style::Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+        "errored" | "auth_failed" | "provider_down" => Style::default()
             .fg(ratatui::style::Color::Red)
             .add_modifier(Modifier::BOLD),
+        "stopped" => Style::default().fg(ratatui::style::Color::DarkGray),
         _ => Style::default().fg(ratatui::style::Color::Gray),
     }
 }
@@ -882,8 +892,11 @@ mod tests {
 
     #[test]
     fn watch_header_columns_include_plan_and_ctx() {
-        assert_eq!(WATCH_TABLE_HEADERS[4], "PLAN");
-        assert_eq!(WATCH_TABLE_HEADERS[5], "CTX");
+        assert_eq!(WATCH_TABLE_HEADERS[3], "Health");
+        assert_eq!(WATCH_TABLE_HEADERS[4], "Last");
+        assert_eq!(WATCH_TABLE_HEADERS[5], "PLAN");
+        assert_eq!(WATCH_TABLE_HEADERS[6], "CTX");
+        assert_eq!(WATCH_TABLE_HEADERS[7], "Reason");
     }
 
     #[test]
@@ -923,6 +936,7 @@ mod tests {
     fn is_auth_failed_status_matches_prefix_case_insensitive() {
         assert!(is_auth_failed_status("Auth Failed: token expired"));
         assert!(is_auth_failed_status("auth failed (invalid key)"));
+        assert!(is_auth_failed_status("auth_failed"));
         assert!(!is_auth_failed_status("Working"));
     }
 

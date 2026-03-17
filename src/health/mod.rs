@@ -13,6 +13,7 @@ const DEFAULT_CAPTURE_LINES: u32 = 200;
 const RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER: u32 = 2;
 const RATE_LIMIT_REASON_PREFIX: &str = "rate_limit:";
 const PROVIDER_DOWN_REASON_PREFIX: &str = "provider_down:";
+const STALLED_AFTER_SECS: i64 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryTrigger {
@@ -28,6 +29,83 @@ impl RecoveryTrigger {
             RecoveryTrigger::RateLimited => "rate_limited",
             RecoveryTrigger::ProviderDown => "provider_down",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthState {
+    Working,
+    Idle,
+    Stalled,
+    AuthFailed,
+    RateLimited,
+    ProviderDown,
+    Stopped,
+    Unknown,
+}
+
+impl HealthState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HealthState::Working => "working",
+            HealthState::Idle => "idle",
+            HealthState::Stalled => "stalled",
+            HealthState::AuthFailed => "auth_failed",
+            HealthState::RateLimited => "rate_limited",
+            HealthState::ProviderDown => "provider_down",
+            HealthState::Stopped => "stopped",
+            HealthState::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthStatusSummary {
+    pub state: HealthState,
+    pub reason: Option<String>,
+    pub last_change_at: Option<DateTime<Utc>>,
+}
+
+pub fn summarize(health: &AgentHealth, now: DateTime<Utc>) -> HealthStatusSummary {
+    let state = if !health.running {
+        HealthState::Stopped
+    } else if matches!(health.auth_state, AuthState::Failed) {
+        HealthState::AuthFailed
+    } else {
+        match recovery_trigger(health) {
+            Some(RecoveryTrigger::RateLimited) => HealthState::RateLimited,
+            Some(RecoveryTrigger::ProviderDown) => HealthState::ProviderDown,
+            Some(RecoveryTrigger::AuthFailed) => HealthState::AuthFailed,
+            None => match health.activity_state {
+                ActivityState::Working => HealthState::Working,
+                ActivityState::Idle if is_stalled(health, now) => HealthState::Stalled,
+                ActivityState::Idle => HealthState::Idle,
+                ActivityState::Stopped => HealthState::Stopped,
+                ActivityState::Unknown => HealthState::Unknown,
+            },
+        }
+    };
+
+    let reason = match state {
+        HealthState::AuthFailed
+        | HealthState::RateLimited
+        | HealthState::ProviderDown
+        | HealthState::Unknown => normalized_reason(health.reason.as_deref()),
+        HealthState::Stalled => Some("no output change detected".to_string()),
+        HealthState::Working | HealthState::Idle | HealthState::Stopped => None,
+    };
+
+    HealthStatusSummary {
+        state,
+        reason,
+        last_change_at: health.last_output_change_at,
+    }
+}
+
+pub fn format_last_change(timestamp: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    match timestamp {
+        Some(ts) => format!("{} ago", humanize_elapsed(now.signed_duration_since(ts))),
+        None => "--".to_string(),
     }
 }
 
@@ -181,6 +259,40 @@ pub fn recovery_trigger(health: &AgentHealth) -> Option<RecoveryTrigger> {
         return Some(RecoveryTrigger::ProviderDown);
     }
     None
+}
+
+fn is_stalled(health: &AgentHealth, now: DateTime<Utc>) -> bool {
+    health
+        .last_output_change_at
+        .is_some_and(|ts| now.signed_duration_since(ts).num_seconds() >= STALLED_AFTER_SECS)
+}
+
+fn normalized_reason(reason: Option<&str>) -> Option<String> {
+    let reason = reason?.trim();
+    if reason.is_empty() {
+        return None;
+    }
+    if let Some(rest) = reason.strip_prefix(RATE_LIMIT_REASON_PREFIX) {
+        return Some(rest.trim().to_string());
+    }
+    if let Some(rest) = reason.strip_prefix(PROVIDER_DOWN_REASON_PREFIX) {
+        return Some(rest.trim().to_string());
+    }
+    Some(reason.to_string())
+}
+
+fn humanize_elapsed(duration: chrono::Duration) -> String {
+    let secs = duration.num_seconds().max(0);
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    if secs < 3600 {
+        return format!("{}m", secs / 60);
+    }
+    if secs < 86_400 {
+        return format!("{}h", secs / 3600);
+    }
+    format!("{}d", secs / 86_400)
 }
 
 pub fn wait_for_agent_idle(
@@ -503,5 +615,30 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn summarize_classifies_stalled_from_idle_without_recent_output() {
+        let now = Utc::now();
+        let mut stalled = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        stalled.last_output_change_at = Some(now - chrono::Duration::minutes(6));
+
+        let summary = summarize(&stalled, now);
+        assert_eq!(summary.state, HealthState::Stalled);
+        assert_eq!(summary.reason.as_deref(), Some("no output change detected"));
+    }
+
+    #[test]
+    fn summarize_strips_provider_prefixes_from_reason() {
+        let provider = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("provider_down: service unavailable"),
+        );
+
+        let summary = summarize(&provider, Utc::now());
+        assert_eq!(summary.state, HealthState::ProviderDown);
+        assert_eq!(summary.reason.as_deref(), Some("service unavailable"));
     }
 }
