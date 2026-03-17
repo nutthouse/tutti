@@ -730,15 +730,58 @@ fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
         }
         let content = std::fs::read_to_string(&path)?;
         for line in content.lines().filter(|l| !l.trim().is_empty()) {
-            if let Ok(mut value) = serde_json::from_str::<Value>(line) {
-                if let Value::Object(ref mut map) = value {
-                    map.insert("workspace".to_string(), Value::String(target.name.clone()));
-                }
-                rows.push(value);
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                rows.push(enrich_run_data(&target.name, &target.project_root, value)?);
             }
         }
     }
     Ok(Value::Array(rows))
+}
+
+fn enrich_run_data(workspace: &str, project_root: &Path, value: Value) -> Result<Value> {
+    let mut value = value;
+    let Value::Object(ref mut map) = value else {
+        return Ok(value);
+    };
+
+    map.insert("workspace".to_string(), Value::String(workspace.to_string()));
+
+    let run_id = map
+        .get("run_id")
+        .and_then(Value::as_str)
+        .map(|value| value.to_string());
+    let success = map.get("success").and_then(Value::as_bool).unwrap_or(false);
+
+    let Some(run_id) = run_id else {
+        return Ok(value);
+    };
+
+    if !success {
+        map.insert(
+            "resume_command".to_string(),
+            Value::String(format!("tt run --resume {run_id}")),
+        );
+    }
+
+    if let Some(checkpoint) = state::load_workflow_checkpoint(project_root, &run_id)? {
+        map.insert("checkpoint".to_string(), checkpoint);
+    }
+
+    if let Some(ledger) = state::load_sdlc_run_ledger(project_root, &run_id)? {
+        map.insert(
+            "work_unit".to_string(),
+            json!({
+                "issue_number": ledger.issue_number,
+                "repository": ledger.repository,
+                "workflow_name": ledger.workflow_name,
+                "state": ledger.state,
+                "updated_at": ledger.updated_at,
+                "actor": ledger.actor
+            }),
+        );
+    }
+
+    Ok(value)
 }
 
 fn logs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
@@ -1142,6 +1185,47 @@ fn _assert_path(_: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{DefaultsConfig, TuttiConfig, WorkspaceConfig};
+    use crate::state;
+    use crate::state::{AutomationRunRecord, SdlcRunLedgerRecord, SdlcRunState};
+    use chrono::Utc;
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_target(project_root: PathBuf) -> WorkspaceTarget {
+        WorkspaceTarget {
+            name: "ws".to_string(),
+            project_root,
+            config: TuttiConfig {
+                workspace: WorkspaceConfig {
+                    name: "ws".to_string(),
+                    description: None,
+                    env: None,
+                    auth: None,
+                },
+                defaults: DefaultsConfig::default(),
+                launch: None,
+                agents: vec![],
+                tool_packs: vec![],
+                workflows: vec![],
+                hooks: vec![],
+                handoff: None,
+                observe: None,
+                budget: None,
+            },
+        }
+    }
 
     #[test]
     fn strategy_requests_rotation_matches_supported_values() {
@@ -1206,5 +1290,89 @@ mod tests {
             Duration::from_secs(30)
         ));
         assert!(recovery_cooldown_elapsed(Some(&now), Duration::ZERO));
+    }
+
+    #[test]
+    fn runs_data_includes_run_id_resume_command_and_work_unit() {
+        let dir = unique_temp_dir("tutti-test-runs-api");
+        state::ensure_tutti_dir(&dir).unwrap();
+
+        state::append_automation_run(
+            &dir,
+            &AutomationRunRecord {
+                run_id: "run-123".to_string(),
+                workflow_name: "verify".to_string(),
+                timestamp: Utc::now(),
+                trigger: "run".to_string(),
+                success: false,
+                strict: true,
+                failed_steps: vec![2],
+                warning_count: 1,
+                agent_scope: Some("backend".to_string()),
+                hook_event: None,
+                hook_agent: None,
+            },
+        )
+        .unwrap();
+        state::save_workflow_checkpoint(
+            &dir,
+            "run-123",
+            &json!({
+                "run_id": "run-123",
+                "workflow_name": "verify",
+                "strict": true,
+                "origin": "run",
+                "agent_scope": "backend",
+                "started_at": Utc::now(),
+                "finished_at": Utc::now(),
+                "success": false,
+                "failed_steps": [2],
+                "step_results": [],
+                "output_files": {},
+                "completed_steps": [1]
+            }),
+        )
+        .unwrap();
+        state::save_sdlc_run_ledger(
+            &dir,
+            &SdlcRunLedgerRecord {
+                run_id: "run-123".to_string(),
+                issue_number: 30,
+                repository: "nutthouse/tutti".to_string(),
+                workflow_name: "verify".to_string(),
+                state: SdlcRunState::Implemented,
+                updated_at: Utc::now(),
+                actor: "implementer".to_string(),
+                transitions: vec![],
+            },
+        )
+        .unwrap();
+
+        let data = runs_data(&[sample_target(dir.clone())]).unwrap();
+        let rows = data.as_array().unwrap();
+        let row = rows.first().unwrap();
+
+        assert_eq!(row.get("workspace").and_then(Value::as_str), Some("ws"));
+        assert_eq!(row.get("run_id").and_then(Value::as_str), Some("run-123"));
+        assert_eq!(
+            row.get("resume_command").and_then(Value::as_str),
+            Some("tt run --resume run-123")
+        );
+        assert_eq!(
+            row.get("checkpoint")
+                .and_then(Value::as_object)
+                .and_then(|cp| cp.get("run_id"))
+                .and_then(Value::as_str),
+            Some("run-123")
+        );
+        assert_eq!(
+            row.get("work_unit")
+                .and_then(Value::as_object)
+                .and_then(|work_unit| work_unit.get("issue_number"))
+                .and_then(Value::as_u64),
+            Some(30)
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

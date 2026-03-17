@@ -1664,6 +1664,7 @@ impl<'a> WorkflowExecutor<'a> {
         append_automation_run(
             self.project_root,
             &AutomationRunRecord {
+                run_id: result.run_id.clone(),
                 workflow_name: result.workflow_name.clone(),
                 timestamp: Utc::now(),
                 trigger: options.origin.as_str().to_string(),

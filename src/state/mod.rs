@@ -19,6 +19,7 @@ pub struct AgentState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomationRunRecord {
+    pub run_id: String,
     pub workflow_name: String,
     pub timestamp: DateTime<Utc>,
     pub trigger: String,
@@ -864,6 +865,7 @@ mod tests {
         ensure_tutti_dir(&dir).unwrap();
 
         let record = AutomationRunRecord {
+            run_id: "run123".to_string(),
             workflow_name: "verify".to_string(),
             timestamp: Utc::now(),
             trigger: "run".to_string(),
@@ -884,6 +886,7 @@ mod tests {
             .join("automation-runs.jsonl");
         let contents = std::fs::read_to_string(path).unwrap();
         assert_eq!(contents.lines().count(), 2);
+        assert!(contents.contains("\"run_id\":\"run123\""));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
