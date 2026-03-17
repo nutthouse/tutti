@@ -274,3 +274,115 @@ fn git_success(args: &[&str], cwd: &Path, exit_one_is_false: bool) -> Result<boo
         stderr.trim()
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git_ok(repo: &Path, args: &[&str]) {
+        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim_end().to_string()
+    }
+
+    fn init_repo(prefix: &str) -> PathBuf {
+        let repo = unique_temp_dir(prefix);
+        git_ok(&repo, &["init"]);
+        git_ok(&repo, &["config", "user.name", "Tutti Tests"]);
+        git_ok(&repo, &["config", "user.email", "tests@example.com"]);
+        git_ok(&repo, &["config", "commit.gpgsign", "false"]);
+
+        fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        git_ok(&repo, &["add", "tracked.txt"]);
+        git_ok(&repo, &["commit", "-m", "initial"]);
+        repo
+    }
+
+    #[test]
+    fn ensure_git_clean_accepts_clean_repo() {
+        let repo = init_repo("tutti-land-clean");
+
+        let result = ensure_git_clean(&repo);
+
+        fs::remove_dir_all(&repo).unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_git_clean_rejects_tracked_changes() {
+        let repo = init_repo("tutti-land-dirty");
+        fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+
+        let err = ensure_git_clean(&repo).unwrap_err();
+
+        fs::remove_dir_all(&repo).unwrap();
+        assert!(matches!(err, TuttiError::Git(message) if message.contains("working tree has tracked changes")));
+    }
+
+    #[test]
+    fn commit_wip_if_needed_returns_false_when_repo_is_clean() {
+        let repo = init_repo("tutti-land-no-wip");
+
+        let committed = commit_wip_if_needed(&repo, "tester").unwrap();
+
+        fs::remove_dir_all(&repo).unwrap();
+        assert!(!committed);
+    }
+
+    #[test]
+    fn commit_wip_if_needed_creates_checkpoint_commit() {
+        let repo = init_repo("tutti-land-wip");
+        fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+        fs::write(repo.join("new.txt"), "new file\n").unwrap();
+
+        let committed = commit_wip_if_needed(&repo, "tester").unwrap();
+        let status = git_stdout(&repo, &["status", "--porcelain"]);
+        let message = git_stdout(&repo, &["log", "-1", "--pretty=%s"]);
+
+        fs::remove_dir_all(&repo).unwrap();
+        assert!(committed);
+        assert!(status.is_empty());
+        assert_eq!(message, "tutti: checkpoint tester before land");
+    }
+
+    #[test]
+    fn ensure_branch_exists_accepts_existing_branch_and_reports_missing_branch() {
+        let repo = init_repo("tutti-land-branch");
+        let current_branch = git_stdout(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+
+        ensure_branch_exists(&repo, &current_branch).unwrap();
+
+        let err = ensure_branch_exists(&repo, "missing-branch").unwrap_err();
+
+        fs::remove_dir_all(&repo).unwrap();
+        assert!(matches!(err, TuttiError::Git(message) if message.contains("agent branch 'missing-branch' does not exist")));
+    }
+}
