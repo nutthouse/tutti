@@ -2279,7 +2279,7 @@ mod tests {
         let working = dir.join("worktree");
         std::fs::create_dir_all(&working).unwrap();
 
-        let memory_dir = dir.join(".tutti/memory");
+        let memory_dir = dir.join(".tutti/state/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(
             memory_dir.join("backend.md"),
@@ -2300,7 +2300,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 
@@ -2325,7 +2325,7 @@ mod tests {
         let working = dir.join("worktree");
         std::fs::create_dir_all(&working).unwrap();
 
-        let memory_dir = dir.join(".tutti/memory");
+        let memory_dir = dir.join(".tutti/state/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(memory_dir.join("backend.md"), "Learning v1").unwrap();
 
@@ -2341,7 +2341,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 
@@ -2372,7 +2372,7 @@ mod tests {
         let working = dir.join("worktree");
         std::fs::create_dir_all(&working).unwrap();
 
-        let memory_dir = dir.join(".tutti/memory");
+        let memory_dir = dir.join(".tutti/state/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
 
@@ -2386,7 +2386,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 
@@ -2444,7 +2444,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 
@@ -2461,7 +2461,7 @@ mod tests {
             std::env::temp_dir().join(format!("tutti-test-memory-skiproot-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let memory_dir = dir.join(".tutti/memory");
+        let memory_dir = dir.join(".tutti/state/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
         std::fs::write(dir.join("CLAUDE.md"), "# Project").unwrap();
@@ -2476,7 +2476,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 
@@ -2495,7 +2495,7 @@ mod tests {
             std::env::temp_dir().join(format!("tutti-test-memory-prompt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let memory_dir = dir.join(".tutti/memory");
+        let memory_dir = dir.join(".tutti/state/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(memory_dir.join("backend.md"), "Important learning").unwrap();
 
@@ -2509,7 +2509,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 
@@ -2530,7 +2530,7 @@ mod tests {
             std::env::temp_dir().join(format!("tutti-test-memory-cc-noop-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let memory_dir = dir.join(".tutti/memory");
+        let memory_dir = dir.join(".tutti/state/memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
 
@@ -2544,7 +2544,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
-            memory: Some(".tutti/memory/backend.md".to_string()),
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
         };
 

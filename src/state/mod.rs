@@ -321,7 +321,7 @@ pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
         "worktrees",
         "handoffs",
         "logs",
-        "memory",
+        "state/memory",
     ];
 
     for subdir in &subdirs {
@@ -852,7 +852,7 @@ mod tests {
         assert!(dir.join(".tutti/worktrees").exists());
         assert!(dir.join(".tutti/handoffs").exists());
         assert!(dir.join(".tutti/logs").exists());
-        assert!(dir.join(".tutti/memory").exists());
+        assert!(dir.join(".tutti/state/memory").exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

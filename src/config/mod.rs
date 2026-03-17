@@ -1700,12 +1700,12 @@ name = "test"
 [[agent]]
 name = "backend"
 runtime = "claude-code"
-memory = ".tutti/memory/backend.md"
+memory = ".tutti/state/memory/backend.md"
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(
             config.agents[0].memory.as_deref(),
-            Some(".tutti/memory/backend.md")
+            Some(".tutti/state/memory/backend.md")
         );
         config.validate().unwrap();
     }
@@ -1765,7 +1765,7 @@ name = "test"
 [[agent]]
 name = "backend"
 runtime = "claude-code"
-memory = ".tutti/memory/notes..md"
+memory = ".tutti/state/memory/notes..md"
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         config.validate().unwrap();
