@@ -211,3 +211,25 @@ pub const DEFAULT_GLOBAL_CONFIG: &str = r#"# Tutti global config — applies acr
 #   "Edit",
 # ]
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_template_includes_core_workspace_sections() {
+        assert!(DEFAULT_CONFIG.contains("[workspace]"));
+        assert!(DEFAULT_CONFIG.contains("[defaults]"));
+        assert!(DEFAULT_CONFIG.contains("[[agent]]"));
+        assert!(DEFAULT_CONFIG.contains("[[workflow]]"));
+        assert!(DEFAULT_CONFIG.contains("[budget]"));
+    }
+
+    #[test]
+    fn default_global_config_template_includes_profiles_and_permissions() {
+        assert!(DEFAULT_GLOBAL_CONFIG.contains("[[profile]]"));
+        assert!(DEFAULT_GLOBAL_CONFIG.contains("[dashboard]"));
+        assert!(DEFAULT_GLOBAL_CONFIG.contains("[permissions]"));
+        assert!(DEFAULT_GLOBAL_CONFIG.contains("show_all_workspaces"));
+    }
+}

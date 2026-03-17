@@ -55,3 +55,20 @@ pub enum TuttiError {
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_not_found_message_mentions_agent_name() {
+        let err = TuttiError::AgentNotFound("backend".to_string());
+        assert_eq!(err.to_string(), "agent 'backend' not found in config");
+    }
+
+    #[test]
+    fn config_already_exists_message_mentions_target_path() {
+        let err = TuttiError::ConfigAlreadyExists(PathBuf::from("/tmp/tutti.toml"));
+        assert!(err.to_string().contains("/tmp/tutti.toml"));
+    }
+}

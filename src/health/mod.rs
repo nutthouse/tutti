@@ -493,6 +493,18 @@ mod tests {
     }
 
     #[test]
+    fn recovery_trigger_prioritizes_auth_failures() {
+        let health = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Failed,
+            Some("rate_limit: too many requests"),
+        );
+
+        assert_eq!(recovery_trigger(&health), Some(RecoveryTrigger::AuthFailed));
+    }
+
+    #[test]
     fn transition_events_emits_rate_limited_and_provider_recovered() {
         let previous = sample_health(
             true,
@@ -503,5 +515,33 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn transition_events_emits_provider_down_when_reason_enters_provider_prefix() {
+        let previous = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        let current = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("provider_down: service unavailable"),
+        );
+
+        let events = transition_events(Some(&previous), &current, Utc::now());
+        assert!(events.iter().any(|e| e.event == "agent.provider_down"));
+    }
+
+    #[test]
+    fn transition_events_emits_auth_recovered_when_auth_failure_clears() {
+        let previous = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Failed,
+            Some("token expired"),
+        );
+        let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+
+        let events = transition_events(Some(&previous), &current, Utc::now());
+        assert!(events.iter().any(|e| e.event == "agent.auth_recovered"));
     }
 }

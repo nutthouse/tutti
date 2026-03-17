@@ -130,7 +130,12 @@ pub fn matching_allow_rule<'a>(
 
         if let Some(prefix) = trimmed.strip_suffix('*') {
             let prefix = normalize(prefix);
-            if !prefix.is_empty() && command_line.starts_with(&prefix) {
+            if !prefix.is_empty()
+                && (command_line == prefix
+                    || command_line
+                        .strip_prefix(&prefix)
+                        .is_some_and(|rest| rest.starts_with(' ')))
+            {
                 return Some(trimmed);
             }
             continue;
@@ -299,5 +304,34 @@ mod tests {
             rules,
             vec!["git status".to_string(), "cargo test *".to_string()]
         );
+    }
+
+    #[test]
+    fn matching_allow_rule_wildcard_requires_token_boundary() {
+        let policy = PermissionsConfig {
+            allow: vec!["git *".to_string()],
+        };
+
+        assert_eq!(matching_allow_rule(&policy, "git status"), Some("git *"));
+        assert_eq!(matching_allow_rule(&policy, "github status"), None);
+    }
+
+    #[test]
+    fn shell_command_allow_rules_normalizes_bash_entries() {
+        let policy = PermissionsConfig {
+            allow: vec!["Bash(  git   status  )".to_string()],
+        };
+
+        assert_eq!(shell_command_allow_rules(&policy), vec!["git status"]);
+    }
+
+    #[test]
+    fn evaluate_command_policy_has_no_suggested_rule_for_single_token_command() {
+        let policy = PermissionsConfig {
+            allow: vec!["git status".to_string()],
+        };
+
+        let decision = evaluate_command_policy(Some(&policy), "git");
+        assert_eq!(decision.suggested_rule, None);
     }
 }

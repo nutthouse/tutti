@@ -162,3 +162,61 @@ fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn truncate_keeps_short_input() {
+        assert_eq!(truncate("short diff", 32), "short diff");
+    }
+
+    #[test]
+    fn truncate_adds_marker_when_input_exceeds_limit() {
+        let truncated = truncate("abcdef", 4);
+        assert_eq!(truncated, "abcd\n... [truncated by tt review]");
+    }
+
+    #[test]
+    fn write_review_packet_writes_expected_sections_and_empty_markers() {
+        let dir = unique_temp_dir("tutti-review-packet");
+        let packet = ReviewPacketData {
+            agent_name: "backend".to_string(),
+            branch: "tutti/backend".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: String::new(),
+            committed_diff: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+            wip_stat: "1 file changed, 2 insertions(+)".to_string(),
+            wip_diff: String::new(),
+        };
+
+        let path = write_review_packet(&dir, &packet).expect("write review packet");
+        let content = fs::read_to_string(&path).expect("read review packet");
+
+        assert!(path.starts_with(dir.join(".tutti/state/reviews")));
+        assert!(content.contains("# Review Packet: backend"));
+        assert!(content.contains("Branch: tutti/backend"));
+        assert!(content.contains("Merge base: abc123"));
+        assert!(content.contains("## Committed Diff Stat"));
+        assert!(content.contains("## Worktree WIP Diff Stat"));
+        assert!(content.contains("```diff\ndiff --git a/src/lib.rs b/src/lib.rs\n```"));
+        assert!(content.contains("```text\n(none)\n```"));
+        assert!(content.contains("```text\n1 file changed, 2 insertions(+)\n```"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
