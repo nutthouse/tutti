@@ -455,8 +455,10 @@ fn validate_no_symlink(path: &Path, label: &str, allowed_root: &Path) -> Result<
         && meta.file_type().is_symlink()
     {
         return Err(TuttiError::ConfigValidation(format!(
-            "{label} is a symlink, which is not allowed: {}",
-            path.display()
+            "{label} is a symlink, which is not allowed: {}. \
+             Replace it with a regular file under {}",
+            path.display(),
+            allowed_root.display()
         )));
     }
     if path.exists()
@@ -464,7 +466,9 @@ fn validate_no_symlink(path: &Path, label: &str, allowed_root: &Path) -> Result<
         && !canonical.starts_with(&root)
     {
         return Err(TuttiError::ConfigValidation(format!(
-            "{label} resolves outside project root: {}",
+            "{label} resolves outside the allowed directory ({}): {}. \
+             Move the file into the workspace or update the memory path in your config",
+            root.display(),
             path.display()
         )));
     }
@@ -745,8 +749,8 @@ fn build_launch_command(
                     "codex constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
-            let policy_appendix = runtime_policy_appendix("Codex", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "codex", policy)?;
+            let policy_appendix = runtime_policy_appendix("Codex", "codex", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let pre_args = vec![
                 "-a".to_string(),
@@ -771,8 +775,8 @@ fn build_launch_command(
                         .to_string(),
                 )
             })?;
-            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
-            let policy_appendix = runtime_policy_appendix("OpenClaw", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "openclaw", policy)?;
+            let policy_appendix = runtime_policy_appendix("OpenClaw", "openclaw", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((
@@ -790,8 +794,8 @@ fn build_launch_command(
                     "aider constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
-            let policy_appendix = runtime_policy_appendix("Aider", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "aider", policy)?;
+            let policy_appendix = runtime_policy_appendix("Aider", "aider", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((
@@ -830,12 +834,25 @@ fn write_claude_settings_file(
     Ok(settings_path)
 }
 
+fn runtime_shell_allow_rules(runtime_name: &str, policy: &PermissionsConfig) -> Vec<String> {
+    let mut rules = shell_command_allow_rules(policy);
+    if runtime_name.eq_ignore_ascii_case("codex")
+        && !rules
+            .iter()
+            .any(|rule| normalize(rule).starts_with("apply_patch"))
+    {
+        rules.push("apply_patch *".to_string());
+    }
+    rules
+}
+
 fn write_shell_policy_shims(
     project_root: &Path,
     agent_name: &str,
+    runtime_name: &str,
     policy: &PermissionsConfig,
 ) -> Result<std::path::PathBuf> {
-    let rules = shell_command_allow_rules(policy);
+    let rules = runtime_shell_allow_rules(runtime_name, policy);
     if rules.is_empty() {
         return Err(TuttiError::ConfigValidation(format!(
             "{} constrained launch requires shell command allow rules in [permissions].allow",
@@ -944,13 +961,12 @@ fn wrap_launch_command_with_shim_path(command: &str, shim_dir: &Path) -> String 
     )
 }
 
-fn runtime_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) -> String {
-    let rules: Vec<String> = policy
-        .allow
-        .iter()
-        .map(normalize)
-        .filter(|entry| !entry.is_empty())
-        .collect();
+fn runtime_policy_appendix(
+    runtime_label: &str,
+    runtime_name: &str,
+    policy: &PermissionsConfig,
+) -> String {
+    let rules = runtime_shell_allow_rules(runtime_name, policy);
 
     let mut out = format!(
         "Tutti policy constraints for {runtime_label}:\n\
@@ -1489,14 +1505,23 @@ fn run_all(
                                 false
                             }
                         };
-                    let effective_prompt = prepend_memory_to_prompt(
+                    let effective_prompt = match prepend_memory_to_prompt(
                         project_root,
                         agent,
                         &runtime_name,
                         agent.prompt.as_deref(),
                         file_injected,
-                    )
-                    .unwrap_or_else(|_| agent.prompt.clone());
+                    ) {
+                        Ok(prompt) => prompt,
+                        Err(e) => {
+                            eprintln!(
+                                "  {} prompt memory for {}: {e}",
+                                "warn".yellow(),
+                                agent.name
+                            );
+                            continue;
+                        }
+                    };
 
                     let attempts = resolve_runtime_launch_attempts(
                         &config,
@@ -2315,11 +2340,24 @@ mod tests {
             allow: vec!["Read".to_string(), "Edit".to_string()],
         };
 
-        let err = write_shell_policy_shims(&dir, "backend", &policy)
+        let err = write_shell_policy_shims(&dir, "backend", "openclaw", &policy)
             .expect_err("tool-only policy should fail");
         assert!(err.to_string().contains("shell command allow rules"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runtime_shell_allow_rules_adds_apply_patch_for_codex() {
+        let policy = PermissionsConfig {
+            allow: vec!["git *".to_string(), "cargo *".to_string()],
+        };
+
+        let codex_rules = runtime_shell_allow_rules("codex", &policy);
+        assert!(codex_rules.iter().any(|rule| rule == "apply_patch *"));
+
+        let aider_rules = runtime_shell_allow_rules("aider", &policy);
+        assert!(!aider_rules.iter().any(|rule| rule == "apply_patch *"));
     }
 
     #[test]
