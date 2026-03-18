@@ -880,8 +880,13 @@ impl<'a> WorkflowExecutor<'a> {
                                         ),
                                         Some(WaitFailureReason::SessionExited) => (
                                             false,
-                                            "wait_for_idle failed: target session exited"
-                                                .to_string(),
+                                            format!(
+                                                "wait_for_idle blocked: session '{}' exited while waiting for an explicit completion signal ({})",
+                                                session_name,
+                                                wait.detail
+                                                    .as_deref()
+                                                    .unwrap_or("session no longer running")
+                                            ),
                                         ),
                                         None => {
                                             (false, "wait_for_idle failed: unknown".to_string())

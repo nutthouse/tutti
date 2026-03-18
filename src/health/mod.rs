@@ -10,7 +10,6 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 const DEFAULT_CAPTURE_LINES: u32 = 200;
-const RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER: u32 = 2;
 const RATE_LIMIT_REASON_PREFIX: &str = "rate_limit:";
 const PROVIDER_DOWN_REASON_PREFIX: &str = "provider_down:";
 
@@ -189,28 +188,61 @@ pub fn wait_for_agent_idle(
     timeout: Duration,
     idle_stability: Duration,
 ) -> Result<WaitForIdleResult> {
+    wait_for_agent_idle_with(
+        runtime_name,
+        timeout,
+        idle_stability,
+        || TmuxSession::session_exists(session_name),
+        || TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES),
+        std::thread::sleep,
+        Instant::now,
+    )
+}
+
+fn wait_for_agent_idle_with<FSessionExists, FCapturePane, FSleep, FNow>(
+    runtime_name: &str,
+    timeout: Duration,
+    idle_stability: Duration,
+    mut session_exists: FSessionExists,
+    mut capture_pane: FCapturePane,
+    mut sleep: FSleep,
+    mut now: FNow,
+) -> Result<WaitForIdleResult>
+where
+    FSessionExists: FnMut() -> bool,
+    FCapturePane: FnMut() -> Result<String>,
+    FSleep: FnMut(Duration),
+    FNow: FnMut() -> Instant,
+{
     let adapter = runtime::get_adapter(runtime_name, None);
     let runtime_prefers_signal = adapter
         .as_ref()
         .is_some_and(|adapter| adapter.supports_completion_signal());
-    let start = Instant::now();
+    let start = now();
     let mut saw_activity = false;
     let mut last_hash: Option<u64> = None;
     let mut idle_since: Option<Instant> = None;
-    let mut runtime_fallback_since: Option<Instant> = None;
-    let runtime_fallback_grace = idle_stability
-        .checked_mul(RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER)
-        .unwrap_or(idle_stability);
 
-    while start.elapsed() < timeout {
-        if !TmuxSession::session_exists(session_name) {
+    while now().duration_since(start) < timeout {
+        if !session_exists() {
             return Ok(WaitForIdleResult::failed(
                 WaitFailureReason::SessionExited,
-                Some("session exited".to_string()),
+                Some("session exited while waiting for completion".to_string()),
             ));
         }
 
-        let output = TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES)?;
+        let output = match capture_pane() {
+            Ok(output) => output,
+            Err(err) => {
+                if !session_exists() {
+                    return Ok(WaitForIdleResult::failed(
+                        WaitFailureReason::SessionExited,
+                        Some("session exited while capturing pane output".to_string()),
+                    ));
+                }
+                return Err(err);
+            }
+        };
         let pane_hash = hash_output(&output);
         let changed = last_hash.is_none_or(|h| h != pane_hash);
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
@@ -240,37 +272,22 @@ pub fn wait_for_agent_idle(
         {
             saw_activity = true;
             idle_since = None;
-            runtime_fallback_since = None;
         } else if saw_activity {
             if let Some(since) = idle_since {
-                if since.elapsed() >= idle_stability {
-                    if runtime_prefers_signal {
-                        if let Some(fallback_since) = runtime_fallback_since {
-                            if fallback_since.elapsed() >= runtime_fallback_grace {
-                                return Ok(WaitForIdleResult::completed_with_detail(
-                                    WaitCompletionSource::HeuristicIdleStable,
-                                    Some(
-                                        "runtime_signal_not_observed_after_activity_fallback"
-                                            .to_string(),
-                                    ),
-                                ));
-                            }
-                        } else {
-                            runtime_fallback_since = Some(Instant::now());
-                        }
-                    } else {
+                if now().duration_since(since) >= idle_stability {
+                    if !runtime_prefers_signal {
                         return Ok(WaitForIdleResult::completed(
                             WaitCompletionSource::HeuristicIdleStable,
                         ));
                     }
                 }
             } else {
-                idle_since = Some(Instant::now());
+                idle_since = Some(now());
             }
         }
 
         last_hash = Some(pane_hash);
-        std::thread::sleep(Duration::from_secs(1));
+        sleep(Duration::from_secs(1));
     }
 
     Ok(WaitForIdleResult::failed(
@@ -426,6 +443,9 @@ fn transition_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TuttiError;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     fn sample_health(
         running: bool,
@@ -503,5 +523,72 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn wait_for_agent_idle_requires_explicit_signal_for_signal_runtime() {
+        let outputs = [
+            "Generating code...\n",
+            "Partial output without completion marker\n",
+            "Partial output without completion marker\n",
+            "Partial output without completion marker\n",
+        ];
+        let mut output_index = 0usize;
+        let base = Instant::now();
+        let elapsed = Rc::new(Cell::new(Duration::ZERO));
+        let now_elapsed = Rc::clone(&elapsed);
+        let sleep_elapsed = Rc::clone(&elapsed);
+
+        let result = wait_for_agent_idle_with(
+            "claude-code",
+            Duration::from_secs(4),
+            Duration::from_secs(1),
+            || true,
+            || {
+                let next = outputs
+                    .get(output_index)
+                    .copied()
+                    .unwrap_or(outputs[outputs.len() - 1]);
+                output_index += 1;
+                Ok(next.to_string())
+            },
+            move |duration| sleep_elapsed.set(sleep_elapsed.get() + duration),
+            move || base + now_elapsed.get(),
+        )
+        .unwrap();
+
+        assert_eq!(result.failure_reason, Some(WaitFailureReason::IdleTimeout));
+        assert!(!result.is_completed());
+    }
+
+    #[test]
+    fn wait_for_agent_idle_returns_session_exited_when_capture_races_session_shutdown() {
+        let base = Instant::now();
+        let elapsed = Rc::new(Cell::new(Duration::ZERO));
+        let now_elapsed = Rc::clone(&elapsed);
+        let sleep_elapsed = Rc::clone(&elapsed);
+        let session_checks = Rc::new(Cell::new(0usize));
+        let session_checks_for_exists = Rc::clone(&session_checks);
+
+        let result = wait_for_agent_idle_with(
+            "claude-code",
+            Duration::from_secs(4),
+            Duration::from_secs(1),
+            move || {
+                let next = session_checks_for_exists.get() + 1;
+                session_checks_for_exists.set(next);
+                next == 1
+            },
+            || Err(TuttiError::TmuxError("capture failed".to_string())),
+            move |duration| sleep_elapsed.set(sleep_elapsed.get() + duration),
+            move || base + now_elapsed.get(),
+        )
+        .unwrap();
+
+        assert_eq!(result.failure_reason, Some(WaitFailureReason::SessionExited));
+        assert_eq!(
+            result.detail.as_deref(),
+            Some("session exited while capturing pane output")
+        );
     }
 }
