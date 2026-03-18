@@ -523,9 +523,10 @@ fn inject_agent_memory(
 
     let claude_md_path = working.join("CLAUDE.md");
 
-    // Reject symlinked CLAUDE.md destination
-    if claude_md_path.exists() {
-        validate_no_symlink(&claude_md_path, "CLAUDE.md", working)?;
+    // Reject symlinked CLAUDE.md destination (check existing file and parent dir)
+    validate_no_symlink(&claude_md_path, "CLAUDE.md", working)?;
+    if let Some(parent) = claude_md_path.parent() {
+        validate_no_symlink(parent, "CLAUDE.md parent directory", working)?;
     }
 
     let existing = if claude_md_path.exists() {
@@ -1505,23 +1506,13 @@ fn run_all(
                                 false
                             }
                         };
-                    let effective_prompt = match prepend_memory_to_prompt(
+                    let effective_prompt = prepend_memory_to_prompt(
                         project_root,
                         agent,
                         &runtime_name,
                         agent.prompt.as_deref(),
                         file_injected,
-                    ) {
-                        Ok(prompt) => prompt,
-                        Err(e) => {
-                            eprintln!(
-                                "  {} prompt memory for {}: {e}",
-                                "warn".yellow(),
-                                agent.name
-                            );
-                            continue;
-                        }
-                    };
+                    )?;
 
                     let attempts = resolve_runtime_launch_attempts(
                         &config,
