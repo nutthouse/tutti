@@ -272,6 +272,7 @@ weekly_hours = 45.0
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
 For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
+Prompt and command steps can persist structured artifacts with `id = "step_id"` plus `output_json = "path.json"`. For prompt steps, relative `output_json` paths resolve inside the target agent worktree, so downstream steps can inject them via paths like `.tutti/worktrees/<agent>/...`.
 For command steps that should run under a workspace subpath, use `subdir = "relative/path"` instead of shell `cd ... &&`.
 Use `depends_on = [<step-number>, ...]` on workflow steps to unlock dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
 Budget guardrails are API-only: when `[budget]` is configured and the workspace profile has `plan = "api"`, Tutti checks budget caps before `up/send/run/verify`, emits `budget.threshold` / `budget.blocked` control events, and either warns or blocks based on `budget.mode`.
