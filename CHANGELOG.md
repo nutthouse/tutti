@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 - 2026-03-18
+
+Highlights:
+- Added structured workflow handoff artifacts for SDLC automation via step `id` plus `output_json`, including prompt-step outputs that resolve inside the target agent worktree.
+- `tt run --dry-run --json` now exposes prompt-step `output_json` paths so planner-to-implementer handoff wiring can be validated before execution.
+- Added regression coverage and updated orchestration examples/docs for planner artifact handoffs and implementer result artifacts.
+
+Notes:
+- This is a patch release focused on deterministic SDLC automation and release-ops ergonomics.
+- No breaking CLI or config contract changes.
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:
