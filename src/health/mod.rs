@@ -281,8 +281,79 @@ pub fn wait_for_agent_idle(
 
 fn hash_output(output: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
-    output.hash(&mut hasher);
+    strip_status_bar_noise(output).hash(&mut hasher);
     hasher.finish()
+}
+
+fn strip_status_bar_noise(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| !is_status_bar_noise(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_status_bar_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let looks_like_runtime_footer = (lower.contains("esc to interrupt")
+        || lower.contains("ctrl+c to stop")
+        || lower.contains("shift+tab")
+        || lower.contains("enter to submit"))
+        && (lower.contains("tokens")
+            || lower.contains("context")
+            || lower.contains("model")
+            || lower.contains('%'));
+    if looks_like_runtime_footer {
+        return true;
+    }
+
+    let chars = trimmed.chars().count();
+    if chars == 0 {
+        return false;
+    }
+    let box_chars = trimmed
+        .chars()
+        .filter(|ch| {
+            matches!(
+                ch,
+                '│' | '─'
+                    | '╭'
+                    | '╮'
+                    | '╰'
+                    | '╯'
+                    | '┌'
+                    | '┐'
+                    | '└'
+                    | '┘'
+                    | '├'
+                    | '┤'
+                    | '┬'
+                    | '┴'
+                    | '┼'
+                    | '█'
+                    | '▁'
+                    | '▂'
+                    | '▃'
+                    | '▄'
+                    | '▅'
+                    | '▆'
+                    | '▇'
+                    | '▉'
+                    | '▊'
+                    | '▋'
+                    | '▌'
+                    | '▍'
+                    | '▎'
+                    | '▏'
+            )
+        })
+        .count();
+    chars >= 8 && box_chars * 2 >= chars
 }
 
 fn transition_events(
@@ -503,5 +574,31 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn hash_output_ignores_status_bar_redraw_noise() {
+        let base = "Implementing first slice\nDone.\n";
+        let footer_a = concat!(
+            "╭────────────────────────────────────────────────────────────╮\n",
+            "│ Model: GPT-5 | Context: 82% | 1200 tokens | Esc to interrupt │\n",
+            "╰────────────────────────────────────────────────────────────╯"
+        );
+        let footer_b = concat!(
+            "╭────────────────────────────────────────────────────────────╮\n",
+            "│ Model: GPT-5 | Context: 79% | 1320 tokens | Esc to interrupt │\n",
+            "╰────────────────────────────────────────────────────────────╯"
+        );
+
+        let output_a = format!("{base}{footer_a}");
+        let output_b = format!("{base}{footer_b}");
+
+        assert_eq!(strip_status_bar_noise(&output_a), base.trim_end());
+        assert_eq!(strip_status_bar_noise(&output_b), base.trim_end());
+        assert_eq!(hash_output(&output_a), hash_output(&output_b));
+        assert_ne!(
+            hash_output(&output_a),
+            hash_output("Implementing first slice\nStill working.\n")
+        );
     }
 }
