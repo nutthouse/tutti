@@ -221,10 +221,14 @@ fn ensure_all_review_threads_resolved(project_root: &Path, pr_number: u64) -> Re
     let repo = gh_repo_name_with_owner(project_root)?;
     let (owner, name) = split_name_with_owner(&repo)?;
 
-    let query = r#"query($owner: String!, $name: String!, $number: Int!) {
+    let query = r#"query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           isResolved
         }
@@ -233,36 +237,60 @@ fn ensure_all_review_threads_resolved(project_root: &Path, pr_number: u64) -> Re
   }
 }"#;
 
-    let output = Command::new("gh")
-        .args(["api", "graphql", "-f", &format!("query={query}")])
-        .args(["-F", &format!("owner={owner}")])
-        .args(["-F", &format!("name={name}")])
-        .args(["-F", &format!("number={pr_number}")])
-        .current_dir(project_root)
-        .output()?;
+    let mut unresolved: usize = 0;
+    let mut cursor: Option<String> = None;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TuttiError::Git(format!(
-            "merge gate failed to query review threads for PR #{}: {}",
-            pr_number,
-            stderr.trim()
-        )));
+    loop {
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "graphql", "-f", &format!("query={query}")])
+            .args(["-F", &format!("owner={owner}")])
+            .args(["-F", &format!("name={name}")])
+            .args(["-F", &format!("number={pr_number}")]);
+
+        if let Some(ref c) = cursor {
+            cmd.args(["-F", &format!("after={c}")]);
+        }
+
+        let output = cmd.current_dir(project_root).output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TuttiError::Git(format!(
+                "merge gate failed to query review threads for PR #{}: {}",
+                pr_number,
+                stderr.trim()
+            )));
+        }
+
+        let payload: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+            TuttiError::State(format!(
+                "merge gate failed to parse review thread payload for PR #{}: {e}",
+                pr_number
+            ))
+        })?;
+
+        let page_unresolved = unresolved_review_thread_count(&payload).ok_or_else(|| {
+            TuttiError::State(format!(
+                "merge gate could not determine unresolved review thread count for PR #{}",
+                pr_number
+            ))
+        })?;
+        unresolved += page_unresolved;
+
+        let has_next = payload
+            .pointer("/data/repository/pullRequest/reviewThreads/pageInfo/hasNextPage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if has_next {
+            cursor = payload
+                .pointer("/data/repository/pullRequest/reviewThreads/pageInfo/endCursor")
+                .and_then(Value::as_str)
+                .map(String::from);
+        } else {
+            break;
+        }
     }
-
-    let payload: Value = serde_json::from_slice(&output.stdout).map_err(|e| {
-        TuttiError::State(format!(
-            "merge gate failed to parse review thread payload for PR #{}: {e}",
-            pr_number
-        ))
-    })?;
-
-    let unresolved = unresolved_review_thread_count(&payload).ok_or_else(|| {
-        TuttiError::State(format!(
-            "merge gate could not determine unresolved review thread count for PR #{}",
-            pr_number
-        ))
-    })?;
 
     if unresolved == 0 {
         Ok(())

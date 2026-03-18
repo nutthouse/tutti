@@ -203,9 +203,7 @@ fn collect_blocked_commands(
                     if !decision.allowed && seen_commands.insert(cmd.clone()) {
                         blocked.push(PermissionSuggestion {
                             command: cmd.clone(),
-                            suggested_rule: decision
-                                .suggested_rule
-                                .unwrap_or_else(|| format!("{cmd} *")),
+                            suggested_rule: decision.suggested_rule.unwrap_or_else(|| cmd.clone()),
                             reason: decision.reason,
                         });
                     }
@@ -515,7 +513,7 @@ workflow = "child"
         assert_eq!(report.total_commands, 3);
         assert_eq!(report.blocked.len(), 1);
         assert_eq!(report.blocked[0].command, "echo nested");
-        assert_eq!(report.blocked[0].suggested_rule, "echo nested *");
+        assert_eq!(report.blocked[0].suggested_rule, "echo nested");
 
         let _ = std::fs::remove_dir_all(&temp);
     }
@@ -578,7 +576,7 @@ run = "echo blocked"
         assert_eq!(report.workflow, "root");
         assert_eq!(report.total_commands, 1);
         assert_eq!(report.blocked.len(), 1);
-        assert_eq!(report.applied_rules, vec!["echo blocked *".to_string()]);
+        assert_eq!(report.applied_rules, vec!["echo blocked".to_string()]);
 
         let report_json = serde_json::to_value(&report).unwrap();
         assert_eq!(report_json["workflow"], "root");
@@ -587,7 +585,7 @@ run = "echo blocked"
         assert!(report_json["applied_rules"].is_array());
 
         let saved = std::fs::read_to_string(global_config_path()).unwrap();
-        assert!(saved.contains("echo blocked *"));
+        assert!(saved.contains("echo blocked"));
 
         let _ = std::fs::remove_dir_all(&temp);
     }
