@@ -44,6 +44,7 @@ Only after successful smoke, run full cycle.
 ## Example workflow file
 
 Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
+The current example persists the planner handoff as `.tutti/state/auto/plan_issue.json` and routes downstream steps through `{{output.plan_issue.path}}` instead of relying on free-form terminal text.
 
 ## Core scripts
 
@@ -57,6 +58,7 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 - Keep branch naming deterministic: `auto/issue-<num>-<timestamp>`
 - Run branch-creation commands in the implementer `agent_worktree` (not workspace root) to avoid dirtying the wrong checkout
 - Treat `.tutti/state/auto/branch.json` as the source of truth and instruct every SDLC prompting step to commit/push to that branch explicitly
+- For planner -> implementer handoffs, prefer a prompt-step `id` plus `output_json`; Tutti appends a JSON-only write contract to the planner prompt, and downstream steps should consume `{{output.<id>.path}}` as the canonical artifact
 - Always include issue reference in commit and PR body
 - Enforce docs/version updates in implementation prompt
 - Require test pass before PR open and before merge/land

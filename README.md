@@ -79,7 +79,7 @@ That doesn't scale. Tutti does.
 
 **Observable by default (today: terminal UI, planned: web UI).** Today Tutti ships a live terminal watch mode plus status and usage commands. A web dashboard is planned.
 
-**Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
+**Automated handoffs (built, still being hardened).** Tutti already ships packet generation/apply flows plus workflow prompt artifacts via `output_json`. Current hardening work is focused on making unattended agent-to-agent handoffs deterministic.
 
 **Resilience (partially built).** Tutti detects auth/rate-limit/provider outage signals, captures emergency state on auth failures, retries workflow commands, and can rotate launch profiles when configured. `tt serve` and `tt watch` now auto-recover sessions for auth/rate-limit/provider-down triggers based on configured resilience strategies; broader outage orchestration is still in progress.
 
@@ -123,7 +123,7 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.3.0 — March 2026)
+## Project Status (v0.3.1 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
@@ -139,6 +139,7 @@ source ~/.zshrc
 - `tt permissions suggest <workflow>` for batch command pre-approval
 - Permission block errors include actionable fix hints
 - `tt run --dry-run --json` includes literal command strings for pre-validation
+- Prompt workflow steps can persist structured `output_json` artifacts with an explicit JSON-only write contract for downstream handoffs
 - Resume intent log + compensator preflight for safe workflow replay
 - SDLC automation framework with 6-agent topology (planner, conductor, implementer, tester, docs-release, reviewer)
 - Orchestration state machine + run ledger for deterministic recovery
@@ -272,6 +273,7 @@ weekly_hours = 45.0
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
 For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
+Prompt steps can also persist structured artifacts via `id = "step_id"` plus `output_json = "path.json"`. When a prompt step uses `output_json`, Tutti appends a JSON-only file-write contract to the dispatched prompt so downstream steps can consume the result deterministically.
 For command steps that should run under a workspace subpath, use `subdir = "relative/path"` instead of shell `cd ... &&`.
 Use `depends_on = [<step-number>, ...]` on workflow steps to unlock dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
 Budget guardrails are API-only: when `[budget]` is configured and the workspace profile has `plan = "api"`, Tutti checks budget caps before `up/send/run/verify`, emits `budget.threshold` / `budget.blocked` control events, and either warns or blocks based on `budget.mode`.
@@ -317,6 +319,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `tt run` / `tt verify` reusable workflow execution with persisted run records
 - Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+- Prompt steps with `output_json` append a JSON-only write contract before dispatch so structured handoff files are reproducible across unattended runs
 - Workflow `review`/`land` steps auto-start required sessions when they are not already running
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end

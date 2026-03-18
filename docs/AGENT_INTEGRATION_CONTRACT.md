@@ -168,6 +168,7 @@ Hook behavior in v1:
   - `depends_on = [<step-number>, ...]` enables dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
   - `review`/`land` steps auto-start required sessions when missing.
   - `prompt` supports `inject_files` to copy workspace-relative files into the target agent worktree before send.
+  - `prompt` can also use `id` plus `output_json` to persist a structured artifact; when `output_json` is set, Tutti appends a JSON-only file-write contract to the dispatched prompt text.
 - Workflow auto-reclaim:
   - Agents with `persistent = false` that were not running at workflow start are auto-stopped at workflow end.
 
