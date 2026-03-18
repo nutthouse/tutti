@@ -59,6 +59,7 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 - Treat `.tutti/state/auto/branch.json` as the source of truth and instruct every SDLC prompting step to commit/push to that branch explicitly
 - Always include issue reference in commit and PR body
 - Enforce docs/version updates in implementation prompt
+- Prefer `wait_for_idle = true` on SDLC prompt steps; current idle detection ignores runtime footer redraw noise so planner/implementer transitions are less likely to stall on token-counter churn
 - Require test pass before PR open and before merge/land
 - If CodeRabbit fails, gather feedback and route to Codex fix step
 

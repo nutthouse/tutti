@@ -91,6 +91,9 @@ Recommended machine pattern:
   - `tt send <agent> --wait --timeout-secs 900 "..."` (optionally tune `--idle-stable-secs`)
   - `tt send <agent> --auto_up --wait --output "..."` for auto-start + captured pane delta
 
+Idle-wait note:
+- Prompt completion waits ignore runtime footer/status-bar redraw noise such as token/context counters and key-hint footers; integrations should prefer `--wait` over ad hoc pane hashing when they need deterministic completion.
+
 Preferred machine surface: use `tt detect <agent> --json` for programmatic
 state/signal inference; treat raw `tt peek` output as human inspection only.
 

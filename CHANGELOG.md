@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.2.0 - 2026-03-14
+## 0.3.1 - 2026-03-18
+
+Highlights:
+- Hardened idle detection so runtime footer/status-bar redraws no longer reset `tt send --wait`, workflow prompt steps, or other idle-wait flows when only token/context counters change.
+- Added regression coverage for footer redraw filtering in health idle hashing.
+
+Notes:
+- This is a patch release focused on deterministic SDLC automation and prompt-step completion stability.
+- No config schema or CLI contract changes.
+
+## 0.3.0 - 2026-03-14
 
 Highlights:
 - Added native OpenClaw runtime support across launch/status/send flows.
