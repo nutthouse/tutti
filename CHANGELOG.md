@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 - 2026-03-19
+
+- Added **Health** and **Auth** columns to `tt status` table output, populated from persisted `AgentHealth` probe data.
+- Enriched `AgentSnapshot` with `activity_state`, `auth_state`, `health_reason`, and `last_output_change_at` fields loaded from health records written by `tt health` / watch probes.
+
+Release impact: PATCH — `tt status` table now includes two additional columns. No breaking changes; existing workflows and scripts that do not parse table output are unaffected.
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:
