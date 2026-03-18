@@ -2658,4 +2658,107 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_no_symlink_rejects_symlinked_memory_source() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-memory-symlink-source-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let real_memory = dir.join("real-memory.md");
+        std::fs::write(&real_memory, "Some memory").unwrap();
+        let symlinked_memory = dir.join("linked-memory.md");
+        symlink(&real_memory, &symlinked_memory).unwrap();
+
+        let err = validate_no_symlink(&symlinked_memory, "memory file", &dir)
+            .expect_err("symlinked memory file should be rejected");
+        assert!(err.to_string().contains("memory file is a symlink"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inject_agent_memory_rejects_symlinked_claude_md_destination() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-memory-symlink-dest-{}",
+            std::process::id()
+        ));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
+
+        let external = dir.join("external-claude.md");
+        std::fs::write(&external, "# External").unwrap();
+        symlink(&external, working.join("CLAUDE.md")).unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        let err = inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code")
+            .expect_err("symlinked CLAUDE.md should be rejected");
+        assert!(err.to_string().contains("CLAUDE.md is a symlink"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepend_memory_to_prompt_rejects_symlinked_memory_source() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-memory-symlink-prompt-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        let real_memory = memory_dir.join("real.md");
+        std::fs::write(&real_memory, "Some memory").unwrap();
+        symlink(&real_memory, memory_dir.join("backend.md")).unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("codex".to_string()),
+            scope: None,
+            prompt: Some("Original prompt".to_string()),
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        let err =
+            prepend_memory_to_prompt(&dir, &agent, "codex", Some("Original prompt"), false)
+                .expect_err("symlinked memory file should be rejected");
+        assert!(err.to_string().contains("memory file is a symlink"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
