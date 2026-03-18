@@ -193,6 +193,7 @@ runtime = "claude-code"          # or "codex", "aider", "gemini-cli", etc.
 scope = "src/api/**"
 prompt = "You own the API layer. Use existing patterns. Track work in bd."
 fresh_worktree = true            # optional: reset this agent worktree on each tt up
+memory = ".tutti/state/memory/backend.md" # optional: durable memory loaded on launch
 
 [[agent]]
 name = "frontend"
@@ -285,6 +286,8 @@ required_commands = ["bq", "jq"]
 required_env = ["GCP_PROJECT"]
 ```
 
+Optional per-agent memory is configured with `memory = "..."` using a workspace-relative file path. For `claude-code`, Tutti writes that content into a managed `# Agent Memory` section inside the agent worktree's `CLAUDE.md`; if the agent launches without a separate worktree, Tutti falls back to prepending the memory to the launch prompt instead of mutating the workspace root `CLAUDE.md`. Symlinked memory paths and `CLAUDE.md` destinations are rejected.
+
 ## Core Concepts
 
 ### Voices
@@ -304,6 +307,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ### Agent Management (Built)
 - Spawn and manage agents from any supported runtime
 - Git worktree isolation per agent (configurable)
+- Persistent per-agent memory files with managed `CLAUDE.md` injection for `claude-code` and safe prompt fallback without worktrees
 - Session persistence across restarts
 - Start and terminate individual agents (`tt up` / `tt down`)
 - Inspect worktree + branch changes (`tt diff <agent>`)

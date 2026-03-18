@@ -64,6 +64,8 @@ Expected behavior:
 - Idempotent for already-running sessions (skips instead of hard-failing).
 - Non-zero exit when runtime/config constraints fail.
 - In constrained non-interactive mode, `tt up` fails fast when `[permissions]` is missing.
+- When `agent.memory` is configured, `tt up` injects that file into launch context. For `claude-code`, Tutti writes a managed memory section into the agent worktree `CLAUDE.md`; without a worktree it prepends the memory to the prompt instead of mutating the workspace root `CLAUDE.md`.
+- Memory path validation failures, including symlinked sources or `CLAUDE.md` destinations outside the allowed root, are surfaced as actionable launch errors.
 
 ### 3) Observe
 

@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.2.0 - 2026-03-14
+## 0.3.1 - 2026-03-18
+
+Highlights:
+- Preserved persistent agent memory for `claude-code` launches without a dedicated worktree by falling back to prompt injection instead of mutating the workspace root `CLAUDE.md`.
+- Hardened memory path handling by rejecting symlinked memory sources and `CLAUDE.md` destinations that resolve outside the allowed workspace/worktree boundary.
+- Fixed managed memory-section replacement so relaunches only remove the section after the injected start marker, avoiding accidental matches against unrelated end markers in `CLAUDE.md`.
+
+Notes:
+- This patch release is focused on launch reliability and filesystem safety for persistent agent memory.
+
+## 0.3.0 - 2026-03-14
 
 Highlights:
 - Added native OpenClaw runtime support across launch/status/send flows.
