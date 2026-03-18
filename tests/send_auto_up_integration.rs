@@ -27,6 +27,7 @@ fn run_tt(cwd: &Path, config_home: &Path, args: &[&str]) -> Output {
         .current_dir(cwd)
         .env("HOME", config_home)
         .env("XDG_CONFIG_HOME", config_home)
+        .env("TMUX_TMPDIR", config_home)
         .args(args)
         .output()
         .expect("run tt command")
@@ -34,6 +35,19 @@ fn run_tt(cwd: &Path, config_home: &Path, args: &[&str]) -> Output {
 
 fn normalize_no_ws(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn tmux_is_usable(tmux_tmp_dir: &Path) -> bool {
+    let session = format!("tutti-itest-{}", std::process::id());
+    let status = Command::new("tmux")
+        .env("TMUX_TMPDIR", tmux_tmp_dir)
+        .args(["new-session", "-d", "-s", &session, "true"])
+        .status();
+    let _ = Command::new("tmux")
+        .env("TMUX_TMPDIR", tmux_tmp_dir)
+        .args(["kill-session", "-t", &session])
+        .status();
+    status.is_ok_and(|status| status.success())
 }
 
 #[test]
@@ -48,6 +62,12 @@ fn send_auto_up_wait_output_preserves_long_prompt() {
     let config_home = root.join("config-home");
     fs::create_dir_all(&workspace).expect("create workspace");
     fs::create_dir_all(config_home.join(".config/tutti")).expect("create config dir");
+
+    if !tmux_is_usable(&config_home) {
+        let _ = fs::remove_dir_all(&root);
+        // Skip if tmux cannot create sessions with an isolated socket directory.
+        return;
+    }
 
     let runtime_script = root.join("mock-claude-runtime");
     write_executable(
