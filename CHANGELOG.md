@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-03-18
+
+Highlights:
+- Added deterministic SDLC planner-to-implementer handoff via prompt-step `output_json` artifacts such as `.tutti/state/auto/plan_issue.json`.
+- Workflow prompt outputs written inside agent worktrees are now mirrored back into workspace state so downstream steps can inject them reliably.
+- Idle completion detection now requires a fresh runtime completion signal, avoiding false advances caused by stale footer UI or redraw noise.
+
+Notes:
+- This release strengthens unattended SDLC workflow execution for the built-in Codex/Claude release-train example.
+- Existing command-step `output_json` behavior is unchanged; prompt steps now participate in the same artifact-driven workflow pattern.
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:

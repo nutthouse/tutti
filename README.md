@@ -123,7 +123,7 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.3.0 — March 2026)
+## Project Status (v0.4.0 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
@@ -142,6 +142,7 @@ source ~/.zshrc
 - Resume intent log + compensator preflight for safe workflow replay
 - SDLC automation framework with 6-agent topology (planner, conductor, implementer, tester, docs-release, reviewer)
 - Orchestration state machine + run ledger for deterministic recovery
+- Deterministic planner-to-implementer handoff via structured prompt artifacts (`output_json`)
 
 ### Planned / in progress
 - Session replacement flow (`tt handoff apply`) hardening and richer packet templates
@@ -271,6 +272,8 @@ weekly_hours = 45.0
 `tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
+Prompt steps can also write structured artifacts with `output_json = ".tutti/state/..."`.
+When a prompt writes its artifact inside an agent worktree, Tutti mirrors that file back into workspace state so later steps can inject it deterministically.
 For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
 For command steps that should run under a workspace subpath, use `subdir = "relative/path"` instead of shell `cd ... &&`.
 Use `depends_on = [<step-number>, ...]` on workflow steps to unlock dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
@@ -317,9 +320,12 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `tt run` / `tt verify` reusable workflow execution with persisted run records
 - Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
+- Prompt steps support `output_json` so planners/conductors can emit structured handoff artifacts for downstream steps
+- Prompt artifacts created in agent worktrees are mirrored into workspace `.tutti/state/...` paths for deterministic reinjection
 - Workflow `review`/`land` steps auto-start required sessions when they are not already running
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
+- Prompt-step completion ignores stale runtime completion signals already visible at step start
 - `tt serve` local control API endpoints:
   - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/logs`, `/v1/handoffs`, `/v1/policy-decisions`, `/v1/events`
   - Event cursor/list filter: `/v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
