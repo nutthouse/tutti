@@ -774,29 +774,26 @@ impl<'a> WorkflowExecutor<'a> {
                         ..
                     } => {
                         let started = std::time::Instant::now();
-                        let rendered = match render_prompt_text(
-                            text,
-                            &outputs,
-                            output_json.as_deref(),
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                failed_steps.push(step_index);
-                                success = false;
-                                step_results.push(StepResult {
-                                    index: step_index,
-                                    step_type: "prompt".to_string(),
-                                    status: StepStatus::Failed,
-                                    duration_ms: started.elapsed().as_millis() as u64,
-                                    exit_code: None,
-                                    timed_out: false,
-                                    message: Some(e.to_string()),
-                                    stdout: None,
-                                    stderr: None,
-                                });
-                                break;
-                            }
-                        };
+                        let rendered =
+                            match render_prompt_text(text, &outputs, output_json.as_deref()) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(e.to_string()),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
+                            };
 
                         if let Err(e) = inject_prompt_files(inject_files) {
                             failed_steps.push(step_index);
@@ -3835,6 +3832,34 @@ mod tests {
         assert!(rendered.contains("Structured output contract"));
         assert!(rendered.contains("/tmp/result.json"));
         assert!(rendered.contains("JSON only"));
+    }
+
+    #[test]
+    fn render_prompt_text_without_output_json_does_not_append_contract() {
+        let outputs = HashMap::new();
+
+        let rendered = render_prompt_text("Keep this prompt stable.", &outputs, None).unwrap();
+
+        assert_eq!(rendered, "Keep this prompt stable.");
+        assert!(!rendered.contains("Structured output contract"));
+    }
+
+    #[test]
+    fn render_prompt_text_preserves_unresolved_template_error() {
+        let outputs = HashMap::new();
+
+        let err = render_prompt_text(
+            "Use {{output.missing.path}} first.",
+            &outputs,
+            Some(Path::new("/tmp/result.json")),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unresolved workflow output template")
+        );
+        assert!(!err.to_string().contains("Structured output contract"));
     }
 
     #[test]
