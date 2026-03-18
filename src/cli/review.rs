@@ -162,3 +162,80 @@ fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn truncate_returns_input_when_within_limit() {
+        assert_eq!(truncate("short diff", 100), "short diff");
+    }
+
+    #[test]
+    fn truncate_counts_characters_and_appends_marker() {
+        let truncated = truncate("ab🙂cd", 3);
+        assert_eq!(truncated, "ab🙂\n... [truncated by tt review]");
+    }
+
+    #[test]
+    fn write_review_packet_uses_none_placeholders_for_empty_stats() {
+        let dir = unique_temp_dir("tutti-test-review-empty");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let packet = ReviewPacketData {
+            agent_name: "backend".to_string(),
+            branch: "tutti/backend".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: String::new(),
+            committed_diff: String::new(),
+            wip_stat: String::new(),
+            wip_diff: String::new(),
+        };
+
+        let packet_path = write_review_packet(&dir, &packet).unwrap();
+        let content = std::fs::read_to_string(&packet_path).unwrap();
+
+        assert!(packet_path.starts_with(dir.join(".tutti").join("state").join("reviews")));
+        assert!(content.contains("# Review Packet: backend"));
+        assert!(content.contains("Branch: tutti/backend"));
+        assert_eq!(content.matches("(none)").count(), 2);
+        assert!(!content.contains("... [truncated by tt review]"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_review_packet_truncates_large_diffs() {
+        let dir = unique_temp_dir("tutti-test-review-truncate");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let packet = ReviewPacketData {
+            agent_name: "backend".to_string(),
+            branch: "tutti/backend".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: "1 file changed".to_string(),
+            committed_diff: "x".repeat(120_001),
+            wip_stat: "2 files changed".to_string(),
+            wip_diff: "y".repeat(120_005),
+        };
+
+        let packet_path = write_review_packet(&dir, &packet).unwrap();
+        let content = std::fs::read_to_string(&packet_path).unwrap();
+
+        assert_eq!(content.matches("... [truncated by tt review]").count(), 2);
+        assert!(content.contains("```diff\nxxx"));
+        assert!(content.contains("```diff\nyyy"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
