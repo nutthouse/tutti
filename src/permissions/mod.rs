@@ -34,6 +34,7 @@ pub struct CommandPolicyDecision {
     pub allowed: bool,
     pub policy_configured: bool,
     pub matched_rule: Option<String>,
+    pub suggested_rule: Option<String>,
     pub reason: Option<String>,
 }
 
@@ -48,6 +49,7 @@ pub fn evaluate_command_policy(
             allowed: true,
             policy_configured: false,
             matched_rule: None,
+            suggested_rule: None,
             reason: Some("policy not configured".to_string()),
         };
     };
@@ -58,17 +60,28 @@ pub fn evaluate_command_policy(
             allowed: true,
             policy_configured: true,
             matched_rule: Some(matched_rule.to_string()),
+            suggested_rule: None,
             reason: None,
         };
     }
 
     CommandPolicyDecision {
-        command: normalized,
+        command: normalized.clone(),
         allowed: false,
         policy_configured: true,
         matched_rule: None,
+        suggested_rule: suggested_wildcard_prefix_rule(&normalized),
         reason: Some("blocked by permissions policy".to_string()),
     }
+}
+
+fn suggested_wildcard_prefix_rule(command_line: &str) -> Option<String> {
+    let tokens: Vec<&str> = command_line.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    Some(format!("{} {} *", tokens[0], tokens[1]))
 }
 
 pub fn render_claude_settings(policy: &PermissionsConfig) -> Result<String> {
@@ -247,6 +260,16 @@ mod tests {
             decision.reason.as_deref(),
             Some("blocked by permissions policy")
         );
+        assert_eq!(decision.suggested_rule.as_deref(), Some("git stash *"));
+    }
+
+    #[test]
+    fn evaluate_command_policy_suggests_rule_from_first_two_tokens_only() {
+        let policy = PermissionsConfig {
+            allow: vec!["git status".to_string()],
+        };
+        let decision = evaluate_command_policy(Some(&policy), "cargo test --quiet --all");
+        assert_eq!(decision.suggested_rule.as_deref(), Some("cargo test *"));
     }
 
     #[test]
