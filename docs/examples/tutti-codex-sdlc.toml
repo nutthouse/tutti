@@ -7,12 +7,14 @@ runtime = "codex"
 worktree = true
 
 # Specialized agents: each owns one SDLC concern.
+# Long-lived agents can also keep durable memory under .tutti/state/memory/.
 
 [[agent]]
 name = "planner"
 runtime = "claude-code"
 worktree = true
 persistent = true
+memory = ".tutti/state/memory/planner.md"
 prompt = "You are the planning specialist. Translate the issue into an implementation plan, risks, test strategy, and release notes checklist. Do not implement code."
 
 [[agent]]
@@ -20,6 +22,7 @@ name = "conductor"
 runtime = "codex"
 worktree = true
 persistent = true
+memory = ".tutti/state/memory/conductor.md"
 prompt = "You orchestrate workflow state and handoffs only. You do not implement features directly."
 
 [[agent]]
@@ -28,6 +31,7 @@ runtime = "codex"
 worktree = true
 persistent = true
 scope = "src/**"
+memory = ".tutti/state/memory/implementer.md"
 prompt = "Implement feature/code changes for the selected issue. Keep changes minimal and aligned to issue scope."
 
 [[agent]]
@@ -36,6 +40,7 @@ runtime = "codex"
 worktree = true
 persistent = true
 scope = "tests/**"
+memory = ".tutti/state/memory/tester.md"
 prompt = "Own test strategy and test updates. Ensure failing tests are fixed and coverage reflects behavior changes."
 
 [[agent]]
@@ -44,6 +49,7 @@ runtime = "codex"
 worktree = true
 persistent = true
 scope = "**"
+memory = ".tutti/state/memory/docs-release.md"
 prompt = "Own docs, changelog, and version bump policy. Update README/docs/CHANGELOG and Cargo.toml when required."
 
 [[agent]]

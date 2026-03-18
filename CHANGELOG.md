@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 - 2026-03-18
+
+Highlights:
+- Added per-agent persistent memory via `[[agent]].memory`, with workspace-relative validation and safe path checks.
+- Claude Code agents now inject managed memory into agent-worktree `CLAUDE.md`; other runtimes receive the same memory prepended to the launch prompt.
+- Hardened prompt delivery by sending multiline session input atomically through tmux bracketed paste and warning when `tt send` detects an exited or auth-failed runtime before dispatch.
+- Expanded worktree lifecycle and tmux usability test coverage for unattended SDLC automation.
+
+Notes:
+- This release adds a new operator-facing configuration surface and long-lived agent behavior, so it is versioned as a minor release.
+- Existing workspaces remain compatible; agents opt into memory explicitly via `memory = "..."`
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:

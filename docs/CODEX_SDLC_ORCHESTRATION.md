@@ -22,6 +22,7 @@ Use 6 focused agents:
 - `reviewer` (Codex) — strict release-readiness review
 
 This keeps each agent independent and accountable to one concern while preserving Codex-heavy execution.
+For long-lived runs, give the persistent specialists a `memory = ".tutti/state/memory/<agent>.md"` file so planning, release rules, and recurring gotchas survive session restarts. Claude worktrees receive that memory through a managed `CLAUDE.md` section; Codex agents receive it as prepended startup context.
 
 ## Prerequisites
 
@@ -57,6 +58,7 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 - Keep branch naming deterministic: `auto/issue-<num>-<timestamp>`
 - Run branch-creation commands in the implementer `agent_worktree` (not workspace root) to avoid dirtying the wrong checkout
 - Treat `.tutti/state/auto/branch.json` as the source of truth and instruct every SDLC prompting step to commit/push to that branch explicitly
+- Keep `.tutti/state/memory/*.md` under versioned or otherwise durable workspace storage when you want agent-specific operating context to accumulate across runs
 - Always include issue reference in commit and PR body
 - Enforce docs/version updates in implementation prompt
 - Require test pass before PR open and before merge/land

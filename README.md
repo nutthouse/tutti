@@ -123,7 +123,7 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.3.0 — March 2026)
+## Project Status (v0.4.0 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
@@ -131,6 +131,7 @@ source ~/.zshrc
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
 - Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
+- Per-agent persistent memory files (`memory = ".tutti/state/memory/<agent>.md"`) injected into Claude worktrees or prepended to other runtime prompts
 - Token/capacity reporting via `tt usage` for API profiles (`plan = "api"`) from local Claude Code + Codex session logs
 - `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
 - Workspace `[[tool_pack]]` declarations + `tt doctor` prerequisite checks (commands/env/profile/runtime)
@@ -193,6 +194,7 @@ runtime = "claude-code"          # or "codex", "aider", "gemini-cli", etc.
 scope = "src/api/**"
 prompt = "You own the API layer. Use existing patterns. Track work in bd."
 fresh_worktree = true            # optional: reset this agent worktree on each tt up
+memory = ".tutti/state/memory/backend.md" # optional persistent memory file
 
 [[agent]]
 name = "frontend"
@@ -271,6 +273,7 @@ weekly_hours = 45.0
 `tt usage` scans and aggregates usage only for profiles with `plan = "api"`.
 `tt permissions` is opt-in and reads `[permissions]` from `~/.config/tutti/config.toml`.
 With default launch mode (`auto`), constrained non-interactive runs require `[permissions]` allow rules.
+`memory = "relative/path.md"` is opt-in per agent. Tutti rejects absolute paths, `..` traversal, and symlinked memory files. Claude Code injects memory into a managed `CLAUDE.md` section inside the agent worktree; other runtimes receive the memory prepended to their launch prompt.
 For prompt steps that need workspace artifacts, use `inject_files = ["relative/path.json"]` to copy files into the target agent's working tree before the prompt is sent.
 For command steps that should run under a workspace subpath, use `subdir = "relative/path"` instead of shell `cd ... &&`.
 Use `depends_on = [<step-number>, ...]` on workflow steps to unlock dependency-aware execution; independent `ensure_running`/`review`/`land` steps run in parallel waves.
@@ -304,6 +307,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ### Agent Management (Built)
 - Spawn and manage agents from any supported runtime
 - Git worktree isolation per agent (configurable)
+- Optional per-agent persistent memory injection on startup
 - Session persistence across restarts
 - Start and terminate individual agents (`tt up` / `tt down`)
 - Inspect worktree + branch changes (`tt diff <agent>`)
