@@ -5,6 +5,7 @@ use crate::health::{WaitCompletionSource, WaitFailureReason};
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
 use crate::{budget, budget::BudgetGuardOutcome};
+use colored::Colorize;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -70,6 +71,29 @@ pub fn run(
 
     if launched_via_auto_up {
         wait_for_runtime_ready(&runtime_name, &session, &agent_name)?;
+    }
+
+    // Check that the runtime is actually running (not exited to shell)
+    if let Some(adapter) = runtime::get_adapter(&runtime_name, None) {
+        let output = TmuxSession::capture_pane(&session, 200).unwrap_or_default();
+        let status = adapter.detect_status(&output);
+        if !launched_via_auto_up {
+            match &status {
+                AgentStatus::Unknown => {
+                    eprintln!(
+                        "  {} {agent_name} runtime status is unknown (may have exited); prompt may hit the shell",
+                        "warn".yellow()
+                    );
+                }
+                AgentStatus::AuthFailed(err) => {
+                    eprintln!(
+                        "  {} {agent_name} runtime reports auth failure: {err}; re-authenticate or check credentials",
+                        "warn".yellow()
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     let capture_lines = options.output_lines.max(20);
