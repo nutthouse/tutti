@@ -307,6 +307,85 @@ pub struct PolicyDecisionRecord {
     pub data: Option<Value>,
 }
 
+/// Structured artifact produced by the `plan_issue` workflow step and consumed
+/// by `implement_code` as the primary handoff input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanArtifact {
+    pub issue_number: u64,
+    pub issue_title: String,
+    pub scope_summary: String,
+    pub target_files: Vec<String>,
+    pub implementation_tasks: Vec<String>,
+    pub first_slice: String,
+    #[serde(default)]
+    pub test_tasks: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+    #[serde(default)]
+    pub docs_release_tasks: Vec<String>,
+}
+
+impl PlanArtifact {
+    /// Validate that required fields are non-empty.
+    pub fn validate(&self) -> Result<()> {
+        if self.issue_title.is_empty() {
+            return Err(TuttiError::State(
+                "PlanArtifact: issue_title is empty".to_string(),
+            ));
+        }
+        if self.scope_summary.is_empty() {
+            return Err(TuttiError::State(
+                "PlanArtifact: scope_summary is empty".to_string(),
+            ));
+        }
+        if self.implementation_tasks.is_empty() {
+            return Err(TuttiError::State(
+                "PlanArtifact: implementation_tasks is empty".to_string(),
+            ));
+        }
+        if self.first_slice.is_empty() {
+            return Err(TuttiError::State(
+                "PlanArtifact: first_slice is empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Save a typed plan artifact to `.tutti/state/workflow-outputs/{run_id}/plan_issue.json`.
+#[allow(dead_code)]
+pub fn save_plan_artifact(
+    project_root: &Path,
+    run_id: &str,
+    artifact: &PlanArtifact,
+) -> Result<PathBuf> {
+    artifact.validate()?;
+    let value = serde_json::to_value(artifact)
+        .map_err(|e| TuttiError::State(format!("failed to serialize PlanArtifact: {e}")))?;
+    save_workflow_output(project_root, run_id, "plan_issue", &value)
+}
+
+/// Load and validate a typed plan artifact from
+/// `.tutti/state/workflow-outputs/{run_id}/plan_issue.json`.
+#[allow(dead_code)]
+pub fn load_plan_artifact(project_root: &Path, run_id: &str) -> Result<Option<PlanArtifact>> {
+    validate_run_id(run_id)?;
+    let path = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-outputs")
+        .join(run_id)
+        .join("plan_issue.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = std::fs::read_to_string(&path)?;
+    let artifact: PlanArtifact =
+        serde_json::from_str(&body).map_err(|e| TuttiError::State(e.to_string()))?;
+    artifact.validate()?;
+    Ok(Some(artifact))
+}
+
 /// Ensure the .tutti/ directory structure exists.
 pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
     let tutti_dir = project_root.join(".tutti");
@@ -1182,6 +1261,81 @@ mod tests {
         assert_eq!(updated.state, SdlcRunState::Branched);
         assert!(updated.transitions.is_empty());
         assert_eq!(updated.actor, "wren");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn plan_artifact_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-plan-artifact-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let artifact = PlanArtifact {
+            issue_number: 65,
+            issue_title: "deterministic handoff".to_string(),
+            scope_summary: "Make plan_issue write a structured JSON artifact".to_string(),
+            target_files: vec!["src/state/mod.rs".to_string()],
+            implementation_tasks: vec!["Define PlanArtifact struct".to_string()],
+            first_slice: "Define PlanArtifact and round-trip test".to_string(),
+            test_tasks: vec!["Unit test round-trip".to_string()],
+            risks: vec![],
+            docs_release_tasks: vec![],
+        };
+
+        let path = save_plan_artifact(&dir, "run-65", &artifact).unwrap();
+        assert!(path.exists());
+
+        let loaded = load_plan_artifact(&dir, "run-65").unwrap().unwrap();
+        assert_eq!(loaded.issue_number, 65);
+        assert_eq!(loaded.issue_title, "deterministic handoff");
+        assert_eq!(loaded.scope_summary, artifact.scope_summary);
+        assert_eq!(loaded.target_files, artifact.target_files);
+        assert_eq!(loaded.implementation_tasks, artifact.implementation_tasks);
+        assert_eq!(loaded.first_slice, artifact.first_slice);
+        assert_eq!(loaded.test_tasks, artifact.test_tasks);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn plan_artifact_validate_rejects_empty_required_fields() {
+        let mut artifact = PlanArtifact {
+            issue_number: 1,
+            issue_title: "title".to_string(),
+            scope_summary: "scope".to_string(),
+            target_files: vec![],
+            implementation_tasks: vec!["task".to_string()],
+            first_slice: "slice".to_string(),
+            test_tasks: vec![],
+            risks: vec![],
+            docs_release_tasks: vec![],
+        };
+
+        assert!(artifact.validate().is_ok());
+
+        artifact.issue_title = String::new();
+        let err = artifact.validate().unwrap_err();
+        assert!(err.to_string().contains("issue_title is empty"));
+
+        artifact.issue_title = "title".to_string();
+        artifact.implementation_tasks.clear();
+        let err = artifact.validate().unwrap_err();
+        assert!(err.to_string().contains("implementation_tasks is empty"));
+    }
+
+    #[test]
+    fn plan_artifact_missing_returns_none() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-plan-artifact-none-{}",
+            std::process::id()
+        ));
+        ensure_tutti_dir(&dir).unwrap();
+
+        let result = load_plan_artifact(&dir, "nonexistent-run").unwrap();
+        assert!(result.is_none());
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
