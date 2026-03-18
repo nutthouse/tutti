@@ -310,6 +310,8 @@ pub fn run(
             worktree_path,
             branch,
             status: "Working".to_string(),
+            run_id: None,
+            work_unit: None,
             started_at: Utc::now(),
             stopped_at: None,
         };
@@ -537,7 +539,10 @@ fn inject_agent_memory(
 
     // Strip any previous managed memory section
     let base = if let Some(start) = existing.find(MEMORY_SECTION_START) {
-        if let Some(end) = existing.find(MEMORY_SECTION_END) {
+        if let Some(rel_end) = existing[start + MEMORY_SECTION_START.len()..]
+            .find(MEMORY_SECTION_END)
+        {
+            let end = start + MEMORY_SECTION_START.len() + rel_end;
             let before = &existing[..start];
             let after = &existing[end + MEMORY_SECTION_END.len()..];
             format!("{}{}", before.trim_end(), after)
@@ -1636,6 +1641,8 @@ fn run_all(
                         worktree_path,
                         branch,
                         status: "Working".to_string(),
+                        run_id: None,
+                        work_unit: None,
                         started_at: Utc::now(),
                         stopped_at: None,
                     };
