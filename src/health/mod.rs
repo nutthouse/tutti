@@ -188,6 +188,7 @@ pub fn wait_for_agent_idle(
     session_name: &str,
     timeout: Duration,
     idle_stability: Duration,
+    startup_grace: Duration,
 ) -> Result<WaitForIdleResult> {
     let adapter = runtime::get_adapter(runtime_name, None);
     let runtime_prefers_signal = adapter
@@ -212,7 +213,15 @@ pub fn wait_for_agent_idle(
 
         let output = TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES)?;
         let pane_hash = hash_output(&output);
-        let changed = last_hash.is_none_or(|h| h != pane_hash);
+        let in_startup = start.elapsed() < startup_grace;
+        // During startup grace, the first observation (None → Some) is not
+        // a real content change — suppress it so we don't set saw_activity
+        // before the agent has actually started producing output.
+        let changed = if in_startup && last_hash.is_none() {
+            false
+        } else {
+            last_hash.is_none_or(|h| h != pane_hash)
+        };
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
 
         if let Some(adapter) = &adapter

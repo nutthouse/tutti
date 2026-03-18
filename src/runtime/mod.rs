@@ -800,4 +800,22 @@ mod tests {
         let err = diagnose_output("unknown", "anything", None).unwrap_err();
         assert!(matches!(err, TuttiError::RuntimeUnknown(runtime) if runtime == "unknown"));
     }
+
+    #[test]
+    fn claude_detect_working_from_unravelling() {
+        let a = adapter("claude-code");
+        assert_eq!(
+            a.detect_status("Some output\nUnravelling... (thinking)"),
+            AgentStatus::Working
+        );
+    }
+
+    #[test]
+    fn claude_detect_working_from_searching_for() {
+        let a = adapter("claude-code");
+        assert_eq!(
+            a.detect_status("Some output\nSearching for relevant files..."),
+            AgentStatus::Working
+        );
+    }
 }

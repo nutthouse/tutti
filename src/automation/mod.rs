@@ -861,6 +861,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     session_name,
                                     Duration::from_secs((*wait_timeout_secs).max(1)),
                                     Duration::from_secs(5),
+                                    Duration::from_secs(10),
                                 )?;
                                 if !wait.is_completed() {
                                     let (timed_out, message) = match wait.failure_reason {
