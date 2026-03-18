@@ -503,6 +503,7 @@ mod tests {
     use super::*;
     use crate::automation::ResolvedStep;
     use crate::config::WorkflowFailMode;
+    use serde_json::Value;
     use std::path::PathBuf;
 
     #[test]
@@ -571,5 +572,81 @@ mod tests {
             }
             _ => panic!("expected command"),
         }
+    }
+
+    #[test]
+    fn serialize_dry_run_includes_prompt_output_json_path() {
+        let workflow = ResolvedWorkflow {
+            name: "handoff".to_string(),
+            description: None,
+            steps: vec![ResolvedStep::Prompt {
+                step_id: None,
+                depends_on: vec![],
+                agent: "planner".to_string(),
+                text: "write plan artifact".to_string(),
+                runtime: "claude-code".to_string(),
+                session_name: "planner-session".to_string(),
+                inject_files: vec![],
+                output_json: Some(PathBuf::from(".tutti/state/auto/plan_issue.json")),
+                wait_for_idle: false,
+                wait_timeout_secs: 900,
+            }],
+        };
+
+        let plan = serialize_dry_run(&workflow, false);
+        match &plan.steps[0] {
+            DryRunStep::Prompt {
+                index,
+                agent,
+                summary,
+                inject_files,
+                output_json,
+            } => {
+                assert_eq!(*index, 1);
+                assert_eq!(agent, "planner");
+                assert_eq!(summary, "write plan artifact");
+                assert_eq!(*inject_files, 0);
+                assert_eq!(
+                    output_json.as_deref(),
+                    Some(".tutti/state/auto/plan_issue.json")
+                );
+            }
+            _ => panic!("expected prompt"),
+        }
+    }
+
+    #[test]
+    fn serialize_dry_run_json_contains_prompt_output_json_field() {
+        let workflow = ResolvedWorkflow {
+            name: "handoff".to_string(),
+            description: Some("structured artifacts".to_string()),
+            steps: vec![ResolvedStep::Prompt {
+                step_id: None,
+                depends_on: vec![],
+                agent: "implementer".to_string(),
+                text: "consume handoff".to_string(),
+                runtime: "codex".to_string(),
+                session_name: "implementer-session".to_string(),
+                inject_files: vec![],
+                output_json: Some(PathBuf::from(
+                    ".tutti/state/auto/implement_result.json",
+                )),
+                wait_for_idle: false,
+                wait_timeout_secs: 900,
+            }],
+        };
+
+        let json = serde_json::to_value(serialize_dry_run(&workflow, true))
+            .expect("serialize dry-run plan to json");
+        let steps = json["steps"].as_array().expect("steps array");
+        let prompt = &steps[0];
+
+        assert_eq!(json["workflow"], Value::String("handoff".to_string()));
+        assert_eq!(json["strict"], Value::Bool(true));
+        assert_eq!(prompt["type"], Value::String("prompt".to_string()));
+        assert_eq!(
+            prompt["output_json"],
+            Value::String(".tutti/state/auto/implement_result.json".to_string())
+        );
     }
 }
