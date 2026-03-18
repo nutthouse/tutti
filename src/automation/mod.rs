@@ -3221,6 +3221,7 @@ mod tests {
                 fresh_worktree: None,
                 branch: None,
                 persistent: false,
+                memory: None,
                 env: HashMap::new(),
             }],
             tool_packs: vec![],
@@ -4470,6 +4471,7 @@ mod tests {
                     fresh_worktree: None,
                     branch: None,
                     persistent: false,
+                    memory: None,
                     env: HashMap::new(),
                 },
                 AgentConfig {
@@ -4482,6 +4484,7 @@ mod tests {
                     fresh_worktree: None,
                     branch: None,
                     persistent: false,
+                    memory: None,
                     env: HashMap::new(),
                 },
             ],
