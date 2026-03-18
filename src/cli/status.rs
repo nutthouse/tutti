@@ -88,16 +88,37 @@ fn print_agent_table(config: &TuttiConfig, project_root: &std::path::Path) {
 
     let mut table = Table::new();
     table.load_preset(UTF8_BORDERS_ONLY);
-    table.set_header(vec!["Agent", "Runtime", "Status", "Session"]);
+    table.set_header(vec!["Agent", "Runtime", "Status", "Health", "Auth", "Session"]);
 
     for snapshot in &snapshots {
         table.add_row(vec![
             &snapshot.agent_name,
             &snapshot.runtime,
             &snapshot.status_display,
+            &format_health_col(snapshot.activity_state.as_ref()),
+            &format_auth_col(snapshot.auth_state.as_ref()),
             &snapshot.session_name,
         ]);
     }
 
     println!("{table}");
+}
+
+fn format_health_col(activity: Option<&crate::state::ActivityState>) -> String {
+    use crate::state::ActivityState;
+    match activity {
+        Some(ActivityState::Working) => "working".green().to_string(),
+        Some(ActivityState::Idle) => "idle".yellow().to_string(),
+        Some(ActivityState::Stopped) => "stopped".dimmed().to_string(),
+        Some(ActivityState::Unknown) | None => "--".dimmed().to_string(),
+    }
+}
+
+fn format_auth_col(auth: Option<&crate::state::AuthState>) -> String {
+    use crate::state::AuthState;
+    match auth {
+        Some(AuthState::Ok) => "ok".green().to_string(),
+        Some(AuthState::Failed) => "failed".red().bold().to_string(),
+        Some(AuthState::Unknown) | None => "--".dimmed().to_string(),
+    }
 }

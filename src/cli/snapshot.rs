@@ -1,7 +1,8 @@
 use crate::config::TuttiConfig;
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
-use crate::state;
+use crate::state::{self, ActivityState, AgentHealth, AuthState};
+use chrono::{DateTime, Utc};
 use colored::Colorize;
 use std::path::Path;
 
@@ -22,9 +23,15 @@ pub struct AgentSnapshot {
     /// Present only when tail was requested for this snapshot.
     pub tail_lines: Option<Vec<String>>,
     pub tail_error: Option<String>,
+    // --- Health fields (populated from AgentHealth when available) ---
+    pub activity_state: Option<ActivityState>,
+    pub auth_state: Option<AuthState>,
+    pub health_reason: Option<String>,
+    pub last_output_change_at: Option<DateTime<Utc>>,
 }
 
-/// Gather snapshots for all agents in a workspace config.
+/// Gather snapshots for all agents in a workspace config, enriched with
+/// persisted health data when available.
 pub fn gather_workspace_snapshots(config: &TuttiConfig, project_root: &Path) -> Vec<AgentSnapshot> {
     gather_workspace_snapshots_with_selected_tail(config, project_root, None, 0)
 }
@@ -67,6 +74,11 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             (None, None)
         };
 
+        // Load persisted health record (written by `tt health` / watch probes).
+        let health = state::load_agent_health(project_root, &agent.name)
+            .ok()
+            .flatten();
+
         snapshots.push(build_snapshot(SnapshotBuildArgs {
             workspace_name: &config.workspace.name,
             agent_name: &agent.name,
@@ -77,6 +89,7 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             ctx_pct,
             tail_lines: tail,
             tail_error,
+            health,
         }));
     }
 
@@ -93,9 +106,22 @@ struct SnapshotBuildArgs<'a> {
     ctx_pct: Option<u8>,
     tail_lines: Option<Vec<String>>,
     tail_error: Option<String>,
+    health: Option<AgentHealth>,
 }
 
 fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
+    let (activity_state, auth_state, health_reason, last_output_change_at) =
+        if let Some(h) = args.health {
+            (
+                Some(h.activity_state),
+                Some(h.auth_state),
+                h.reason,
+                h.last_output_change_at,
+            )
+        } else {
+            (None, None, None, None)
+        };
+
     if !args.running {
         return AgentSnapshot {
             workspace_name: args.workspace_name.to_string(),
@@ -108,6 +134,10 @@ fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
             ctx_pct: None,
             tail_lines: None,
             tail_error: None,
+            activity_state,
+            auth_state,
+            health_reason,
+            last_output_change_at,
         };
     }
 
@@ -124,6 +154,10 @@ fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
         ctx_pct: args.ctx_pct,
         tail_lines: args.tail_lines,
         tail_error: args.tail_error,
+        activity_state,
+        auth_state,
+        health_reason,
+        last_output_change_at,
     }
 }
 
@@ -264,6 +298,7 @@ mod tests {
             ctx_pct: Some(67),
             tail_lines: Some(vec!["line".to_string()]),
             tail_error: None,
+            health: None,
         });
 
         assert_eq!(snapshot.workspace_name, "ws");
@@ -287,6 +322,7 @@ mod tests {
             ctx_pct: Some(52),
             tail_lines: Some(vec!["ignored".to_string()]),
             tail_error: Some("ignored".to_string()),
+            health: None,
         });
 
         assert_eq!(snapshot.workspace_name, "ws");
@@ -297,6 +333,65 @@ mod tests {
         assert!(snapshot.ctx_pct.is_none());
         assert!(snapshot.tail_lines.is_none());
         assert!(snapshot.tail_error.is_none());
+    }
+
+    #[test]
+    fn build_snapshot_enriches_health_fields_from_agent_health() {
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let health = AgentHealth {
+            workspace: "ws".to_string(),
+            agent: "backend".to_string(),
+            runtime: "claude-code".to_string(),
+            session_name: "tutti-ws-backend".to_string(),
+            running: true,
+            activity_state: ActivityState::Working,
+            auth_state: AuthState::Failed,
+            last_output_change_at: Some(now),
+            last_probe_at: now,
+            reason: Some("token expired".to_string()),
+            pane_hash: Some(42),
+        };
+
+        let snapshot = build_snapshot(SnapshotBuildArgs {
+            workspace_name: "ws",
+            agent_name: "backend",
+            runtime: "claude-code".to_string(),
+            session: "tutti-ws-backend".to_string(),
+            running: true,
+            detected_status: Some(AgentStatus::Working),
+            ctx_pct: Some(50),
+            tail_lines: None,
+            tail_error: None,
+            health: Some(health),
+        });
+
+        assert_eq!(snapshot.activity_state, Some(ActivityState::Working));
+        assert_eq!(snapshot.auth_state, Some(AuthState::Failed));
+        assert_eq!(snapshot.health_reason, Some("token expired".to_string()));
+        assert_eq!(snapshot.last_output_change_at, Some(now));
+    }
+
+    #[test]
+    fn build_snapshot_health_none_leaves_fields_none() {
+        let snapshot = build_snapshot(SnapshotBuildArgs {
+            workspace_name: "ws",
+            agent_name: "backend",
+            runtime: "claude-code".to_string(),
+            session: "tutti-ws-backend".to_string(),
+            running: true,
+            detected_status: Some(AgentStatus::Working),
+            ctx_pct: None,
+            tail_lines: None,
+            tail_error: None,
+            health: None,
+        });
+
+        assert!(snapshot.activity_state.is_none());
+        assert!(snapshot.auth_state.is_none());
+        assert!(snapshot.health_reason.is_none());
+        assert!(snapshot.last_output_change_at.is_none());
     }
 
     #[test]
