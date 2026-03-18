@@ -162,3 +162,86 @@ fn git_output(args: &[&str], cwd: &Path) -> Result<String> {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "tutti-review-tests-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn truncate_returns_original_when_within_limit() {
+        let input = "short diff";
+        assert_eq!(truncate(input, input.chars().count()), input);
+    }
+
+    #[test]
+    fn truncate_limits_by_character_count_and_appends_marker() {
+        let truncated = truncate("éééé", 3);
+        assert_eq!(truncated, "ééé\n... [truncated by tt review]");
+    }
+
+    #[test]
+    fn write_review_packet_creates_expected_markdown() {
+        let project_root = unique_test_dir("packet");
+        let packet = ReviewPacketData {
+            agent_name: "tester".to_string(),
+            branch: "tutti/tester".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: String::new(),
+            committed_diff: "--- a/src/main.rs\n+++ b/src/main.rs".to_string(),
+            wip_stat: " src/main.rs | 2 +-".to_string(),
+            wip_diff: String::new(),
+        };
+
+        let packet_path = write_review_packet(&project_root, &packet).unwrap();
+        let contents = std::fs::read_to_string(&packet_path).unwrap();
+
+        assert_eq!(
+            packet_path.parent().unwrap(),
+            project_root.join(".tutti").join("state").join("reviews")
+        );
+        assert!(contents.contains("# Review Packet: tester"));
+        assert!(contents.contains("Branch: tutti/tester"));
+        assert!(contents.contains("Merge base: abc123"));
+        assert!(contents.contains("## Committed Diff Stat"));
+        assert!(contents.contains("```text\n(none)\n```"));
+        assert!(contents.contains("## Worktree WIP Diff Stat"));
+        assert!(contents.contains("```text\n src/main.rs | 2 +-\n```"));
+        assert!(contents.contains("```diff\n--- a/src/main.rs\n+++ b/src/main.rs\n```"));
+
+        std::fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[test]
+    fn write_review_packet_truncates_large_diffs() {
+        let project_root = unique_test_dir("truncated");
+        let packet = ReviewPacketData {
+            agent_name: "tester".to_string(),
+            branch: "tutti/tester".to_string(),
+            merge_base: "abc123".to_string(),
+            committed_stat: String::new(),
+            committed_diff: "a".repeat(120_005),
+            wip_stat: String::new(),
+            wip_diff: String::new(),
+        };
+
+        let packet_path = write_review_packet(&project_root, &packet).unwrap();
+        let contents = std::fs::read_to_string(&packet_path).unwrap();
+
+        assert!(contents.contains("... [truncated by tt review]"));
+
+        std::fs::remove_dir_all(project_root).unwrap();
+    }
+}
