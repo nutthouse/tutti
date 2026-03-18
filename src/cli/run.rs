@@ -326,6 +326,7 @@ enum DryRunStep {
         agent: String,
         summary: String,
         inject_files: usize,
+        output_json: Option<String>,
     },
     Command {
         index: usize,
@@ -370,12 +371,14 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 agent,
                 text,
                 inject_files,
+                output_json,
                 ..
             } => steps.push(DryRunStep::Prompt {
                 index: idx + 1,
                 agent: agent.clone(),
                 summary: text.clone(),
                 inject_files: inject_files.len(),
+                output_json: output_json.as_ref().map(|path| path.display().to_string()),
             }),
             ResolvedStep::Command {
                 run,
@@ -543,11 +546,13 @@ mod tests {
                 summary,
                 index,
                 inject_files,
+                output_json,
             } => {
                 assert_eq!(*index, 1);
                 assert_eq!(agent, "backend");
                 assert_eq!(summary, "check changes");
                 assert_eq!(*inject_files, 0);
+                assert!(output_json.is_none());
             }
             _ => panic!("expected prompt"),
         }
