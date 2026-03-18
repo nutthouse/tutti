@@ -57,6 +57,7 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 - Keep branch naming deterministic: `auto/issue-<num>-<timestamp>`
 - Run branch-creation commands in the implementer `agent_worktree` (not workspace root) to avoid dirtying the wrong checkout
 - Treat `.tutti/state/auto/branch.json` as the source of truth and instruct every SDLC prompting step to commit/push to that branch explicitly
+- For planner -> implementer handoffs, prefer a prompt-step `id` plus `output_json` artifact and inject the planner worktree path (for example `.tutti/worktrees/planner/...`) into the implementer step
 - Always include issue reference in commit and PR body
 - Enforce docs/version updates in implementation prompt
 - Require test pass before PR open and before merge/land
