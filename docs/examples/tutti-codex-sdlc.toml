@@ -130,8 +130,9 @@ agent = "planner"
 inject_files = [".tutti/state/auto/selected_issue.json"]
 output_json = ".tutti/state/auto/plan_issue.json"
 wait_for_idle = true
+# v0.3.1+: idle wait ignores runtime footer redraw noise (token/context counters, key hints)
 wait_timeout_secs = 1200
-text = "Create a concrete execution plan for the selected issue. Write a JSON artifact to the provided output_json path with keys: scope, constraints, implementation_tasks, tests, docs, risks, blockers. Keep arrays concise and concrete. Summarize key steps in your final response for downstream agents."
+text = "Create a concrete execution plan for the selected issue. Write a JSON artifact to the provided output_json path with keys: scope, constraints, implementation_tasks, tests, docs, risks, blockers. Ensure docs includes changelog/version actions when behavior changes. Keep arrays concise and concrete. Summarize key steps in your final response for downstream agents."
 
 # 4) Implementation specialization (Codex)
 [[workflow.step]]

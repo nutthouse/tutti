@@ -79,7 +79,7 @@ That doesn't scale. Tutti does.
 
 **Observable by default (today: terminal UI, planned: web UI).** Today Tutti ships a live terminal watch mode plus status and usage commands. A web dashboard is planned.
 
-**Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
+**Automated handoffs (built, still being hardened).** Tutti already ships packet generation/apply flows plus auto-generation hooks. Current work is focused on making session replacement and prompt-step completion more deterministic under real runtime UI churn.
 
 **Resilience (partially built).** Tutti detects auth/rate-limit/provider outage signals, captures emergency state on auth failures, retries workflow commands, and can rotate launch profiles when configured. `tt serve` and `tt watch` now auto-recover sessions for auth/rate-limit/provider-down triggers based on configured resilience strategies; broader outage orchestration is still in progress.
 
@@ -123,7 +123,7 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.3.0 — March 2026)
+## Project Status (v0.3.1 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
@@ -140,6 +140,7 @@ source ~/.zshrc
 - Permission block errors include actionable fix hints
 - `tt run --dry-run --json` includes literal command strings for pre-validation
 - Resume intent log + compensator preflight for safe workflow replay
+- Idle-wait completion filters runtime footer redraw noise so prompt/workflow waits stay stable while token/context counters update
 - SDLC automation framework with 6-agent topology (planner, conductor, implementer, tester, docs-release, reviewer)
 - Orchestration state machine + run ledger for deterministic recovery
 
@@ -318,6 +319,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
 - Workflow `review`/`land` steps auto-start required sessions when they are not already running
+- Idle waits for prompt steps ignore runtime footer/status-bar redraw noise (for example token/context counters and key-hint footers)
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 - `tt serve` local control API endpoints:
