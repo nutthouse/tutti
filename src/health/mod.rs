@@ -601,4 +601,47 @@ mod tests {
             hash_output("Implementing first slice\nStill working.\n")
         );
     }
+
+    #[test]
+    fn is_status_bar_noise_detects_runtime_footer_variants() {
+        assert!(is_status_bar_noise(
+            "Model: GPT-5 | Context: 58% | 892 tokens | Ctrl+C to stop"
+        ));
+        assert!(is_status_bar_noise(
+            "claude-opus | 73% context | Shift+Tab for history"
+        ));
+        assert!(is_status_bar_noise(
+            "Model: codex | 1200 tokens | Enter to submit"
+        ));
+        assert!(is_status_bar_noise("▁▂▃▄▅▆▇█▇▆▅▄▃▂▁"));
+    }
+
+    #[test]
+    fn is_status_bar_noise_does_not_match_regular_pane_content() {
+        assert!(!is_status_bar_noise(
+            "Model evaluation finished at 82% branch coverage"
+        ));
+        assert!(!is_status_bar_noise(
+            "Esc to interrupt the deploy if the health check fails"
+        ));
+        assert!(!is_status_bar_noise(
+            "enter to submit the form once you finish reviewing payload.rs"
+        ));
+        assert!(!is_status_bar_noise("Build status: [########] 8/8 tasks complete"));
+    }
+
+    #[test]
+    fn strip_status_bar_noise_preserves_non_footer_lines() {
+        let output = concat!(
+            "Plan next change\n",
+            "\n",
+            "Esc to interrupt the deploy if the health check fails\n",
+            "Build status: [########] 8/8 tasks complete\n"
+        );
+
+        assert_eq!(
+            strip_status_bar_noise(output),
+            output.trim_end_matches('\n')
+        );
+    }
 }
