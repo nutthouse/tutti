@@ -310,8 +310,6 @@ pub fn run(
             worktree_path,
             branch,
             status: "Working".to_string(),
-            run_id: None,
-            work_unit: None,
             started_at: Utc::now(),
             stopped_at: None,
         };
@@ -463,16 +461,34 @@ fn validate_no_symlink(path: &Path, label: &str, allowed_root: &Path) -> Result<
             allowed_root.display()
         )));
     }
-    if path.exists()
-        && let (Ok(canonical), Ok(root)) = (path.canonicalize(), allowed_root.canonicalize())
-        && !canonical.starts_with(&root)
-    {
-        return Err(TuttiError::ConfigValidation(format!(
-            "{label} resolves outside the allowed directory ({}): {}. \
-             Move the file into the workspace or update the memory path in your config",
-            root.display(),
-            path.display()
-        )));
+    if let Ok(root) = allowed_root.canonicalize() {
+        // When the path exists, verify its canonical form lives under the root.
+        if path.exists() {
+            if let Ok(canonical) = path.canonicalize()
+                && !canonical.starts_with(&root)
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label} resolves outside the allowed directory ({}): {}. \
+                     Move the file into the workspace or update the memory path in your config",
+                    root.display(),
+                    path.display()
+                )));
+            }
+        } else if let Some(parent) = path.parent() {
+            // Path doesn't exist yet – validate the parent directory so that
+            // a later `fs::write` cannot be tricked into creating a file
+            // outside the allowed root via a symlinked parent.
+            if let Ok(canonical_parent) = parent.canonicalize()
+                && !canonical_parent.starts_with(&root)
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label} would be created outside the allowed directory ({}): {}. \
+                     Move the file into the workspace or update the memory path in your config",
+                    root.display(),
+                    path.display()
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -539,10 +555,8 @@ fn inject_agent_memory(
 
     // Strip any previous managed memory section
     let base = if let Some(start) = existing.find(MEMORY_SECTION_START) {
-        if let Some(rel_end) = existing[start + MEMORY_SECTION_START.len()..]
-            .find(MEMORY_SECTION_END)
-        {
-            let end = start + MEMORY_SECTION_START.len() + rel_end;
+        if let Some(rel_end) = existing[start..].find(MEMORY_SECTION_END) {
+            let end = start + rel_end;
             let before = &existing[..start];
             let after = &existing[end + MEMORY_SECTION_END.len()..];
             format!("{}{}", before.trim_end(), after)
@@ -1499,18 +1513,7 @@ fn run_all(
 
                     // Inject persistent memory (same as run())
                     let file_injected =
-                        match inject_agent_memory(project_root, &working_dir, agent, &runtime_name)
-                        {
-                            Ok(injected) => injected,
-                            Err(e) => {
-                                eprintln!(
-                                    "  {} memory injection for {}: {e}",
-                                    "warn".yellow(),
-                                    agent.name
-                                );
-                                false
-                            }
-                        };
+                        inject_agent_memory(project_root, &working_dir, agent, &runtime_name)?;
                     let effective_prompt = prepend_memory_to_prompt(
                         project_root,
                         agent,
@@ -1641,8 +1644,6 @@ fn run_all(
                         worktree_path,
                         branch,
                         status: "Working".to_string(),
-                        run_id: None,
-                        work_unit: None,
                         started_at: Utc::now(),
                         stopped_at: None,
                     };
