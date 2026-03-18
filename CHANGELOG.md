@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 - 2026-03-19
+
+Highlights:
+- Added `PlanArtifact` struct for deterministic planner-to-implementer handoff, with typed save/load helpers and validation.
+
+Notes:
+- Internal workflow improvement: the `plan_issue` step now produces a structured JSON artifact (issue number, scope summary, target files, implementation tasks, first slice) that downstream steps consume directly. No CLI or config changes.
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:
