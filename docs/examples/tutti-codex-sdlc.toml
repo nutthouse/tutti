@@ -128,9 +128,10 @@ id = "plan_issue"
 type = "prompt"
 agent = "planner"
 inject_files = [".tutti/state/auto/selected_issue.json"]
+output_json = ".tutti/state/auto/plan_issue.json"
 wait_for_idle = true
 wait_timeout_secs = 1200
-text = "Create a concrete execution plan for the selected issue. Include: scope, constraints, implementation tasks, tests to add/update, docs/changelog/version actions, and potential risks. Summarize key steps in your final response for downstream agents."
+text = "Create a concrete execution plan for the selected issue. Write a JSON artifact to the provided output_json path with keys: scope, constraints, implementation_tasks, tests, docs, risks, blockers. Keep arrays concise and concrete. Summarize key steps in your final response for downstream agents."
 
 # 4) Implementation specialization (Codex)
 [[workflow.step]]
@@ -140,7 +141,7 @@ agent = "implementer"
 inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 3600
-text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Use branch.json as source of truth for the target branch and ensure your commits are made on that branch (checkout/switch if needed before committing). Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push that branch. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
+text = "Implement the selected issue in src/ using the planner artifact at {{output.plan_issue.path}} as the primary handoff input, along with the full issue body from selected_issue.json. Use branch.json as source of truth for the target branch and ensure your commits are made on that branch (checkout/switch if needed before committing). Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push that branch. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
 
 [[workflow.step]]
 id = "verify_impl_progress"

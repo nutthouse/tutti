@@ -281,8 +281,39 @@ pub fn wait_for_agent_idle(
 
 fn hash_output(output: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
-    output.hash(&mut hasher);
+    normalized_activity_output(output).hash(&mut hasher);
     hasher.finish()
+}
+
+fn normalized_activity_output(output: &str) -> String {
+    let mut lines: Vec<&str> = output.lines().collect();
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    while lines.last().is_some_and(|line| is_footer_noise_line(line)) {
+        lines.pop();
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+    }
+    lines.join("\n")
+}
+
+fn is_footer_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let looks_like_metric_footer = trimmed.contains('%')
+        && ["context", "ctx", "window", "token", "tokens", "compact"]
+            .iter()
+            .any(|hint| lower.contains(hint));
+    let looks_like_interrupt_hint =
+        lower.contains("esc to interrupt") || lower.contains("ctrl+c to interrupt");
+
+    looks_like_metric_footer || looks_like_interrupt_hint
 }
 
 fn transition_events(
@@ -503,5 +534,19 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn hash_output_ignores_trailing_footer_noise() {
+        let baseline = "Working through a plan\nDone.";
+        let with_footer = "Working through a plan\nDone.\n\nContext window 71%\nEsc to interrupt";
+        assert_eq!(hash_output(baseline), hash_output(with_footer));
+    }
+
+    #[test]
+    fn hash_output_still_changes_for_real_content_updates() {
+        let first = "Working through a plan\nDone.";
+        let second = "Working through a plan\nDone.\nWrote planner artifact.";
+        assert_ne!(hash_output(first), hash_output(second));
     }
 }
