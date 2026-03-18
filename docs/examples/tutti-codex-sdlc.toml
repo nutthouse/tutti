@@ -128,19 +128,20 @@ id = "plan_issue"
 type = "prompt"
 agent = "planner"
 inject_files = [".tutti/state/auto/selected_issue.json"]
+output_json = ".tutti/state/auto/plan_issue.json"
 wait_for_idle = true
 wait_timeout_secs = 1200
-text = "Create a concrete execution plan for the selected issue. Include: scope, constraints, implementation tasks, tests to add/update, docs/changelog/version actions, and potential risks. Summarize key steps in your final response for downstream agents."
+text = "Create a concrete execution plan for the selected issue and write it as strict JSON to .tutti/state/auto/plan_issue.json before finishing. Required top-level keys: summary, scope, constraints, implementation_tasks, tests, docs_release, risks, blockers. Keep values concise and implementation-ready. In your final response, briefly restate the plan and confirm the JSON file was written."
 
 # 4) Implementation specialization (Codex)
 [[workflow.step]]
 id = "implement_code"
 type = "prompt"
 agent = "implementer"
-inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/plan_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 3600
-text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Use branch.json as source of truth for the target branch and ensure your commits are made on that branch (checkout/switch if needed before committing). Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push that branch. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
+text = "Implement the selected issue in src/ using plan_issue.json as the primary handoff artifact and selected_issue.json only for original issue context. Use branch.json as source of truth for the target branch and ensure your commits are made on that branch (checkout/switch if needed before committing). Keep scope tight. Produce a small coherent patch quickly or emit a clear blocker with the exact missing input. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA."
 
 [[workflow.step]]
 id = "verify_impl_progress"

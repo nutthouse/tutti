@@ -1890,10 +1890,40 @@ fn load_and_store_output(
     })?;
 
     let canonical_path = save_workflow_output(project_root, run_id, step_id, &parsed)?;
+    mirror_prompt_output_to_workspace(project_root, output_path)?;
     Ok(StepOutputValue {
         path: canonical_path,
         json: parsed,
     })
+}
+
+fn mirror_prompt_output_to_workspace(project_root: &Path, output_path: &Path) -> Result<()> {
+    let worktrees_root = project_root.join(".tutti").join("worktrees");
+    let Ok(entries) = std::fs::read_dir(&worktrees_root) else {
+        return Ok(());
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let worktree_root = entry.path();
+        let Ok(relative) = output_path.strip_prefix(&worktree_root) else {
+            continue;
+        };
+        if relative.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let destination = project_root.join(relative);
+        if destination == output_path {
+            return Ok(());
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(output_path, &destination)?;
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 fn load_resume_outputs(
@@ -3785,6 +3815,39 @@ mod tests {
             err.to_string()
                 .contains("unresolved workflow output template")
         );
+    }
+
+    #[test]
+    fn load_and_store_output_mirrors_prompt_artifact_into_workspace_state() {
+        let dir = std::env::temp_dir().join("tutti-test-prompt-output-mirror");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let planner_output = dir
+            .join(".tutti")
+            .join("worktrees")
+            .join("planner")
+            .join(".tutti/state/auto/plan_issue.json");
+        std::fs::create_dir_all(planner_output.parent().unwrap()).unwrap();
+        std::fs::write(
+            &planner_output,
+            r#"{"summary":"tight scope","tasks":["edit automation"]}"#,
+        )
+        .unwrap();
+
+        let stored = load_and_store_output(&dir, "run123", "plan_issue", &planner_output).unwrap();
+        let mirrored = dir.join(".tutti/state/auto/plan_issue.json");
+
+        assert_eq!(
+            std::fs::read_to_string(&mirrored).unwrap(),
+            std::fs::read_to_string(&planner_output).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&stored.path).unwrap(),
+            "{\n  \"summary\": \"tight scope\",\n  \"tasks\": [\n    \"edit automation\"\n  ]\n}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

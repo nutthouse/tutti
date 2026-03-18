@@ -198,6 +198,8 @@ pub fn wait_for_agent_idle(
     let mut last_hash: Option<u64> = None;
     let mut idle_since: Option<Instant> = None;
     let mut runtime_fallback_since: Option<Instant> = None;
+    let mut completion_visible_at_start: Option<bool> = None;
+    let mut saw_completion_signal_drop = false;
     let runtime_fallback_grace = idle_stability
         .checked_mul(RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER)
         .unwrap_or(idle_stability);
@@ -214,6 +216,11 @@ pub fn wait_for_agent_idle(
         let pane_hash = hash_output(&output);
         let changed = last_hash.is_none_or(|h| h != pane_hash);
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
+        let completion_signal_visible = adapter
+            .as_ref()
+            .is_some_and(|a| a.detect_completion_signal(&output).is_some());
+        let started_with_completion =
+            *completion_visible_at_start.get_or_insert(completion_signal_visible);
 
         if let Some(adapter) = &adapter
             && let Some(reason) = adapter.detect_auth_failure(&output)
@@ -224,9 +231,16 @@ pub fn wait_for_agent_idle(
             ));
         }
 
-        if let Some(adapter) = &adapter
-            && adapter.detect_completion_signal(&output).is_some()
-            && saw_activity
+        if saw_activity && started_with_completion && !completion_signal_visible {
+            saw_completion_signal_drop = true;
+        }
+
+        if saw_activity
+            && fresh_completion_signal_visible(
+                started_with_completion,
+                saw_completion_signal_drop,
+                completion_signal_visible,
+            )
         {
             return Ok(WaitForIdleResult::completed(
                 WaitCompletionSource::RuntimeSignal,
@@ -283,6 +297,14 @@ fn hash_output(output: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     output.hash(&mut hasher);
     hasher.finish()
+}
+
+fn fresh_completion_signal_visible(
+    started_with_completion: bool,
+    saw_completion_signal_drop: bool,
+    completion_signal_visible: bool,
+) -> bool {
+    completion_signal_visible && (!started_with_completion || saw_completion_signal_drop)
 }
 
 fn transition_events(
@@ -503,5 +525,13 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn fresh_completion_signal_requires_a_new_signal_after_starting_idle() {
+        assert!(!fresh_completion_signal_visible(true, false, true));
+        assert!(fresh_completion_signal_visible(true, true, true));
+        assert!(fresh_completion_signal_visible(false, false, true));
+        assert!(!fresh_completion_signal_visible(false, false, false));
     }
 }
