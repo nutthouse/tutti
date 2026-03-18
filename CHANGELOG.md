@@ -2,19 +2,11 @@
 
 ## 0.2.4 - 2026-03-18
 
-Features:
-- Added `tt permissions suggest <workflow>` subcommand for batch pre-approval of workflow command policies.
-- `tt permissions check` now includes actionable allow-rule hints when a command is blocked by policy.
-- `tt run --dry-run --json` now includes a literal `command` field in resolved execution plan output.
-- Workflow `land` steps now enforce a GitHub merge gate — required checks must be green and all PR review threads resolved before landing.
+- Added actionable allow-rule hints in blocked-command error output so operators can quickly fix permission configs.
+- Added PR merge gate for `tt land` steps: when `TT_ENFORCE_MERGE_GATE=1` is set, land fails closed unless required CI checks are green and all PR review threads are resolved.
+- Added `docs/pr-review-loop.md` documenting the canonical PR review and merge loop for automation.
 
-Fixes:
-- Fixed Codex runtime prompt dispatch to pass prompts positionally instead of the unsupported `--prompt` flag.
-- Bumped ratatui 0.29 → 0.30 to resolve lru Stacked Borrows memory-safety vulnerability.
-- Made wildcard hint helper internal (no user-facing change).
-
-Notes:
-- Release impact: `tt permissions check` output now includes hint text for blocked commands (additive, non-breaking). Workflow `land` steps that previously landed without checking GitHub status will now fail if checks are red or reviews are unresolved — operators relying on force-land behavior in automation should verify their CI pipelines pass before landing.
+Release impact: PATCH — both features are opt-in and non-breaking. Existing `tt land` behavior is unchanged unless the merge gate env var is explicitly enabled. Permission hints are purely additive CLI output.
 
 ## 0.2.0 - 2026-03-14
 
