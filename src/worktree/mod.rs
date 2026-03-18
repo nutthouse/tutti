@@ -192,3 +192,146 @@ fn git_rev_parse(path: &Path) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempRepo {
+        path: PathBuf,
+    }
+
+    impl TempRepo {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("tutti-worktree-test-{unique}"));
+            fs::create_dir_all(&path).expect("create temp repo directory");
+
+            let repo = Self { path };
+            repo.git(&["init"]);
+            repo.git(&["config", "user.name", "Tutti Tests"]);
+            repo.git(&["config", "user.email", "tests@example.com"]);
+            fs::write(repo.path.join("README.md"), "seed\n").expect("write initial file");
+            repo.git(&["add", "README.md"]);
+            repo.git(&["commit", "-m", "initial commit"]);
+            repo
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            git_success(&self.path, args)
+        }
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn git_success(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git command");
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn ensure_worktree_creates_branch_at_project_head() {
+        let repo = TempRepo::new();
+
+        let worktree_dir = ensure_worktree(repo.path(), "backend", "tutti/backend").unwrap();
+
+        assert!(worktree_dir.exists());
+        assert_eq!(
+            git_success(repo.path(), &["rev-parse", "HEAD"]),
+            git_success(&worktree_dir, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(
+            git_success(&worktree_dir, &["branch", "--show-current"]),
+            "tutti/backend"
+        );
+
+        let snapshot = inspect_worktree(repo.path(), "backend").unwrap();
+        assert_eq!(
+            snapshot,
+            WorktreeSnapshot {
+                exists: true,
+                dirty: false,
+                at_project_head: true,
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_worktree_reports_dirty_and_diverged_states() {
+        let repo = TempRepo::new();
+        let worktree_dir = ensure_worktree(repo.path(), "backend", "tutti/backend").unwrap();
+
+        fs::write(worktree_dir.join("work-in-progress.txt"), "draft\n").unwrap();
+        let dirty_snapshot = inspect_worktree(repo.path(), "backend").unwrap();
+        assert!(dirty_snapshot.exists);
+        assert!(dirty_snapshot.dirty);
+        assert!(dirty_snapshot.at_project_head);
+
+        git_success(&worktree_dir, &["add", "work-in-progress.txt"]);
+        git_success(&worktree_dir, &["commit", "-m", "agent change"]);
+
+        let diverged_snapshot = inspect_worktree(repo.path(), "backend").unwrap();
+        assert!(diverged_snapshot.exists);
+        assert!(!diverged_snapshot.dirty);
+        assert!(!diverged_snapshot.at_project_head);
+    }
+
+    #[test]
+    fn ensure_fresh_worktree_resets_existing_branch_to_project_head() {
+        let repo = TempRepo::new();
+        let worktree_dir = ensure_worktree(repo.path(), "backend", "tutti/backend").unwrap();
+
+        fs::write(worktree_dir.join("agent-change.txt"), "agent change\n").unwrap();
+        git_success(&worktree_dir, &["add", "agent-change.txt"]);
+        git_success(&worktree_dir, &["commit", "-m", "agent branch commit"]);
+
+        let refreshed_dir =
+            ensure_fresh_worktree(repo.path(), "backend", "tutti/backend").unwrap();
+
+        assert_eq!(refreshed_dir, worktree_dir);
+        assert_eq!(
+            git_success(repo.path(), &["rev-parse", "HEAD"]),
+            git_success(&refreshed_dir, &["rev-parse", "HEAD"])
+        );
+        assert!(!refreshed_dir.join("agent-change.txt").exists());
+
+        let snapshot = inspect_worktree(repo.path(), "backend").unwrap();
+        assert!(snapshot.exists);
+        assert!(!snapshot.dirty);
+        assert!(snapshot.at_project_head);
+    }
+
+    #[test]
+    fn remove_worktree_is_noop_when_directory_is_missing() {
+        let repo = TempRepo::new();
+
+        remove_worktree(repo.path(), "backend").unwrap();
+
+        assert!(!worktree_path(repo.path(), "backend").exists());
+    }
+}

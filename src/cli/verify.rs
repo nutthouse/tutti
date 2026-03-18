@@ -160,4 +160,16 @@ mod tests {
         assert_eq!(format_failed_steps(&[]), "--");
         assert_eq!(format_failed_steps(&[2, 4, 7]), "2, 4, 7");
     }
+
+    #[test]
+    fn verify_last_response_serializes_found_flag_and_null_summary() {
+        let json = serde_json::to_value(VerifyLastResponse {
+            found: false,
+            summary: None,
+        })
+        .unwrap();
+
+        assert_eq!(json["found"], false);
+        assert!(json["summary"].is_null());
+    }
 }

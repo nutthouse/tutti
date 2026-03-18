@@ -293,7 +293,11 @@ mod tests {
     }
 
     fn git_ok(repo: &Path, args: &[&str]) {
-        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "git {} failed: {}",
@@ -303,14 +307,20 @@ mod tests {
     }
 
     fn git_stdout(repo: &Path, args: &[&str]) -> String {
-        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "git {} failed: {}",
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
         );
-        String::from_utf8_lossy(&output.stdout).trim_end().to_string()
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string()
     }
 
     fn init_repo(prefix: &str) -> PathBuf {
@@ -344,7 +354,9 @@ mod tests {
         let err = ensure_git_clean(&repo).unwrap_err();
 
         fs::remove_dir_all(&repo).unwrap();
-        assert!(matches!(err, TuttiError::Git(message) if message.contains("working tree has tracked changes")));
+        assert!(
+            matches!(err, TuttiError::Git(message) if message.contains("working tree has tracked changes"))
+        );
     }
 
     #[test]
@@ -383,6 +395,8 @@ mod tests {
         let err = ensure_branch_exists(&repo, "missing-branch").unwrap_err();
 
         fs::remove_dir_all(&repo).unwrap();
-        assert!(matches!(err, TuttiError::Git(message) if message.contains("agent branch 'missing-branch' does not exist")));
+        assert!(
+            matches!(err, TuttiError::Git(message) if message.contains("agent branch 'missing-branch' does not exist"))
+        );
     }
 }

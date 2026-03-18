@@ -744,7 +744,10 @@ fn enrich_run_data(workspace: &str, project_root: &Path, value: Value) -> Result
         return Ok(value);
     };
 
-    map.insert("workspace".to_string(), Value::String(workspace.to_string()));
+    map.insert(
+        "workspace".to_string(),
+        Value::String(workspace.to_string()),
+    );
 
     let run_id = map
         .get("run_id")
@@ -1372,6 +1375,40 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(30)
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn runs_data_omits_resume_command_for_successful_runs() {
+        let dir = unique_temp_dir("tutti-test-runs-success");
+        state::ensure_tutti_dir(&dir).unwrap();
+
+        state::append_automation_run(
+            &dir,
+            &AutomationRunRecord {
+                run_id: "run-456".to_string(),
+                workflow_name: "verify".to_string(),
+                timestamp: Utc::now(),
+                trigger: "run".to_string(),
+                success: true,
+                strict: true,
+                failed_steps: vec![],
+                warning_count: 0,
+                agent_scope: None,
+                hook_event: None,
+                hook_agent: None,
+            },
+        )
+        .unwrap();
+
+        let data = runs_data(&[sample_target(dir.clone())]).unwrap();
+        let rows = data.as_array().unwrap();
+        let row = rows.first().unwrap();
+
+        assert_eq!(row.get("workspace").and_then(Value::as_str), Some("ws"));
+        assert_eq!(row.get("run_id").and_then(Value::as_str), Some("run-456"));
+        assert!(row.get("resume_command").is_none());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

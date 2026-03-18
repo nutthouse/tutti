@@ -113,6 +113,7 @@ fn next_due_at(schedule: &Schedule, after: DateTime<Utc>) -> Option<DateTime<Utc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn parse_schedule_accepts_five_field_cron() {
@@ -125,5 +126,30 @@ mod tests {
     fn parse_schedule_rejects_bad_field_count() {
         let err = parse_schedule("* * * *").unwrap_err();
         assert!(err.to_string().contains("5-field cron"));
+    }
+
+    #[test]
+    fn parse_schedule_trims_surrounding_whitespace() {
+        let sched = parse_schedule("  */15 * * * *  ").unwrap();
+        let after = Utc.with_ymd_and_hms(2026, 1, 1, 10, 1, 0).unwrap();
+        let next = next_due_at(&sched, after).unwrap();
+
+        assert_eq!(next, Utc.with_ymd_and_hms(2026, 1, 1, 10, 15, 0).unwrap());
+    }
+
+    #[test]
+    fn parse_schedule_rejects_whitespace_only_expression() {
+        let err = parse_schedule("   ").unwrap_err();
+        assert!(err.to_string().contains("5-field cron"));
+    }
+
+    #[test]
+    fn next_due_at_returns_first_time_strictly_after_reference() {
+        let sched = parse_schedule("*/15 * * * *").unwrap();
+        let after = Utc.with_ymd_and_hms(2026, 1, 1, 10, 15, 0).unwrap();
+
+        let next = next_due_at(&sched, after).unwrap();
+
+        assert_eq!(next, Utc.with_ymd_and_hms(2026, 1, 1, 10, 30, 0).unwrap());
     }
 }

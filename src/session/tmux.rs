@@ -236,7 +236,7 @@ fn should_strip_inherited_env_var(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::should_strip_inherited_env_var;
+    use super::{TmuxSession, shell_escape_value, should_strip_inherited_env_var};
 
     #[test]
     fn strips_claudecode_env_var_case_insensitive() {
@@ -247,5 +247,24 @@ mod tests {
     #[test]
     fn does_not_strip_unrelated_env_var() {
         assert!(!should_strip_inherited_env_var("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn does_not_strip_partial_env_var_name_match() {
+        assert!(!should_strip_inherited_env_var("CLAUDECODE_SESSION"));
+    }
+
+    #[test]
+    fn session_name_follows_tutti_convention() {
+        assert_eq!(
+            TmuxSession::session_name("backend", "tester"),
+            "tutti-backend-tester"
+        );
+    }
+
+    #[test]
+    fn shell_escape_value_wraps_and_escapes_single_quotes() {
+        assert_eq!(shell_escape_value("plain text"), "'plain text'");
+        assert_eq!(shell_escape_value("it's ready"), "'it'\\''s ready'");
     }
 }
