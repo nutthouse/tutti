@@ -53,6 +53,8 @@ tt permissions check git status
                          # evaluate team command policy
 tt permissions check git status --json
                          # machine-readable policy decision
+tt permissions suggest verify-app
+                         # suggest allow-rules for all commands in a workflow
 tt logs backend -f       # follow captured output for an agent
 ```
 
@@ -355,7 +357,8 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ### Permissions Policy (Built, Opt-in)
 - Team-shared command allowlist in `~/.config/tutti/config.toml` under `[permissions]`
 - Policy entries may be shell command prefixes (`git status`, `cargo test`) and/or Claude tool names (`Read`, `Edit`, `Write`)
-- `tt permissions check <command...>` evaluates command prefixes against policy
+- `tt permissions check <command...>` evaluates command prefixes against policy (blocked commands include allow-rule hints)
+- `tt permissions suggest <workflow>` scans workflow steps and suggests allow-rules for batch pre-approval
 - `tt permissions export --runtime claude` emits a Claude settings scaffold
 - `tt up` auto-wires constrained non-interactive policy for Claude sessions
 - Codex/OpenClaw/Aider constrained mode is hard-enforced via Tutti shell-policy shims plus runtime flags/prompt guidance
