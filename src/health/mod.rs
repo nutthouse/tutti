@@ -214,6 +214,9 @@ pub fn wait_for_agent_idle(
         let pane_hash = hash_output(&output);
         let changed = last_hash.is_none_or(|h| h != pane_hash);
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
+        let completion_signal_seen = adapter
+            .as_ref()
+            .and_then(|adapter| adapter.detect_completion_signal(&output));
 
         if let Some(adapter) = &adapter
             && let Some(reason) = adapter.detect_auth_failure(&output)
@@ -221,15 +224,6 @@ pub fn wait_for_agent_idle(
             return Ok(WaitForIdleResult::failed(
                 WaitFailureReason::AuthFailed,
                 Some(reason),
-            ));
-        }
-
-        if let Some(adapter) = &adapter
-            && adapter.detect_completion_signal(&output).is_some()
-            && saw_activity
-        {
-            return Ok(WaitForIdleResult::completed(
-                WaitCompletionSource::RuntimeSignal,
             ));
         }
 
@@ -244,6 +238,20 @@ pub fn wait_for_agent_idle(
         } else if saw_activity {
             if let Some(since) = idle_since {
                 if since.elapsed() >= idle_stability {
+                    if completion_signal_seen.is_some()
+                        && runtime_signal_ready(
+                            saw_activity,
+                            changed,
+                            runtime_status.as_ref(),
+                            idle_since,
+                            idle_stability,
+                        )
+                    {
+                        return Ok(WaitForIdleResult::completed(
+                            WaitCompletionSource::RuntimeSignal,
+                        ));
+                    }
+
                     if runtime_prefers_signal {
                         if let Some(fallback_since) = runtime_fallback_since {
                             if fallback_since.elapsed() >= runtime_fallback_grace {
@@ -277,6 +285,19 @@ pub fn wait_for_agent_idle(
         WaitFailureReason::IdleTimeout,
         Some("idle wait timed out".to_string()),
     ))
+}
+
+fn runtime_signal_ready(
+    saw_activity: bool,
+    changed: bool,
+    runtime_status: Option<&AgentStatus>,
+    idle_since: Option<Instant>,
+    idle_stability: Duration,
+) -> bool {
+    saw_activity
+        && !changed
+        && !matches!(runtime_status, Some(AgentStatus::Working))
+        && idle_since.is_some_and(|since| since.elapsed() >= idle_stability)
 }
 
 fn hash_output(output: &str) -> u64 {
@@ -503,5 +524,41 @@ mod tests {
         let current = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         let events = transition_events(Some(&previous), &current, Utc::now());
         assert!(events.iter().any(|e| e.event == "agent.provider_recovered"));
+    }
+
+    #[test]
+    fn runtime_signal_ready_requires_stable_idle_window() {
+        let idle_since = Some(Instant::now() - Duration::from_secs(6));
+        assert!(runtime_signal_ready(
+            true,
+            false,
+            Some(&AgentStatus::Idle),
+            idle_since,
+            Duration::from_secs(5),
+        ));
+    }
+
+    #[test]
+    fn runtime_signal_ready_rejects_redraw_noise() {
+        let idle_since = Some(Instant::now() - Duration::from_secs(6));
+        assert!(!runtime_signal_ready(
+            true,
+            true,
+            Some(&AgentStatus::Idle),
+            idle_since,
+            Duration::from_secs(5),
+        ));
+    }
+
+    #[test]
+    fn runtime_signal_ready_rejects_active_work() {
+        let idle_since = Some(Instant::now() - Duration::from_secs(6));
+        assert!(!runtime_signal_ready(
+            true,
+            false,
+            Some(&AgentStatus::Working),
+            idle_since,
+            Duration::from_secs(5),
+        ));
     }
 }
