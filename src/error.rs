@@ -55,3 +55,33 @@ pub enum TuttiError {
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displays_actionable_tmux_install_message() {
+        assert_eq!(
+            TuttiError::TmuxNotInstalled.to_string(),
+            "tmux is not installed. Install with: brew install tmux"
+        );
+    }
+
+    #[test]
+    fn displays_agent_not_running_with_agent_name() {
+        assert_eq!(
+            TuttiError::AgentNotRunning("reviewer".to_string()).to_string(),
+            "agent 'reviewer' is not running"
+        );
+    }
+
+    #[test]
+    fn converts_io_error_into_tutti_error() {
+        let err = std::fs::read_to_string("/definitely/not/here")
+            .map_err(TuttiError::from)
+            .unwrap_err();
+
+        assert!(matches!(err, TuttiError::Io(_)));
+    }
+}

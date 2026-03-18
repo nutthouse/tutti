@@ -54,3 +54,47 @@ pub(crate) fn resolve(agent_ref: &str) -> Result<ResolvedAgentRef> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_config(agent_names: &[&str]) -> TuttiConfig {
+        let mut toml = String::from("[workspace]\nname = \"demo\"\n\n");
+        for agent_name in agent_names {
+            toml.push_str("[[agent]]\n");
+            toml.push_str(&format!("name = \"{agent_name}\"\n"));
+            toml.push_str("runtime = \"claude-code\"\n\n");
+        }
+        toml::from_str(&toml).unwrap()
+    }
+
+    #[test]
+    fn agent_config_returns_matching_agent() {
+        let resolved = ResolvedAgentRef {
+            workspace_name: "demo".to_string(),
+            agent_name: "backend".to_string(),
+            project_root: PathBuf::from("/tmp/demo"),
+            config: parse_config(&["backend", "frontend"]),
+        };
+
+        let agent = resolved.agent_config().unwrap();
+
+        assert_eq!(agent.name, "backend");
+        assert_eq!(agent.resolved_branch(), "tutti/backend");
+    }
+
+    #[test]
+    fn agent_config_returns_not_found_for_missing_agent() {
+        let resolved = ResolvedAgentRef {
+            workspace_name: "demo".to_string(),
+            agent_name: "missing".to_string(),
+            project_root: PathBuf::from("/tmp/demo"),
+            config: parse_config(&["backend"]),
+        };
+
+        let err = resolved.agent_config().unwrap_err();
+
+        assert!(matches!(err, TuttiError::AgentNotFound(name) if name == "missing"));
+    }
+}
