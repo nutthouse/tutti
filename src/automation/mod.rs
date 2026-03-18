@@ -768,12 +768,17 @@ impl<'a> WorkflowExecutor<'a> {
                     ResolvedStep::Prompt {
                         step_id,
                         text,
+                        output_json,
                         inject_files,
                         session_name,
                         ..
                     } => {
                         let started = std::time::Instant::now();
-                        let rendered = match render_template(text, &outputs, false) {
+                        let rendered = match render_prompt_text(
+                            text,
+                            &outputs,
+                            output_json.as_deref(),
+                        ) {
                             Ok(v) => v,
                             Err(e) => {
                                 failed_steps.push(step_index);
@@ -2345,6 +2350,27 @@ fn render_template(
     Ok(rendered)
 }
 
+fn render_prompt_text(
+    input: &str,
+    outputs: &HashMap<String, StepOutputValue>,
+    output_json: Option<&Path>,
+) -> Result<String> {
+    let mut rendered = render_template(input, outputs, false)?;
+    if let Some(path) = output_json {
+        rendered.push_str(
+            "\n\nStructured output contract:\n\
+- Write a single valid JSON object to this exact path: ",
+        );
+        rendered.push_str(&path.display().to_string());
+        rendered.push_str(
+            "\n\
+- The file must contain JSON only. Do not wrap it in Markdown fences.\n\
+- Overwrite the file if it already exists.\n",
+        );
+    }
+    Ok(rendered)
+}
+
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -3785,6 +3811,30 @@ mod tests {
             err.to_string()
                 .contains("unresolved workflow output template")
         );
+    }
+
+    #[test]
+    fn render_prompt_text_appends_structured_output_contract() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "plan".to_string(),
+            StepOutputValue {
+                path: PathBuf::from("/tmp/plan.json"),
+                json: serde_json::json!({"scope": "small"}),
+            },
+        );
+
+        let rendered = render_prompt_text(
+            "Use {{output.plan.path}} first.",
+            &outputs,
+            Some(Path::new("/tmp/result.json")),
+        )
+        .unwrap();
+
+        assert!(rendered.contains("Use /tmp/plan.json first."));
+        assert!(rendered.contains("Structured output contract"));
+        assert!(rendered.contains("/tmp/result.json"));
+        assert!(rendered.contains("JSON only"));
     }
 
     #[test]
