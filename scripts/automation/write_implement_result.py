@@ -5,12 +5,16 @@ import sys
 from pathlib import Path
 
 
+GIT_TIMEOUT_SECONDS = 60
+
+
 def run_git(args: list[str]) -> str:
     result = subprocess.run(
         ["git", *args],
         text=True,
         capture_output=True,
         check=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -36,6 +40,7 @@ def main() -> int:
         text=True,
         check=True,
         capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
 
     if not base_sha:
@@ -47,6 +52,7 @@ def main() -> int:
         text=True,
         capture_output=True,
         check=False,
+        timeout=GIT_TIMEOUT_SECONDS,
     ).returncode == 0
     if not is_ancestor:
         print(
@@ -89,6 +95,7 @@ def main() -> int:
         text=True,
         check=True,
         capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
 
     payload = {
