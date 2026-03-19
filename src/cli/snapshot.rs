@@ -1,7 +1,8 @@
 use crate::config::TuttiConfig;
+use crate::health;
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
-use crate::state;
+use crate::state::{self, HealthState};
 use colored::Colorize;
 use std::path::Path;
 
@@ -19,6 +20,10 @@ pub struct AgentSnapshot {
     pub session_name: String,
     pub running: bool,
     pub ctx_pct: Option<u8>,
+    /// Unified health-state classification derived from health probe data.
+    pub health_state: HealthState,
+    /// Human-readable reason for the current health state (e.g. auth failure detail).
+    pub health_reason: Option<String>,
     /// Present only when tail was requested for this snapshot.
     pub tail_lines: Option<Vec<String>>,
     pub tail_error: Option<String>,
@@ -37,6 +42,10 @@ pub fn gather_workspace_snapshots_with_selected_tail(
     tail_lines: u32,
 ) -> Vec<AgentSnapshot> {
     let mut snapshots = Vec::new();
+
+    // Probe health for all agents once; fall back to empty vec on error.
+    let health_records = health::probe_workspace(config, project_root, 50)
+        .unwrap_or_default();
 
     for agent in &config.agents {
         let runtime_name = agent
