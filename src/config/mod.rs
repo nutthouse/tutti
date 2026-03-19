@@ -156,6 +156,8 @@ pub enum WorkflowStepConfig {
         wait_for_idle: Option<bool>,
         #[serde(default)]
         wait_timeout_secs: Option<u64>,
+        #[serde(default)]
+        startup_grace_secs: Option<u64>,
     },
     Command {
         #[serde(default)]

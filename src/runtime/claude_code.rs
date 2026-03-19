@@ -48,6 +48,7 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "Editing",
         "Running",
         "Searching",
+        "Unravelling",
     ],
     idle_patterns: &[
         "What would you like to do?",

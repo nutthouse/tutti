@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+const DEFAULT_STARTUP_GRACE_SECS: u64 = 30;
 const AUTO_UP_READY_TIMEOUT_SECS: u64 = 45;
 const AUTO_UP_READY_STABLE_MS: u64 = 750;
 const AUTO_UP_READY_POLL_MS: u64 = 250;
@@ -112,6 +113,7 @@ pub fn run(
             &session,
             Duration::from_secs(options.timeout_secs.max(1)),
             Duration::from_secs(options.idle_stable_secs.max(1)),
+            Duration::from_secs(DEFAULT_STARTUP_GRACE_SECS),
         )?;
         if !outcome.is_completed() {
             return Err(match outcome.failure_reason {
