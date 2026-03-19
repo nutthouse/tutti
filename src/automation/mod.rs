@@ -6,6 +6,7 @@ use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::health::WaitFailureReason;
 use crate::permissions::evaluate_command_policy;
+use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, ControlEvent, VerifyLastSummary, WorkflowStepIntentRecord,
@@ -16,7 +17,9 @@ use crate::state::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -24,6 +27,20 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
+const PROMPT_CAPTURE_LINES: u32 = 200;
+
+#[derive(Debug, Deserialize)]
+struct WorkflowBranchState {
+    branch: String,
+    #[serde(default = "default_base_branch")]
+    base_branch: String,
+    #[serde(default)]
+    base_sha: Option<String>,
+}
+
+fn default_base_branch() -> String {
+    "main".to_string()
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -766,6 +783,7 @@ impl<'a> WorkflowExecutor<'a> {
                 }
                 match step {
                     ResolvedStep::Prompt {
+                        agent,
                         step_id,
                         text,
                         inject_files,
@@ -773,6 +791,7 @@ impl<'a> WorkflowExecutor<'a> {
                         ..
                     } => {
                         let started = std::time::Instant::now();
+                        let mut auto_started_session = false;
                         let rendered = match render_template(text, &outputs, false) {
                             Ok(v) => v,
                             Err(e) => {
@@ -793,6 +812,37 @@ impl<'a> WorkflowExecutor<'a> {
                             }
                         };
 
+                        if !TmuxSession::session_exists(session_name) {
+                            match with_project_root(self.project_root, || {
+                                crate::cli::up::run(Some(agent), None, false, false, None, None)
+                            }) {
+                                Ok(()) => auto_started_session = true,
+                                Err(e) => {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(format!(
+                                            "target session is not running and auto-start failed: {} ({e})",
+                                            session_name
+                                        )),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+
+                        if auto_started_session {
+                            std::thread::sleep(Duration::from_secs(3));
+                        }
+
                         if let Err(e) = inject_prompt_files(inject_files) {
                             failed_steps.push(step_index);
                             success = false;
@@ -810,25 +860,10 @@ impl<'a> WorkflowExecutor<'a> {
                             break;
                         }
 
-                        if !TmuxSession::session_exists(session_name) {
-                            failed_steps.push(step_index);
-                            success = false;
-                            step_results.push(StepResult {
-                                index: step_index,
-                                step_type: "prompt".to_string(),
-                                status: StepStatus::Failed,
-                                duration_ms: started.elapsed().as_millis() as u64,
-                                exit_code: None,
-                                timed_out: false,
-                                message: Some(format!(
-                                    "target session is not running: {}",
-                                    session_name
-                                )),
-                                stdout: None,
-                                stderr: None,
-                            });
-                            break;
-                        }
+                        let baseline_pane_hash =
+                            TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)
+                                .ok()
+                                .map(|output| hash_output(&output));
 
                         if let Err(e) = TmuxSession::send_text(session_name, &rendered) {
                             failed_steps.push(step_index);
@@ -855,14 +890,101 @@ impl<'a> WorkflowExecutor<'a> {
                             ..
                         } = step
                         {
+                            if runtime == "codex" || runtime == "claude-code" {
+                                maybe_submit_buffered_prompt(session_name, &rendered)?;
+                            }
+                            if *wait_for_idle
+                                && !wait_for_prompt_activity_or_output(
+                                    runtime,
+                                    session_name,
+                                    &rendered,
+                                    baseline_pane_hash,
+                                    output_json.as_deref(),
+                                    Duration::from_secs(20),
+                                )?
+                            {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: true,
+                                    message: Some(
+                                        "prompt did not start activity or produce output within 20s"
+                                            .to_string(),
+                                    ),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
                             if *wait_for_idle {
                                 let wait = health::wait_for_agent_idle(
                                     runtime,
                                     session_name,
                                     Duration::from_secs((*wait_timeout_secs).max(1)),
                                     Duration::from_secs(5),
+                                    Duration::from_secs(10),
                                 )?;
                                 if !wait.is_completed() {
+                                    if let Some(path) = output_json.as_ref()
+                                        && path.exists()
+                                    {
+                                        if let (Some(id), Some(path)) =
+                                            (step_id.as_deref(), output_json.as_ref())
+                                        {
+                                            match load_and_store_output(
+                                                self.project_root,
+                                                &run_id,
+                                                id,
+                                                path,
+                                            ) {
+                                                Ok(saved) => {
+                                                    output_files.insert(
+                                                        id.to_string(),
+                                                        saved.path.display().to_string(),
+                                                    );
+                                                    outputs.insert(id.to_string(), saved);
+                                                }
+                                                Err(e) => {
+                                                    failed_steps.push(step_index);
+                                                    success = false;
+                                                    step_results.push(StepResult {
+                                                        index: step_index,
+                                                        step_type: "prompt".to_string(),
+                                                        status: StepStatus::Failed,
+                                                        duration_ms: started.elapsed().as_millis()
+                                                            as u64,
+                                                        exit_code: None,
+                                                        timed_out: false,
+                                                        message: Some(e.to_string()),
+                                                        stdout: None,
+                                                        stderr: None,
+                                                    });
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        step_results.push(StepResult {
+                                            index: step_index,
+                                            step_type: "prompt".to_string(),
+                                            status: StepStatus::Success,
+                                            duration_ms: started.elapsed().as_millis() as u64,
+                                            exit_code: Some(0),
+                                            timed_out: false,
+                                            message: Some(
+                                                "output_json detected after wait_for_idle timeout"
+                                                    .to_string(),
+                                            ),
+                                            stdout: None,
+                                            stderr: None,
+                                        });
+                                        continue;
+                                    }
                                     let (timed_out, message) = match wait.failure_reason {
                                         Some(WaitFailureReason::IdleTimeout) => (
                                             true,
@@ -906,6 +1028,68 @@ impl<'a> WorkflowExecutor<'a> {
                             if let (Some(id), Some(path)) =
                                 (step_id.as_deref(), output_json.as_ref())
                             {
+                                wait_for_prompt_output_file(
+                                    session_name,
+                                    runtime,
+                                    &rendered,
+                                    path,
+                                    Duration::from_secs(15),
+                                )?;
+                                if !path.exists() {
+                                    let retry_prompt = format!(
+                                        "You returned without writing the required output file at {}. Do not explain or summarize. Write that JSON file now, fully overwrite it, then reply with a brief confirmation.",
+                                        path.display()
+                                    );
+                                    if !TmuxSession::session_exists(session_name) {
+                                        with_project_root(self.project_root, || {
+                                            crate::cli::up::run(
+                                                Some(agent),
+                                                None,
+                                                false,
+                                                false,
+                                                None,
+                                                None,
+                                            )
+                                        })?;
+                                        std::thread::sleep(Duration::from_secs(3));
+                                    }
+                                    TmuxSession::send_text(session_name, &retry_prompt)?;
+                                    maybe_submit_buffered_prompt(session_name, &retry_prompt)?;
+
+                                    if !wait_for_prompt_activity_or_output(
+                                        runtime,
+                                        session_name,
+                                        &retry_prompt,
+                                        None,
+                                        Some(path),
+                                        Duration::from_secs(60),
+                                    )? {
+                                        failed_steps.push(step_index);
+                                        success = false;
+                                        step_results.push(StepResult {
+                                            index: step_index,
+                                            step_type: "prompt".to_string(),
+                                            status: StepStatus::Failed,
+                                            duration_ms: started.elapsed().as_millis() as u64,
+                                            exit_code: None,
+                                            timed_out: true,
+                                            message: Some(format!(
+                                                "{id} retry did not start activity or produce output within 60s"
+                                            )),
+                                            stdout: None,
+                                            stderr: None,
+                                        });
+                                        break;
+                                    }
+
+                                    wait_for_prompt_output_file(
+                                        session_name,
+                                        runtime,
+                                        &retry_prompt,
+                                        path,
+                                        Duration::from_secs(120),
+                                    )?;
+                                }
                                 match load_and_store_output(self.project_root, &run_id, id, path) {
                                     Ok(saved) => {
                                         output_files.insert(
@@ -931,6 +1115,156 @@ impl<'a> WorkflowExecutor<'a> {
                                         break;
                                     }
                                 }
+
+                                if step_id.as_deref() == Some("implement_code")
+                                    && !prompt_step_has_branch_progress(self.project_root, agent)?
+                                {
+                                    let retry_prompt = "Your previous attempt produced no commit beyond the branch baseline in .tutti/state/auto/branch.json. You are not done yet. If your worktree already has local code changes, do not keep exploring the repo. Review only the existing diff, keep the smallest valid slice, then stage it, commit it, and push it to the target branch now. If there are no useful local changes yet, make the smallest coherent code change now, commit it, and push it. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
+                                    if !TmuxSession::session_exists(session_name) {
+                                        with_project_root(self.project_root, || {
+                                            crate::cli::up::run(
+                                                Some(agent),
+                                                None,
+                                                false,
+                                                false,
+                                                None,
+                                                None,
+                                            )
+                                        })?;
+                                        std::thread::sleep(Duration::from_secs(3));
+                                    }
+                                    TmuxSession::send_text(session_name, retry_prompt)?;
+                                    maybe_submit_buffered_prompt(session_name, retry_prompt)?;
+
+                                    if !wait_for_prompt_activity_or_output(
+                                        runtime,
+                                        session_name,
+                                        retry_prompt,
+                                        None,
+                                        output_json.as_deref(),
+                                        Duration::from_secs(60),
+                                    )? {
+                                        failed_steps.push(step_index);
+                                        success = false;
+                                        step_results.push(StepResult {
+                                            index: step_index,
+                                            step_type: "prompt".to_string(),
+                                            status: StepStatus::Failed,
+                                            duration_ms: started.elapsed().as_millis() as u64,
+                                            exit_code: None,
+                                            timed_out: true,
+                                            message: Some(
+                                                "implement_code retry did not start activity or produce output within 20s"
+                                                    .to_string(),
+                                            ),
+                                            stdout: None,
+                                            stderr: None,
+                                        });
+                                        break;
+                                    }
+
+                                    let retry_wait = health::wait_for_agent_idle(
+                                        runtime,
+                                        session_name,
+                                        Duration::from_secs((*wait_timeout_secs).max(1)),
+                                        Duration::from_secs(5),
+                                        Duration::from_secs(10),
+                                    )?;
+                                    if !retry_wait.is_completed()
+                                        || !prompt_step_has_branch_progress(
+                                            self.project_root,
+                                            agent,
+                                        )?
+                                    {
+                                        failed_steps.push(step_index);
+                                        success = false;
+                                        step_results.push(StepResult {
+                                            index: step_index,
+                                            step_type: "prompt".to_string(),
+                                            status: StepStatus::Failed,
+                                            duration_ms: started.elapsed().as_millis() as u64,
+                                            exit_code: None,
+                                            timed_out: false,
+                                            message: Some(
+                                                "implement_code completed without a commit beyond the branch baseline"
+                                                    .to_string(),
+                                            ),
+                                            stdout: None,
+                                            stderr: None,
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if step_id.as_deref() == Some("implement_code")
+                            && !prompt_step_has_branch_progress(self.project_root, agent)?
+                        {
+                            let retry_prompt = "You still have not produced a commit beyond the branch baseline in .tutti/state/auto/branch.json. If your worktree already has local code changes, stop exploring and commit the smallest valid diff now. Otherwise make the smallest coherent code change now, commit it, and push it to the target branch. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
+                            if !TmuxSession::session_exists(session_name) {
+                                with_project_root(self.project_root, || {
+                                    crate::cli::up::run(Some(agent), None, false, false, None, None)
+                                })?;
+                                std::thread::sleep(Duration::from_secs(3));
+                            }
+                            TmuxSession::send_text(session_name, retry_prompt)?;
+                            maybe_submit_buffered_prompt(session_name, retry_prompt)?;
+
+                            if !wait_for_prompt_activity_or_output(
+                                "codex",
+                                session_name,
+                                retry_prompt,
+                                None,
+                                None,
+                                Duration::from_secs(60),
+                            )? {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: true,
+                                    message: Some(
+                                        "implement_code retry did not start activity within 20s"
+                                            .to_string(),
+                                    ),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+
+                            let retry_wait = health::wait_for_agent_idle(
+                                "codex",
+                                session_name,
+                                Duration::from_secs(300),
+                                Duration::from_secs(5),
+                                Duration::from_secs(10),
+                            )?;
+                            if !retry_wait.is_completed()
+                                || !prompt_step_has_branch_progress(self.project_root, agent)?
+                            {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(
+                                        "implement_code completed without a commit beyond the branch baseline"
+                                            .to_string(),
+                                    ),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
                             }
                         }
 
@@ -1236,6 +1570,24 @@ impl<'a> WorkflowExecutor<'a> {
                             crate::cli::up::run(Some(agent), None, false, false, None, None)
                         }) {
                             Ok(()) => {
+                                // Wait for the agent to reach idle/ready state before
+                                // declaring it running. Without this, prompt steps that
+                                // immediately follow can send text to an uninitialized
+                                // session.
+                                let agent_runtime = self
+                                    .config
+                                    .agents
+                                    .iter()
+                                    .find(|a| a.name == *agent)
+                                    .map(|a| a.runtime.as_deref().unwrap_or("claude-code"))
+                                    .unwrap_or("claude-code");
+                                let _ = health::wait_for_agent_idle(
+                                    agent_runtime,
+                                    session_name,
+                                    Duration::from_secs(30),
+                                    Duration::from_secs(3),
+                                    Duration::from_secs(5),
+                                );
                                 step_results.push(StepResult {
                                     index: step_index,
                                     step_type: "ensure_running".to_string(),
@@ -1770,6 +2122,161 @@ fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<Com
         stderr: stderr_buf,
         timed_out,
     })
+}
+
+fn prompt_snippet(rendered: &str) -> Option<String> {
+    rendered
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(96).collect::<String>())
+}
+
+fn maybe_submit_buffered_prompt(session_name: &str, rendered: &str) -> Result<()> {
+    let Some(snippet) = prompt_snippet(rendered) else {
+        return Ok(());
+    };
+
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_secs(2));
+        let pane = match TmuxSession::capture_pane(session_name, 120) {
+            Ok(output) => output,
+            Err(_) => return Ok(()),
+        };
+
+        if pane.contains("Running") || pane.contains("Thinking") || pane.contains("Generating") {
+            return Ok(());
+        }
+
+        if pane.contains(&snippet) {
+            TmuxSession::send_text(session_name, "")?;
+            continue;
+        }
+
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn wait_for_prompt_activity_or_output(
+    runtime_name: &str,
+    session_name: &str,
+    rendered: &str,
+    baseline_pane_hash: Option<u64>,
+    output_path: Option<&Path>,
+    timeout: Duration,
+) -> Result<bool> {
+    let adapter = runtime::get_adapter(runtime_name, None);
+    let snippet = prompt_snippet(rendered);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout {
+        if let Some(path) = output_path
+            && path.exists()
+        {
+            return Ok(true);
+        }
+
+        let pane = TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)?;
+        let pane_hash = hash_output(&pane);
+        let consumed = baseline_pane_hash.is_some_and(|baseline| pane_hash != baseline)
+            && snippet.as_ref().is_none_or(|needle| !pane.contains(needle));
+
+        if let Some(adapter) = &adapter
+            && matches!(adapter.detect_status(&pane), AgentStatus::Working)
+        {
+            return Ok(true);
+        }
+
+        if consumed {
+            return Ok(true);
+        }
+
+        if snippet.as_ref().is_some_and(|needle| pane.contains(needle))
+            && (runtime_name == "codex" || runtime_name == "claude-code")
+        {
+            maybe_submit_buffered_prompt(session_name, rendered)?;
+        }
+
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    Ok(false)
+}
+
+fn wait_for_prompt_output_file(
+    session_name: &str,
+    runtime_name: &str,
+    rendered: &str,
+    path: &Path,
+    grace: Duration,
+) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    let deadline = std::time::Instant::now() + grace;
+    while std::time::Instant::now() < deadline {
+        if (runtime_name == "codex" || runtime_name == "claude-code") && !path.exists() {
+            maybe_submit_buffered_prompt(session_name, rendered)?;
+        }
+        if path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    Ok(())
+}
+
+fn hash_output(output: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    output.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn prompt_step_has_branch_progress(project_root: &Path, agent: &str) -> Result<bool> {
+    let branch_file = project_root
+        .join(".tutti")
+        .join("state")
+        .join("auto")
+        .join("branch.json");
+    if !branch_file.exists() {
+        return Ok(true);
+    }
+
+    let branch_state: WorkflowBranchState =
+        serde_json::from_slice(&std::fs::read(&branch_file)?)
+            .map_err(|e| TuttiError::ConfigValidation(e.to_string()))?;
+
+    let worktree_dir = project_root.join(".tutti").join("worktrees").join(agent);
+    if !worktree_dir.exists() {
+        return Ok(false);
+    }
+
+    let base_sha = match branch_state.base_sha {
+        Some(base_sha) => base_sha,
+        None => git_output(
+            project_root,
+            &["rev-parse", &format!("origin/{}", branch_state.base_branch)],
+        )?,
+    };
+    let head_sha = git_output(&worktree_dir, &["rev-parse", "HEAD"])?;
+    Ok(head_sha != base_sha)
+}
+
+fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").args(args).current_dir(cwd).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::ConfigValidation(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[derive(Debug)]

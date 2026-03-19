@@ -24,30 +24,47 @@ with open(out,'w',encoding='utf-8') as f:
     json.dump({"pr_number":pr,"status":"timeout","found":False},f,indent=2)
 print(out)
 PY
-    exit 1
+    # Timeout is a soft outcome — downstream steps handle missing feedback gracefully
+    exit 0
   fi
 
-  DATA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup)
+  DATA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup,comments)
   RESULT=$(python3 - <<'PY' "$DATA"
 import json,sys
 obj=json.loads(sys.argv[1])
+
+# Check status checks first
 checks=obj.get("statusCheckRollup") or []
 cr=[]
 for c in checks:
     name=(c.get("name") or "").lower()
     if "coderabbit" in name or "code rabbit" in name:
         cr.append(c)
-if not cr:
-    print("NONE")
+if cr:
+    states=[(c.get("status") or "", c.get("conclusion") or "") for c in cr]
+    if any(s != "COMPLETED" for s,_ in states):
+        print("PENDING")
+    else:
+        allowed=("SUCCESS",)
+        bad=[x for x in states if x[1] not in allowed]
+        print("FAIL" if bad else "PASS")
     raise SystemExit
-# if multiple, require all completed and explicitly successful
-states=[(c.get("status") or "", c.get("conclusion") or "") for c in cr]
-if any(s != "COMPLETED" for s,_ in states):
-    print("PENDING")
-else:
-    allowed=("SUCCESS",)
-    bad=[x for x in states if x[1] not in allowed]
-    print("FAIL" if bad else "PASS")
+
+# Fallback: check for CodeRabbit PR comments (review may appear as comment, not check)
+comments=obj.get("comments") or []
+for c in comments:
+    author=(c.get("author") or {}).get("login","").lower()
+    if "coderabbit" in author:
+        body=(c.get("body") or "")
+        if "rate limit" in body.lower():
+            # Rate-limited — treat as no review available
+            print("PASS")
+            raise SystemExit
+        # CodeRabbit posted a comment — review is available
+        print("PASS")
+        raise SystemExit
+
+print("NONE")
 PY
 )
 

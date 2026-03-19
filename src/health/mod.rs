@@ -188,6 +188,7 @@ pub fn wait_for_agent_idle(
     session_name: &str,
     timeout: Duration,
     idle_stability: Duration,
+    startup_grace: Duration,
 ) -> Result<WaitForIdleResult> {
     let adapter = runtime::get_adapter(runtime_name, None);
     let runtime_prefers_signal = adapter
@@ -212,7 +213,15 @@ pub fn wait_for_agent_idle(
 
         let output = TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES)?;
         let pane_hash = hash_output(&output);
-        let changed = last_hash.is_none_or(|h| h != pane_hash);
+        let in_startup = start.elapsed() < startup_grace;
+        // During startup grace, the first observation (None → Some) is not
+        // a real content change — suppress it so we don't set saw_activity
+        // before the agent has actually started producing output.
+        let changed = if in_startup && last_hash.is_none() {
+            false
+        } else {
+            last_hash.is_none_or(|h| h != pane_hash)
+        };
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
 
         if let Some(adapter) = &adapter
@@ -224,14 +233,9 @@ pub fn wait_for_agent_idle(
             ));
         }
 
-        if let Some(adapter) = &adapter
-            && adapter.detect_completion_signal(&output).is_some()
-            && saw_activity
-        {
-            return Ok(WaitForIdleResult::completed(
-                WaitCompletionSource::RuntimeSignal,
-            ));
-        }
+        let has_completion_signal = adapter
+            .as_ref()
+            .is_some_and(|a| a.detect_completion_signal(&output).is_some());
 
         if changed
             || runtime_status
@@ -241,9 +245,17 @@ pub fn wait_for_agent_idle(
             saw_activity = true;
             idle_since = None;
             runtime_fallback_since = None;
-        } else if saw_activity {
+        } else if saw_activity || (!in_startup && has_completion_signal) {
+            // After startup grace, a stable completion signal without prior
+            // saw_activity means the agent already finished processing before
+            // we started watching — treat as valid idle.
             if let Some(since) = idle_since {
                 if since.elapsed() >= idle_stability {
+                    if has_completion_signal {
+                        return Ok(WaitForIdleResult::completed(
+                            WaitCompletionSource::RuntimeSignal,
+                        ));
+                    }
                     if runtime_prefers_signal {
                         if let Some(fallback_since) = runtime_fallback_since {
                             if fallback_since.elapsed() >= runtime_fallback_grace {

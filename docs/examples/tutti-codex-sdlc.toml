@@ -24,7 +24,7 @@ prompt = "You orchestrate workflow state and handoffs only. You do not implement
 
 [[agent]]
 name = "implementer"
-runtime = "codex"
+runtime = "claude-code"
 worktree = true
 persistent = true
 scope = "src/**"
@@ -68,6 +68,14 @@ id = "create_branch"
 type = "command"
 agent = "implementer"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_clean_baseline"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "scripts/automation/verify_clean_baseline.sh .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -118,6 +126,14 @@ id = "create_branch"
 type = "command"
 agent = "implementer"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_clean_baseline"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "scripts/automation/verify_clean_baseline.sh .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
 # 3) Planning first (Claude)

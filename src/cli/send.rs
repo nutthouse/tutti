@@ -88,6 +88,7 @@ pub fn run(
             &session,
             Duration::from_secs(options.timeout_secs.max(1)),
             Duration::from_secs(options.idle_stable_secs.max(1)),
+            Duration::from_secs(10),
         )?;
         if !outcome.is_completed() {
             return Err(match outcome.failure_reason {
