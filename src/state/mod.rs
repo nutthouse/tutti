@@ -197,11 +197,17 @@ pub struct SdlcTransitionRecord {
 pub struct SdlcRunLedgerRecord {
     pub run_id: String,
     pub issue_number: u64,
+    #[serde(default)]
+    pub issue_title: Option<String>,
     pub repository: String,
     pub workflow_name: String,
     pub state: SdlcRunState,
     pub updated_at: DateTime<Utc>,
     pub actor: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub failure_message: Option<String>,
     #[serde(default)]
     pub transitions: Vec<SdlcTransitionRecord>,
 }
@@ -610,6 +616,28 @@ pub fn load_sdlc_run_ledger(
     let body = std::fs::read_to_string(path)?;
     let record = serde_json::from_str(&body).map_err(|e| TuttiError::State(e.to_string()))?;
     Ok(Some(record))
+}
+
+#[allow(dead_code)]
+pub fn load_active_runs(project_root: &Path) -> Result<Vec<SdlcRunLedgerRecord>> {
+    let dir = project_root.join(".tutti").join("state").join("run-ledger");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json")
+            && !path.ends_with(".lock")
+            && let Ok(body) = std::fs::read_to_string(&path)
+            && let Ok(record) = serde_json::from_str::<SdlcRunLedgerRecord>(&body)
+        {
+            records.push(record);
+        }
+    }
+    records.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(records)
 }
 
 #[allow(dead_code)]
@@ -1151,6 +1179,9 @@ mod tests {
             state: SdlcRunState::Selected,
             updated_at: Utc::now(),
             actor: "wren".to_string(),
+            issue_title: None,
+            branch: None,
+            failure_message: None,
             transitions: vec![],
         };
 
@@ -1188,6 +1219,9 @@ mod tests {
             state: SdlcRunState::Selected,
             updated_at: Utc::now(),
             actor: "wren".to_string(),
+            issue_title: None,
+            branch: None,
+            failure_message: None,
             transitions: vec![],
         };
 
@@ -1216,6 +1250,9 @@ mod tests {
             state: SdlcRunState::Branched,
             updated_at: Utc::now(),
             actor: "wren".to_string(),
+            issue_title: None,
+            branch: None,
+            failure_message: None,
             transitions: vec![],
         };
 
@@ -1294,6 +1331,9 @@ mod tests {
             state: SdlcRunState::Tested,
             updated_at: now,
             actor: "wren".to_string(),
+            issue_title: None,
+            branch: None,
+            failure_message: None,
             transitions: vec![SdlcTransitionRecord {
                 from: SdlcRunState::Implemented,
                 to: SdlcRunState::Tested,

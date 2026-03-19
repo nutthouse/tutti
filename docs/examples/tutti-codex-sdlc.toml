@@ -24,7 +24,7 @@ prompt = "You orchestrate workflow state and handoffs only. You do not implement
 
 [[agent]]
 name = "implementer"
-runtime = "codex"
+runtime = "claude-code"
 worktree = true
 persistent = true
 scope = "src/**"
@@ -58,6 +58,11 @@ name = "sdlc-smoke"
 description = "Preflight test run before unattended automation"
 
 [[workflow.step]]
+id = "ensure_implementer"
+type = "ensure_running"
+agent = "implementer"
+
+[[workflow.step]]
 id = "select_issue"
 type = "command"
 run = "cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800"
@@ -69,6 +74,14 @@ type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_clean_baseline"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "scripts/automation/verify_clean_baseline.sh .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -120,6 +133,14 @@ type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
 run = "scripts/automation/create_issue_branch.sh .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_clean_baseline"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "scripts/automation/verify_clean_baseline.sh .tutti/state/auto/branch.json"
 fail_mode = "closed"
 
 # 3) Planning first (Claude)
@@ -224,3 +245,10 @@ inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/bran
 wait_for_idle = true
 wait_timeout_secs = 900
 text = "Summarize final readiness, residual risks, and merge recommendation."
+
+# 10) Land (merge gate enforced by automation)
+[[workflow.step]]
+id = "land_changes"
+type = "land"
+agent = "implementer"
+fail_mode = "closed"

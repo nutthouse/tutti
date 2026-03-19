@@ -2,11 +2,12 @@ use crate::error::{Result, TuttiError};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorktreeSnapshot {
     pub exists: bool,
     pub dirty: bool,
     pub at_project_head: bool,
+    pub current_branch: Option<String>,
 }
 
 /// Ensure a git worktree exists for the given agent.
@@ -163,11 +164,13 @@ pub fn inspect_worktree(project_root: &Path, agent_name: &str) -> Result<Worktre
 
     let root_head = git_rev_parse(project_root)?;
     let worktree_head = git_rev_parse(&worktree_dir)?;
+    let current_branch = git_current_branch(&worktree_dir)?;
 
     Ok(WorktreeSnapshot {
         exists: true,
         dirty,
         at_project_head: root_head == worktree_head,
+        current_branch,
     })
 }
 
@@ -191,6 +194,27 @@ fn git_rev_parse(path: &Path) -> Result<String> {
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_current_branch(path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::Worktree(format!(
+            "failed to resolve branch at '{}': {stderr}",
+            path.display()
+        )));
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // "HEAD" means detached state — no branch
+    if branch == "HEAD" {
+        Ok(None)
+    } else {
+        Ok(Some(branch))
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +312,7 @@ mod tests {
                 exists: true,
                 dirty: false,
                 at_project_head: true,
+                current_branch: Some("tutti/tester".to_string()),
             }
         );
     }
@@ -306,6 +331,7 @@ mod tests {
                 exists: true,
                 dirty: true,
                 at_project_head: true,
+                current_branch: Some("tutti/tester".to_string()),
             }
         );
 
@@ -318,6 +344,7 @@ mod tests {
                 exists: true,
                 dirty: false,
                 at_project_head: false,
+                current_branch: Some("tutti/tester".to_string()),
             }
         );
     }
@@ -342,6 +369,7 @@ mod tests {
                 exists: true,
                 dirty: false,
                 at_project_head: true,
+                current_branch: Some("tutti/tester".to_string()),
             }
         );
         assert!(!refreshed.join("feature.txt").exists());

@@ -423,6 +423,31 @@ fn prepare_agent_working_dir(
         }
     }
 
+    if use_fresh
+        && let Ok(snapshot) = worktree::inspect_worktree(project_root, &agent.name)
+        && snapshot.exists
+        && let Some(current_branch) = snapshot.current_branch.clone()
+        && current_branch.starts_with("auto/issue-")
+        && current_branch != branch
+    {
+        eprintln!(
+            "  {} preserving {} workflow worktree on branch {} instead of resetting to {}",
+            "warn".yellow(),
+            agent.name,
+            current_branch,
+            branch
+        );
+        let wt_path = project_root
+            .join(".tutti")
+            .join("worktrees")
+            .join(&agent.name);
+        return (
+            wt_path.to_string_lossy().to_string(),
+            Some(wt_path),
+            Some(current_branch),
+        );
+    }
+
     let ensure_result = if use_fresh {
         worktree::ensure_fresh_worktree(project_root, &agent.name, &branch)
     } else {

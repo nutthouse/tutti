@@ -148,8 +148,9 @@ fn main() {
             IssueClaimSubcommand::Acquire {
                 ref output,
                 ref label,
+                ref milestone,
                 lease_ttl_secs,
-            } => cli::issue_claim::acquire(output, label, lease_ttl_secs),
+            } => cli::issue_claim::acquire(output, label, milestone.as_deref(), lease_ttl_secs),
             IssueClaimSubcommand::Heartbeat { ref state } => cli::issue_claim::heartbeat(state),
             IssueClaimSubcommand::Release {
                 ref state,

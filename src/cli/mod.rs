@@ -437,6 +437,10 @@ pub enum IssueClaimSubcommand {
         #[arg(long, default_value = "agent-ops")]
         label: String,
 
+        /// Optional GitHub milestone title to filter
+        #[arg(long)]
+        milestone: Option<String>,
+
         /// Lease time-to-live in seconds (default: 1800 = 30 min)
         #[arg(long)]
         lease_ttl_secs: Option<u64>,

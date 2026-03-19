@@ -48,13 +48,22 @@ pub(super) static CONFIG: RuntimeConfig = RuntimeConfig {
         "Editing",
         "Running",
         "Searching",
+        "Searching for",
         "Unravelling",
+        "(thinking)",
     ],
     idle_patterns: &[
         "What would you like to do?",
         "How can I help",
         "> ",
         "Claude Code",
+        "don't ask on",
+        "shift+tab to cycle",
     ],
-    completion_patterns: &["What would you like to do?", "How can I help"],
+    completion_patterns: &[
+        "What would you like to do?",
+        "How can I help",
+        "don't ask on",
+        "shift+tab to cycle",
+    ],
 };

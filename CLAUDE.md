@@ -35,6 +35,13 @@
 - Prefer explicit imports over glob imports
 - Keep functions focused — if it's doing two things, split it
 
+## Code Review (CodeRabbit)
+- CodeRabbit is configured as a required reviewer on PRs
+- When it finds issues, it submits a "Request changes" review to block merging
+- Once all CodeRabbit comments are resolved and pre-merge checks pass, it automatically switches to "Approve"
+- Do not manually dismiss CodeRabbit reviews — fix the issues and let it re-review
+- PRs are only mergeable when CodeRabbit approves AND all CI checks are green
+
 ## Dogfooding
 - This project uses itself (`tt`) to orchestrate development — tutti developing tutti
 - When a tutti feature doesn't work during a dogfood run, **fix the framework** (the `tt` command / runtime / session code), don't work around it by doing the task manually

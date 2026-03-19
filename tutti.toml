@@ -1,0 +1,309 @@
+[workspace]
+name = "tutti"
+description = "Hybrid SDLC dogfood for issue #62"
+
+[workspace.auth]
+default_profile = "claude-max"
+
+[defaults]
+worktree = true
+runtime = "codex"
+
+# Optional environment variables when running workflows:
+#   ISSUE_LABEL=agent-ops
+#   ISSUE_MILESTONE=v0.4.0
+#
+# Setting ISSUE_MILESTONE lets the choir work a specific release train backlog.
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+worktree = true
+fresh_worktree = true
+persistent = false
+prompt = "Stand by for Tutti workflow instructions. Do not begin planning until a workflow message tells you exactly what artifact to write."
+
+[[agent]]
+name = "conductor"
+runtime = "codex"
+worktree = true
+fresh_worktree = true
+persistent = false
+prompt = "Stand by for Tutti workflow instructions. Do not begin orchestration work until a workflow message tells you what to do."
+
+[[agent]]
+name = "implementer"
+runtime = "claude-code"
+worktree = true
+fresh_worktree = true
+persistent = false
+scope = "src/**"
+prompt = "Stand by for Tutti workflow instructions. Do not begin code changes until a workflow message tells you what task or artifact to complete."
+
+[[agent]]
+name = "tester"
+runtime = "claude-code"
+worktree = true
+fresh_worktree = true
+persistent = false
+scope = "src/**"
+prompt = "Stand by for Tutti workflow instructions. Do not begin test work until a workflow message tells you what verification or artifact to complete."
+
+[[agent]]
+name = "reviewer"
+runtime = "codex"
+worktree = true
+fresh_worktree = true
+persistent = false
+prompt = "Stand by for Tutti workflow instructions. Do not begin review work until a workflow message tells you what to review."
+
+[[agent]]
+name = "docs-release"
+runtime = "claude-code"
+worktree = true
+fresh_worktree = true
+persistent = false
+scope = "**"
+prompt = "Stand by for Tutti workflow instructions. Do not begin docs or release work until a workflow message tells you what artifact or changes to produce."
+
+[[workflow]]
+name = "sdlc-smoke"
+description = "Preflight release-train smoke run before unattended automation"
+
+[[workflow.step]]
+id = "ensure_implementer_smoke"
+type = "ensure_running"
+agent = "implementer"
+
+[[workflow.step]]
+id = "select_issue"
+type = "command"
+run = "bash -lc 'set -euo pipefail; cmd=(cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800); if [ -n \"${ISSUE_MILESTONE:-}\" ]; then cmd+=(--milestone \"$ISSUE_MILESTONE\"); fi; \"${cmd[@]}\"'"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "create_branch"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/create_issue_branch.sh\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\"'"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_clean_baseline"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/verify_clean_baseline.sh\" \"$root/.tutti/state/auto/branch.json\"'"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "validate_smoke"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "release_smoke_issue"
+type = "command"
+run = "cargo run --quiet -- issue-claim release --reason \"sdlc-smoke complete\""
+fail_mode = "closed"
+
+[[workflow]]
+name = "sdlc-auto"
+description = "Full issue -> plan -> branch -> code -> test -> docs/version -> PR -> review loop"
+
+[[workflow.step]]
+id = "select_issue"
+type = "command"
+run = "bash -lc 'set -euo pipefail; cmd=(cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800); if [ -n \"${ISSUE_MILESTONE:-}\" ]; then cmd+=(--milestone \"$ISSUE_MILESTONE\"); fi; \"${cmd[@]}\"'"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "create_branch"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/create_issue_branch.sh\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\"'"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_clean_baseline"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/verify_clean_baseline.sh\" \"$root/.tutti/state/auto/branch.json\"'"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "ensure_planner"
+type = "ensure_running"
+agent = "planner"
+
+[[workflow.step]]
+id = "ensure_conductor"
+type = "ensure_running"
+agent = "conductor"
+
+[[workflow.step]]
+id = "ensure_implementer"
+type = "ensure_running"
+agent = "implementer"
+
+[[workflow.step]]
+id = "ensure_tester"
+type = "ensure_running"
+agent = "tester"
+
+[[workflow.step]]
+id = "ensure_docs_release"
+type = "ensure_running"
+agent = "docs-release"
+
+[[workflow.step]]
+id = "plan_issue"
+type = "prompt"
+agent = "planner"
+inject_files = [".tutti/state/auto/selected_issue.json"]
+output_json = ".tutti/state/auto/plan_issue.json"
+wait_for_idle = true
+wait_timeout_secs = 1200
+text = """
+Read the full issue context from .tutti/state/auto/selected_issue.json in your worktree. Inspect at most 4 directly relevant files only if the issue body is insufficient. Then delete and fully rewrite .tutti/state/auto/plan_issue.json in your worktree as exactly one JSON object with this top-level shape:
+
+{
+  "issue_number": <number copied exactly from selected_issue.json>,
+  "issue_title": "<title copied exactly from selected_issue.json title>",
+  "scope_summary": "<non-empty concrete string>",
+  "target_files": ["src/path/to/file.rs"],
+  "implementation_tasks": ["task 1"],
+  "test_tasks": ["task 1"],
+  "docs_release_tasks": [],
+  "risks": [],
+  "first_slice": "<smallest coherent implementation slice>"
+}
+
+Rules:
+- overwrite the file completely; do not append and do not reuse stale contents
+- issue_number and issue_title must match selected_issue.json exactly
+- scope_summary and first_slice must be non-empty concrete strings
+- target_files must contain at least one file path string
+- implementation_tasks, test_tasks, docs_release_tasks, and risks must be JSON arrays of strings
+- do not do broad repo exploration
+- do not ask follow-up questions
+- stop once the JSON plan is written
+
+Respond with a brief confirmation after writing the file.
+"""
+
+[[workflow.step]]
+id = "implement_code"
+type = "prompt"
+agent = "implementer"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 3600
+text = """
+Read the full issue body from .tutti/state/auto/selected_issue.json, read the planner handoff JSON from {{output.plan_issue.path}}, and use .tutti/state/auto/branch.json as source of truth for the target branch. Implement only the smallest coherent code slice that advances the issue and aligns with plan_issue.first_slice. Inspect only the files named in the plan plus any directly adjacent test/helper files you need.
+
+Rules:
+- commit your code changes for this slice
+- push the committed result to the branch from branch.json
+- if your worktree is detached, push with git push origin HEAD:<target-branch>
+- if blocked, do not fabricate success; reply with the concrete blocker summary instead of claiming completion
+
+After the code is committed and pushed, respond briefly with changed files, verification commands, branch name, and pushed commit SHA.
+"""
+
+[[workflow.step]]
+id = "record_implement_result"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); python3 \"$root/scripts/automation/write_implement_result.py\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\" .tutti/state/auto/implement_result.json'"
+output_json = ".tutti/state/auto/implement_result.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_impl_progress"
+type = "command"
+run = "python3 scripts/automation/verify_branch_has_changes.py .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "test_update_and_validate"
+type = "command"
+agent = "implementer"
+cwd = "agent_worktree"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "docs_and_version"
+type = "prompt"
+agent = "docs-release"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 1800
+text = "Update docs and changelog. If behavior changed, increment version in Cargo.toml according to VERSIONING.md and note release impact. Use .tutti/state/auto/branch.json as source of truth for the target branch, then commit and push docs/release changes to that branch. If your worktree is detached, push with git push origin HEAD:<target-branch>."
+
+[[workflow.step]]
+id = "validate"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "verify_branch_has_changes"
+type = "command"
+run = "python3 scripts/automation/verify_branch_has_changes.py .tutti/state/auto/branch.json"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "open_pr"
+type = "command"
+run = "python3 scripts/automation/open_or_create_pr.py .tutti/state/auto/selected_issue.json .tutti/state/auto/branch.json main"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "wait_coderabbit"
+type = "command"
+run = "python3 scripts/automation/wait_and_collect_coderabbit.py .tutti/state/auto/branch.json 5 .tutti/state/auto/coderabbit_status.json .tutti/state/auto/coderabbit-feedback.md"
+timeout_secs = 420
+fail_mode = "open"
+
+[[workflow.step]]
+id = "apply_coderabbit_feedback"
+type = "prompt"
+agent = "implementer"
+inject_files = [".tutti/state/auto/coderabbit-feedback.md", ".tutti/state/auto/branch.json"]
+wait_for_idle = true
+wait_timeout_secs = 2400
+text = "Apply CodeRabbit feedback if actionable, rerun tests, and push changes on the branch named in .tutti/state/auto/branch.json. If no actionable items remain, state that explicitly."
+
+[[workflow.step]]
+id = "revalidate"
+type = "command"
+run = "cargo test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "stop_idle_agents"
+type = "command"
+run = "cargo run --quiet -- down planner; cargo run --quiet -- down conductor; cargo run --quiet -- down tester; cargo run --quiet -- down docs-release; true"
+fail_mode = "open"
+
+[[workflow.step]]
+id = "final_review"
+type = "review"
+agent = "implementer"
+reviewer = "reviewer"
+
+[[workflow.step]]
+id = "ready_summary"
+type = "prompt"
+agent = "conductor"
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json", ".tutti/state/auto/coderabbit-feedback.md"]
+wait_for_idle = true
+wait_timeout_secs = 900
+text = "Summarize final readiness, residual risks, release impact, and merge recommendation."
