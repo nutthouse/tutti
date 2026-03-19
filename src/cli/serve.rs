@@ -1316,7 +1316,8 @@ mod tests {
 
     #[test]
     fn runs_data_pagination_slices_results() {
-        let dir = std::env::temp_dir().join(format!("tutti-test-runs-paginate-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-runs-paginate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         crate::state::ensure_tutti_dir(&dir).unwrap();
 
@@ -1367,7 +1368,8 @@ mod tests {
 
     #[test]
     fn events_data_pagination_with_next_cursor() {
-        let dir = std::env::temp_dir().join(format!("tutti-test-events-paginate-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-events-paginate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         crate::state::ensure_tutti_dir(&dir).unwrap();
 
