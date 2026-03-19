@@ -297,6 +297,23 @@ fn start_control_http_server(
     Ok(())
 }
 
+fn cors_headers() -> Vec<Header> {
+    let mut headers = Vec::new();
+    if let Some(h) = header("Access-Control-Allow-Origin", "*") {
+        headers.push(h);
+    }
+    if let Some(h) = header("Access-Control-Allow-Methods", "GET, POST, OPTIONS") {
+        headers.push(h);
+    }
+    if let Some(h) = header(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Idempotency-Key",
+    ) {
+        headers.push(h);
+    }
+    headers
+}
+
 fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
     let is_stream = request.method() == &Method::Get
         && request.url().split('?').next() == Some("/v1/events/stream");
@@ -305,10 +322,23 @@ fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
         return;
     }
 
+    // Handle CORS preflight
+    if request.method() == &Method::Options {
+        let mut response = Response::from_string("").with_status_code(StatusCode(204));
+        for h in cors_headers() {
+            response = response.with_header(h);
+        }
+        let _ = request.respond(response);
+        return;
+    }
+
     let mut request = request;
     let (status, body) = route_request(&mut request, targets);
     let mut response = Response::from_string(body).with_status_code(status);
     if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
+        response = response.with_header(h);
+    }
+    for h in cors_headers() {
         response = response.with_header(h);
     }
     let _ = request.respond(response);
@@ -376,21 +406,30 @@ fn route_read(
         }
         "/v1/status" | "/v1/voices" => Ok(api_ok("status.list", status_data(targets)?)),
         "/v1/workflows" => Ok(api_ok("workflows.list", workflows_data(targets))),
-        "/v1/runs" => Ok(api_ok("runs.list", runs_data(targets)?)),
+        "/v1/runs" => Ok(api_ok(
+            "runs.list",
+            runs_data(
+                targets,
+                query.get("limit").and_then(|v| v.parse::<usize>().ok()),
+                query.get("offset").and_then(|v| v.parse::<usize>().ok()),
+            )?,
+        )),
         "/v1/logs" => Ok(api_ok("logs.list", logs_data(targets)?)),
         "/v1/handoffs" => Ok(api_ok("handoffs.list", handoffs_data(targets)?)),
         "/v1/policy-decisions" => Ok(api_ok(
             "policy_decisions.list",
             policy_decisions_data(targets, query.get("workspace").map(|s| s.as_str()))?,
         )),
-        "/v1/events" => Ok(api_ok(
-            "events.list",
-            events_data(
+        "/v1/events" => {
+            let limit = query.get("limit").and_then(|v| v.parse::<usize>().ok());
+            let result = events_data(
                 targets,
                 query.get("cursor").map(|s| s.as_str()),
                 query.get("workspace").map(|s| s.as_str()),
-            )?,
-        )),
+                limit,
+            )?;
+            Ok(result)
+        }
         _ if path.starts_with("/v1/health/") => {
             let parts: Vec<&str> = path.split('/').collect();
             if parts.len() == 5 {
@@ -717,7 +756,11 @@ fn workflows_data(targets: &[WorkspaceTarget]) -> Value {
     Value::Array(rows)
 }
 
-fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
+fn runs_data(
+    targets: &[WorkspaceTarget],
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Value> {
     let mut rows = Vec::new();
     for target in targets {
         let path = target
@@ -738,7 +781,25 @@ fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
             }
         }
     }
-    Ok(Value::Array(rows))
+    // Sort by timestamp descending for browser timeline rendering
+    rows.sort_by(|a, b| {
+        let ts_a = a.get("timestamp").and_then(Value::as_str).unwrap_or("");
+        let ts_b = b.get("timestamp").and_then(Value::as_str).unwrap_or("");
+        ts_b.cmp(ts_a)
+    });
+    let total = rows.len();
+    let offset = offset.unwrap_or(0);
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .skip(offset)
+        .take(limit.unwrap_or(usize::MAX))
+        .collect();
+    Ok(json!({
+        "items": rows,
+        "total": total,
+        "offset": offset,
+        "limit": limit
+    }))
 }
 
 fn logs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
