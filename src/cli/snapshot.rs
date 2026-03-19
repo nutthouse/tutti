@@ -21,8 +21,10 @@ pub struct AgentSnapshot {
     pub running: bool,
     pub ctx_pct: Option<u8>,
     /// Unified health-state classification derived from health probe data.
+    #[allow(dead_code)]
     pub health_state: HealthState,
     /// Human-readable reason for the current health state (e.g. auth failure detail).
+    #[allow(dead_code)]
     pub health_reason: Option<String>,
     /// Present only when tail was requested for this snapshot.
     pub tail_lines: Option<Vec<String>>,
@@ -43,9 +45,14 @@ pub fn gather_workspace_snapshots_with_selected_tail(
 ) -> Vec<AgentSnapshot> {
     let mut snapshots = Vec::new();
 
-    // Probe health for all agents once; fall back to empty vec on error.
-    let health_records = health::probe_workspace(config, project_root, 50)
-        .unwrap_or_default();
+    // Probe health for all agents once; fall back to empty vec on probe failure.
+    let health_records = match health::probe_workspace(config, project_root, 50) {
+        Ok(records) => records,
+        Err(e) => {
+            eprintln!("  {} health probe failed: {e}", "warn".yellow());
+            Vec::new()
+        }
+    };
 
     for agent in &config.agents {
         let runtime_name = agent
@@ -78,8 +85,12 @@ pub fn gather_workspace_snapshots_with_selected_tail(
 
         let agent_health = health_records.iter().find(|h| h.agent == agent.name);
         let health_state = agent_health
-            .map(|h| health::classify_health_state(h))
-            .unwrap_or(if running { HealthState::Unknown } else { HealthState::Stopped });
+            .map(health::classify_health_state)
+            .unwrap_or(if running {
+                HealthState::Unknown
+            } else {
+                HealthState::Stopped
+            });
         let health_reason = agent_health.and_then(|h| h.reason.clone());
 
         snapshots.push(build_snapshot(SnapshotBuildArgs {
