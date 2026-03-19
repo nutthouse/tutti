@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
-const ENFORCE_MERGE_GATE_ENV: &str = "TT_ENFORCE_MERGE_GATE";
+pub(crate) const ENFORCE_MERGE_GATE_ENV: &str = "TT_ENFORCE_MERGE_GATE";
 
 pub fn run(agent_ref: &str, pr: bool, force: bool) -> Result<()> {
     run_with_options(agent_ref, pr, force, merge_gate_enabled())
