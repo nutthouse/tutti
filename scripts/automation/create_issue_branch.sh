@@ -4,16 +4,17 @@ set -euo pipefail
 # Create a feature branch from selected issue JSON.
 # Usage: create_issue_branch.sh [selected_issue_json] [output_json]
 
-ISSUE_JSON="${1:-.tutti/state/auto/selected_issue.json}"
-OUT_FILE="${2:-.tutti/state/auto/branch.json}"
-BASE_BRANCH="${BASE_BRANCH:-main}"
-
 # Safety: refuse to run destructive commands outside an agent worktree
 TOPLEVEL=$(git rev-parse --show-toplevel)
 case "$TOPLEVEL" in
   */.tutti/worktrees/*) ;;
   *) echo "FATAL: create_issue_branch.sh must run inside an agent worktree, not $TOPLEVEL" >&2; exit 1 ;;
 esac
+
+PROJECT_ROOT=$(cd "$TOPLEVEL/../.." && pwd)
+ISSUE_JSON="${1:-$PROJECT_ROOT/.tutti/state/auto/selected_issue.json}"
+OUT_FILE="${2:-$PROJECT_ROOT/.tutti/state/auto/branch.json}"
+BASE_BRANCH="${BASE_BRANCH:-main}"
 
 mkdir -p "$(dirname "$OUT_FILE")"
 
@@ -32,19 +33,19 @@ git fetch origin "$BASE_BRANCH"
 
 # Pre-clean: discard any carried state from the current branch
 git reset --hard HEAD
-git clean -fd
+git clean -ffdx
 
 # Switch to the automation branch from a clean baseline
 git checkout -B "$BRANCH" "origin/$BASE_BRANCH"
 
-# Post-clean: guarantee working tree matches origin exactly
+# Post-clean: guarantee working tree matches origin exactly (including ignored files)
 git reset --hard "origin/$BASE_BRANCH"
-git clean -fd
+git clean -ffdx
 
 BASE_SHA=$(git rev-parse HEAD)
 
-# Assert clean baseline
-DIRTY=$(git status --porcelain)
+# Assert clean baseline, including ignored files
+DIRTY=$(git status --porcelain --ignored)
 if [ -n "$DIRTY" ]; then
   echo "FATAL: worktree is not clean after reset:" >&2
   echo "$DIRTY" >&2

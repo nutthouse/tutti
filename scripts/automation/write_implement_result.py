@@ -47,6 +47,14 @@ def main() -> int:
         base_sha = run_git(["rev-parse", f"origin/{base_branch}"])
 
     commit_sha = run_git(["rev-parse", "HEAD"])
+    current_branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    if current_branch not in {"HEAD", target_branch}:
+        print(
+            f"Current branch is {current_branch}; expected {target_branch} or detached HEAD",
+            file=sys.stderr,
+        )
+        return 1
+
     is_ancestor = subprocess.run(
         ["git", "merge-base", "--is-ancestor", base_sha, "HEAD"],
         text=True,

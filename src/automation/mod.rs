@@ -39,6 +39,12 @@ struct WorkflowBranchState {
     base_sha: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SelectedIssueState {
+    issue_number: u64,
+    title: String,
+}
+
 fn default_base_branch() -> String {
     "main".to_string()
 }
@@ -864,6 +870,17 @@ impl<'a> WorkflowExecutor<'a> {
                             break;
                         }
 
+                        // Remove stale output_json before sending prompt so wait
+                        // helpers don't short-circuit on a leftover file from a
+                        // previous attempt.
+                        if let ResolvedStep::Prompt {
+                            output_json: Some(path),
+                            ..
+                        } = step
+                        {
+                            let _ = std::fs::remove_file(path);
+                        }
+
                         let baseline_pane_hash =
                             TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)
                                 .ok()
@@ -1056,14 +1073,14 @@ impl<'a> WorkflowExecutor<'a> {
                                     TmuxSession::send_text(session_name, &retry_prompt)?;
                                     maybe_submit_buffered_prompt(session_name, &retry_prompt)?;
 
-                                    if !wait_for_prompt_activity_or_output(
-                                        runtime,
+                                    wait_for_prompt_output_file(
                                         session_name,
+                                        runtime,
                                         &retry_prompt,
-                                        None,
-                                        Some(path),
-                                        Duration::from_secs(60),
-                                    )? {
+                                        path,
+                                        Duration::from_secs(120),
+                                    )?;
+                                    if !path.exists() {
                                         failed_steps.push(step_index);
                                         success = false;
                                         step_results.push(StepResult {
@@ -1074,21 +1091,13 @@ impl<'a> WorkflowExecutor<'a> {
                                             exit_code: None,
                                             timed_out: true,
                                             message: Some(format!(
-                                                "{id} retry did not start activity or produce output within 60s"
+                                                "{id} retry did not produce output within 120s"
                                             )),
                                             stdout: None,
                                             stderr: None,
                                         });
                                         break;
                                     }
-
-                                    wait_for_prompt_output_file(
-                                        session_name,
-                                        runtime,
-                                        &retry_prompt,
-                                        path,
-                                        Duration::from_secs(120),
-                                    )?;
                                 }
                                 match load_and_store_output(self.project_root, &run_id, id, path) {
                                     Ok(saved) => {
@@ -1119,6 +1128,18 @@ impl<'a> WorkflowExecutor<'a> {
                                 if step_id.as_deref() == Some("implement_code")
                                     && !prompt_step_has_branch_progress(self.project_root, agent)?
                                 {
+                                    if prompt_step_has_worktree_changes(self.project_root, agent)?
+                                        && finalize_implementer_worktree_changes(
+                                            self.project_root,
+                                            agent,
+                                        )?
+                                        && prompt_step_has_branch_progress(
+                                            self.project_root,
+                                            agent,
+                                        )?
+                                    {
+                                        continue;
+                                    }
                                     let retry_prompt = "Your previous attempt produced no commit beyond the branch baseline in .tutti/state/auto/branch.json. You are not done yet. If your worktree already has local code changes, do not keep exploring the repo. Review only the existing diff, keep the smallest valid slice, then stage it, commit it, and push it to the target branch now. If there are no useful local changes yet, make the smallest coherent code change now, commit it, and push it. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
                                     if !TmuxSession::session_exists(session_name) {
                                         start_and_wait_ready(
@@ -1196,6 +1217,26 @@ impl<'a> WorkflowExecutor<'a> {
                         if step_id.as_deref() == Some("implement_code")
                             && !prompt_step_has_branch_progress(self.project_root, agent)?
                         {
+                            if prompt_step_has_worktree_changes(self.project_root, agent)?
+                                && finalize_implementer_worktree_changes(self.project_root, agent)?
+                                && prompt_step_has_branch_progress(self.project_root, agent)?
+                            {
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Success,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: Some(0),
+                                    timed_out: false,
+                                    message: Some(
+                                        "implement_code diff finalized and pushed by Tutti"
+                                            .to_string(),
+                                    ),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                continue;
+                            }
                             let agent_runtime = self
                                 .config
                                 .agents
@@ -1223,6 +1264,29 @@ impl<'a> WorkflowExecutor<'a> {
                                 None,
                                 Duration::from_secs(60),
                             )? {
+                                if prompt_step_has_worktree_changes(self.project_root, agent)?
+                                    && finalize_implementer_worktree_changes(
+                                        self.project_root,
+                                        agent,
+                                    )?
+                                    && prompt_step_has_branch_progress(self.project_root, agent)?
+                                {
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Success,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: Some(0),
+                                        timed_out: false,
+                                        message: Some(
+                                            "implement_code retry diff finalized and pushed by Tutti"
+                                                .to_string(),
+                                        ),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    continue;
+                                }
                                 failed_steps.push(step_index);
                                 success = false;
                                 step_results.push(StepResult {
@@ -2258,6 +2322,105 @@ fn prompt_step_has_branch_progress(project_root: &Path, agent: &str) -> Result<b
     };
     let head_sha = git_output(&worktree_dir, &["rev-parse", "HEAD"])?;
     Ok(head_sha != base_sha)
+}
+
+fn prompt_step_has_worktree_changes(project_root: &Path, agent: &str) -> Result<bool> {
+    let worktree_dir = project_root.join(".tutti").join("worktrees").join(agent);
+    if !worktree_dir.exists() {
+        return Ok(false);
+    }
+    let status = git_output(&worktree_dir, &["status", "--porcelain"])?;
+    Ok(!status.trim().is_empty())
+}
+
+fn finalize_implementer_worktree_changes(project_root: &Path, agent: &str) -> Result<bool> {
+    let branch_file = project_root
+        .join(".tutti")
+        .join("state")
+        .join("auto")
+        .join("branch.json");
+    let selected_issue_file = project_root
+        .join(".tutti")
+        .join("state")
+        .join("auto")
+        .join("selected_issue.json");
+
+    if !branch_file.exists() || !selected_issue_file.exists() {
+        return Ok(false);
+    }
+
+    let branch_state: WorkflowBranchState =
+        serde_json::from_slice(&std::fs::read(&branch_file)?)
+            .map_err(|e| TuttiError::ConfigValidation(e.to_string()))?;
+    let selected_issue: SelectedIssueState =
+        serde_json::from_slice(&std::fs::read(&selected_issue_file)?)
+            .map_err(|e| TuttiError::ConfigValidation(e.to_string()))?;
+
+    let worktree_dir = project_root.join(".tutti").join("worktrees").join(agent);
+    if !worktree_dir.exists() {
+        return Ok(false);
+    }
+
+    let current_branch = git_output(&worktree_dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if current_branch != branch_state.branch {
+        return Ok(false);
+    }
+
+    if !prompt_step_has_worktree_changes(project_root, agent)? {
+        return Ok(false);
+    }
+
+    let commit_message = format!(
+        "feat: address issue #{} {}",
+        selected_issue.issue_number, selected_issue.title
+    );
+
+    let add = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&worktree_dir)
+        .output()?;
+    if !add.status.success() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "git add failed while finalizing implementer diff: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        )));
+    }
+
+    let commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=Tutti Automation",
+            "-c",
+            "user.email=tutti-automation@users.noreply.github.com",
+            "commit",
+            "-m",
+            &commit_message,
+        ])
+        .current_dir(&worktree_dir)
+        .output()?;
+    if !commit.status.success() {
+        let stderr = String::from_utf8_lossy(&commit.stderr);
+        if stderr.contains("nothing to commit") {
+            return Ok(false);
+        }
+        return Err(TuttiError::ConfigValidation(format!(
+            "git commit failed while finalizing implementer diff: {}",
+            stderr.trim()
+        )));
+    }
+
+    let push = Command::new("git")
+        .args(["push", "origin", &format!("HEAD:{}", branch_state.branch)])
+        .current_dir(&worktree_dir)
+        .output()?;
+    if !push.status.success() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "git push failed while finalizing implementer diff: {}",
+            String::from_utf8_lossy(&push.stderr).trim()
+        )));
+    }
+
+    Ok(true)
 }
 
 /// Start an agent session and wait for it to reach idle/ready state.

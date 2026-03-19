@@ -29,9 +29,9 @@ PY
   fi
 
   DATA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup,comments)
-  RESULT=$(echo "$DATA" | python3 - <<'PY'
-import json,sys
-obj=json.load(sys.stdin)
+  RESULT=$(DATA="$DATA" python3 - <<'PY'
+import json,os
+obj=json.loads(os.environ["DATA"])
 
 # Check status checks first
 checks=obj.get("statusCheckRollup") or []
