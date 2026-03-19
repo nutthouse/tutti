@@ -1,0 +1,16 @@
+• Changed files: src/automation/mod.rs, docs/examples/tutti-codex-sdlc.toml.
+
+  Verification commands run:
+
+  - cargo check
+  - cargo clippy --all-targets --all-features -- -D warnings
+
+  Branch: auto/issue-65-20260318162626
+  Pushed commit SHA: 7106d71a1c2efce148be0f4159343fbebf04ea1a
+
+  Blocker: both verification commands fail on the current branch tip due pre-existing
+  src/cli/up.rs errors constructing AgentState with nonexistent run_id and work_unit fields.
+
+› Implement {feature}
+
+  gpt-5.4 high · 68% left · ~/Documents/GitHub/tutti/.tutti/worktrees/implementer

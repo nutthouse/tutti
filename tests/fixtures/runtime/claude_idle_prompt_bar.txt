@@ -1,0 +1,11 @@
+⏺ I have enough context to write the plan. The issue is about making the
+  planner-to-implementer handoff deterministic in the sdlc-auto workflow.
+
+✻ Blanching… (1m 2s · ↓ 520 tokens · thinking)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's
+     current work
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt

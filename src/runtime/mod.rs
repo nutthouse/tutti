@@ -274,8 +274,9 @@ fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> Detect
     if spinner_match {
         working_score = working_score.max(0.70);
     }
-    if completion_match.is_some() {
-        // Structured completion markers outrank single-word pattern hits.
+    if completion_match.is_some() && !spinner_match {
+        // Structured completion markers in the trailing prompt bar outrank
+        // stale "thinking"/"searching" text higher up in scrollback.
         idle_score = idle_score.max(0.85);
     }
 
@@ -408,6 +409,12 @@ mod tests {
         assert!(
             a.detect_completion_signal("Done.\n\nWhat would you like to do?")
                 .is_some()
+        );
+        assert!(
+            a.detect_completion_signal(
+                "────────────────\n❯\n────────────────\n  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt"
+            )
+            .is_some()
         );
         assert!(a.supports_completion_signal());
     }
@@ -709,6 +716,8 @@ mod tests {
         let adapter = adapter("claude-code");
         let working = include_str!("../../tests/fixtures/runtime/claude_working_spinner.txt");
         let idle = include_str!("../../tests/fixtures/runtime/claude_idle_prompt.txt");
+        let idle_prompt_bar =
+            include_str!("../../tests/fixtures/runtime/claude_idle_prompt_bar.txt");
         let auth_failed = include_str!("../../tests/fixtures/runtime/claude_auth_failed.txt");
 
         let working_diag = adapter.diagnose(working);
@@ -720,6 +729,11 @@ mod tests {
         assert_eq!(idle_diag.status, AgentStatus::Idle);
         assert!(idle_diag.confidence >= 0.70);
         assert!(idle_diag.completion_match.is_some());
+
+        let idle_prompt_bar_diag = adapter.diagnose(idle_prompt_bar);
+        assert_eq!(idle_prompt_bar_diag.status, AgentStatus::Idle);
+        assert!(idle_prompt_bar_diag.confidence >= 0.70);
+        assert!(idle_prompt_bar_diag.completion_match.is_some());
 
         let auth_diag = adapter.diagnose(auth_failed);
         assert!(matches!(auth_diag.status, AgentStatus::AuthFailed(_)));

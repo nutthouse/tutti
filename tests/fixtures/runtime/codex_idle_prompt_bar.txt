@@ -1,0 +1,16 @@
+• Ran cargo check
+  └ Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.00s
+
+• Ran cargo clippy --all-targets --all-features
+  └ Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.16s
+
+  Pushed commit: 9122a8c14e7806d81100402809695ebb696138a9
+  Branch: auto/issue-65-20260318143129
+
+
+› Read the full issue body from .tutti/state/auto/selected_issue.json, read the
+  planner handoff JSON from /Users/adamnutt/Documents/GitHub/tutti/.tutti/
+  state/workflow-outputs/1773804677244-50127/plan_issue.json, and use .tutti/
+  state/auto/branch.json as source of truth for the target branch.
+
+  tab to queue message                                        57% context left

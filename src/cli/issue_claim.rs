@@ -137,17 +137,20 @@ fn gh_run_id() -> String {
 }
 
 /// List open issues for a label, returning raw JSON array.
-fn gh_list_issues(repo: &str, label: &str) -> Result<Vec<serde_json::Value>> {
-    let out = Command::new("gh")
+fn gh_list_issues(
+    repo: &str,
+    label: &str,
+    milestone: Option<&str>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "issue", "list", "--repo", repo, "--state", "open", "--label", label,
+    ]);
+    if let Some(milestone) = milestone {
+        cmd.args(["--milestone", milestone]);
+    }
+    let out = cmd
         .args([
-            "issue",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--label",
-            label,
             "--limit",
             "100",
             "--json",
@@ -460,12 +463,17 @@ fn winner_active_claim(claims: &[(u64, ClaimRecord)]) -> Option<(u64, &ClaimReco
 // ---------------------------------------------------------------------------
 
 /// `tt issue-claim acquire`
-pub fn acquire(output_path: &Path, label: &str, lease_ttl_secs: Option<u64>) -> Result<()> {
+pub fn acquire(
+    output_path: &Path,
+    label: &str,
+    milestone: Option<&str>,
+    lease_ttl_secs: Option<u64>,
+) -> Result<()> {
     let repo = gh_repo()?;
     let run_id = gh_run_id();
     let ttl = lease_ttl_secs.unwrap_or(DEFAULT_LEASE_TTL_SECS);
 
-    let issues = gh_list_issues(&repo, label)?;
+    let issues = gh_list_issues(&repo, label, milestone)?;
 
     // Filter out already-claimed issues and sort by creation date
     let mut candidates: Vec<&serde_json::Value> = issues
