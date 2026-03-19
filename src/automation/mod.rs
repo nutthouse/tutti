@@ -791,7 +791,7 @@ impl<'a> WorkflowExecutor<'a> {
                         ..
                     } => {
                         let started = std::time::Instant::now();
-                        let mut auto_started_session = false;
+                        let mut _auto_started_session = false;
                         let rendered = match render_template(text, &outputs, false) {
                             Ok(v) => v,
                             Err(e) => {
@@ -813,10 +813,13 @@ impl<'a> WorkflowExecutor<'a> {
                         };
 
                         if !TmuxSession::session_exists(session_name) {
-                            match with_project_root(self.project_root, || {
-                                crate::cli::up::run(Some(agent), None, false, false, None, None)
-                            }) {
-                                Ok(()) => auto_started_session = true,
+                            match start_and_wait_ready(
+                                self.project_root,
+                                self.config,
+                                agent,
+                                session_name,
+                            ) {
+                                Ok(()) => _auto_started_session = true,
                                 Err(e) => {
                                     failed_steps.push(step_index);
                                     success = false;
@@ -837,10 +840,6 @@ impl<'a> WorkflowExecutor<'a> {
                                     break;
                                 }
                             }
-                        }
-
-                        if auto_started_session {
-                            std::thread::sleep(Duration::from_secs(3));
                         }
 
                         if let Err(e) = inject_prompt_files(inject_files) {
@@ -1041,17 +1040,12 @@ impl<'a> WorkflowExecutor<'a> {
                                         path.display()
                                     );
                                     if !TmuxSession::session_exists(session_name) {
-                                        with_project_root(self.project_root, || {
-                                            crate::cli::up::run(
-                                                Some(agent),
-                                                None,
-                                                false,
-                                                false,
-                                                None,
-                                                None,
-                                            )
-                                        })?;
-                                        std::thread::sleep(Duration::from_secs(3));
+                                        start_and_wait_ready(
+                                            self.project_root,
+                                            self.config,
+                                            agent,
+                                            session_name,
+                                        )?;
                                     }
                                     TmuxSession::send_text(session_name, &retry_prompt)?;
                                     maybe_submit_buffered_prompt(session_name, &retry_prompt)?;
@@ -1121,17 +1115,12 @@ impl<'a> WorkflowExecutor<'a> {
                                 {
                                     let retry_prompt = "Your previous attempt produced no commit beyond the branch baseline in .tutti/state/auto/branch.json. You are not done yet. If your worktree already has local code changes, do not keep exploring the repo. Review only the existing diff, keep the smallest valid slice, then stage it, commit it, and push it to the target branch now. If there are no useful local changes yet, make the smallest coherent code change now, commit it, and push it. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
                                     if !TmuxSession::session_exists(session_name) {
-                                        with_project_root(self.project_root, || {
-                                            crate::cli::up::run(
-                                                Some(agent),
-                                                None,
-                                                false,
-                                                false,
-                                                None,
-                                                None,
-                                            )
-                                        })?;
-                                        std::thread::sleep(Duration::from_secs(3));
+                                        start_and_wait_ready(
+                                            self.project_root,
+                                            self.config,
+                                            agent,
+                                            session_name,
+                                        )?;
                                     }
                                     TmuxSession::send_text(session_name, retry_prompt)?;
                                     maybe_submit_buffered_prompt(session_name, retry_prompt)?;
@@ -1201,18 +1190,27 @@ impl<'a> WorkflowExecutor<'a> {
                         if step_id.as_deref() == Some("implement_code")
                             && !prompt_step_has_branch_progress(self.project_root, agent)?
                         {
+                            let agent_runtime = self
+                                .config
+                                .agents
+                                .iter()
+                                .find(|a| a.name == *agent)
+                                .map(|a| a.runtime.as_deref().unwrap_or("claude-code"))
+                                .unwrap_or("claude-code");
                             let retry_prompt = "You still have not produced a commit beyond the branch baseline in .tutti/state/auto/branch.json. If your worktree already has local code changes, stop exploring and commit the smallest valid diff now. Otherwise make the smallest coherent code change now, commit it, and push it to the target branch. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
                             if !TmuxSession::session_exists(session_name) {
-                                with_project_root(self.project_root, || {
-                                    crate::cli::up::run(Some(agent), None, false, false, None, None)
-                                })?;
-                                std::thread::sleep(Duration::from_secs(3));
+                                start_and_wait_ready(
+                                    self.project_root,
+                                    self.config,
+                                    agent,
+                                    session_name,
+                                )?;
                             }
                             TmuxSession::send_text(session_name, retry_prompt)?;
                             maybe_submit_buffered_prompt(session_name, retry_prompt)?;
 
                             if !wait_for_prompt_activity_or_output(
-                                "codex",
+                                agent_runtime,
                                 session_name,
                                 retry_prompt,
                                 None,
@@ -1229,7 +1227,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     exit_code: None,
                                     timed_out: true,
                                     message: Some(
-                                        "implement_code retry did not start activity within 20s"
+                                        "implement_code retry did not start activity within 60s"
                                             .to_string(),
                                     ),
                                     stdout: None,
@@ -1239,9 +1237,9 @@ impl<'a> WorkflowExecutor<'a> {
                             }
 
                             let retry_wait = health::wait_for_agent_idle(
-                                "codex",
+                                agent_runtime,
                                 session_name,
-                                Duration::from_secs(300),
+                                Duration::from_secs(3600),
                                 Duration::from_secs(5),
                                 Duration::from_secs(10),
                             )?;
@@ -1566,28 +1564,13 @@ impl<'a> WorkflowExecutor<'a> {
                             continue;
                         }
 
-                        match with_project_root(self.project_root, || {
-                            crate::cli::up::run(Some(agent), None, false, false, None, None)
-                        }) {
+                        match start_and_wait_ready(
+                            self.project_root,
+                            self.config,
+                            agent,
+                            session_name,
+                        ) {
                             Ok(()) => {
-                                // Wait for the agent to reach idle/ready state before
-                                // declaring it running. Without this, prompt steps that
-                                // immediately follow can send text to an uninitialized
-                                // session.
-                                let agent_runtime = self
-                                    .config
-                                    .agents
-                                    .iter()
-                                    .find(|a| a.name == *agent)
-                                    .map(|a| a.runtime.as_deref().unwrap_or("claude-code"))
-                                    .unwrap_or("claude-code");
-                                let _ = health::wait_for_agent_idle(
-                                    agent_runtime,
-                                    session_name,
-                                    Duration::from_secs(30),
-                                    Duration::from_secs(3),
-                                    Duration::from_secs(5),
-                                );
                                 step_results.push(StepResult {
                                     index: step_index,
                                     step_type: "ensure_running".to_string(),
@@ -2255,6 +2238,11 @@ fn prompt_step_has_branch_progress(project_root: &Path, agent: &str) -> Result<b
         return Ok(false);
     }
 
+    let current_branch = git_output(&worktree_dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    if current_branch != branch_state.branch {
+        return Ok(false);
+    }
+
     let base_sha = match branch_state.base_sha {
         Some(base_sha) => base_sha,
         None => git_output(
@@ -2264,6 +2252,32 @@ fn prompt_step_has_branch_progress(project_root: &Path, agent: &str) -> Result<b
     };
     let head_sha = git_output(&worktree_dir, &["rev-parse", "HEAD"])?;
     Ok(head_sha != base_sha)
+}
+
+/// Start an agent session and wait for it to reach idle/ready state.
+fn start_and_wait_ready(
+    project_root: &Path,
+    config: &TuttiConfig,
+    agent: &str,
+    session_name: &str,
+) -> Result<()> {
+    with_project_root(project_root, || {
+        crate::cli::up::run(Some(agent), None, false, false, None, None)
+    })?;
+    let agent_runtime = config
+        .agents
+        .iter()
+        .find(|a| a.name == agent)
+        .map(|a| a.runtime.as_deref().unwrap_or("claude-code"))
+        .unwrap_or("claude-code");
+    let _ = health::wait_for_agent_idle(
+        agent_runtime,
+        session_name,
+        Duration::from_secs(30),
+        Duration::from_secs(3),
+        Duration::from_secs(5),
+    );
+    Ok(())
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
@@ -3635,9 +3649,7 @@ fn ensure_agent_session_running(
     if TmuxSession::session_exists(&session) {
         return Ok(());
     }
-    with_project_root(project_root, || {
-        crate::cli::up::run(Some(agent), None, false, false, None, None)
-    })
+    start_and_wait_ready(project_root, config, agent, &session)
 }
 
 fn running_sessions(config: &TuttiConfig) -> std::collections::HashSet<String> {

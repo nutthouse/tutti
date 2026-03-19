@@ -31,14 +31,27 @@ with branch_file.open("r", encoding="utf-8") as f:
     branch = json.load(f)["branch"]
 
 subprocess.run(["git", "fetch", "origin", "main"], check=True, capture_output=True, text=True)
-subprocess.run(
+fetch_branch = subprocess.run(
     ["git", "fetch", "origin", branch],
     check=False,
     capture_output=True,
     text=True,
 )
+if fetch_branch.returncode != 0:
+    err = (fetch_branch.stderr or "").lower()
+    if "couldn't find remote ref" not in err:
+        print(fetch_branch.stderr.strip() or f"Failed to fetch origin/{branch}", file=sys.stderr)
+        sys.exit(1)
 
-branch_ref = f"origin/{branch}" if ref_exists(f"origin/{branch}") else branch
+remote_ref = f"origin/{branch}"
+if ref_exists(remote_ref):
+    branch_ref = remote_ref
+elif ref_exists(branch):
+    branch_ref = branch
+else:
+    print(f"Branch ref not found: {remote_ref} or {branch}", file=sys.stderr)
+    sys.exit(1)
+
 log = git_output(["log", "--oneline", f"origin/main..{branch_ref}"])
 if not log:
     print("No commits found on automation branch vs origin/main")

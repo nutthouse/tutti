@@ -42,6 +42,19 @@ def main() -> int:
         base_sha = run_git(["rev-parse", f"origin/{base_branch}"])
 
     commit_sha = run_git(["rev-parse", "HEAD"])
+    is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", base_sha, "HEAD"],
+        text=True,
+        capture_output=True,
+        check=False,
+    ).returncode == 0
+    if not is_ancestor:
+        print(
+            f"HEAD is not based on baseline {base_sha}",
+            file=sys.stderr,
+        )
+        return 1
+
     if commit_sha == base_sha:
         print(
             f"HEAD commit does not advance beyond origin/{base_branch}",
@@ -60,7 +73,7 @@ def main() -> int:
     changed_files = [
         line
         for line in run_git(
-            ["show", "--name-only", "--format=", "--first-parent", "HEAD"]
+            ["diff", "--name-only", f"{base_sha}..HEAD"]
         ).splitlines()
         if line.strip()
     ]
