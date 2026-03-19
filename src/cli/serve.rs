@@ -297,26 +297,6 @@ fn start_control_http_server(
     Ok(())
 }
 
-fn cors_headers() -> Vec<Header> {
-    let mut headers = Vec::new();
-    if let Some(h) = header("Access-Control-Allow-Origin", "http://127.0.0.1") {
-        headers.push(h);
-    }
-    if let Some(h) = header("Access-Control-Allow-Methods", "GET, POST, OPTIONS") {
-        headers.push(h);
-    }
-    if let Some(h) = header(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Idempotency-Key",
-    ) {
-        headers.push(h);
-    }
-    if let Some(h) = header("Vary", "Origin") {
-        headers.push(h);
-    }
-    headers
-}
-
 fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
     let is_stream = request.method() == &Method::Get
         && request.url().split('?').next() == Some("/v1/events/stream");
@@ -325,23 +305,10 @@ fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
         return;
     }
 
-    // Handle CORS preflight
-    if request.method() == &Method::Options {
-        let mut response = Response::from_string("").with_status_code(StatusCode(204));
-        for h in cors_headers() {
-            response = response.with_header(h);
-        }
-        let _ = request.respond(response);
-        return;
-    }
-
     let mut request = request;
     let (status, body) = route_request(&mut request, targets);
     let mut response = Response::from_string(body).with_status_code(status);
     if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
-        response = response.with_header(h);
-    }
-    for h in cors_headers() {
         response = response.with_header(h);
     }
     let _ = request.respond(response);
@@ -409,27 +376,21 @@ fn route_read(
         }
         "/v1/status" | "/v1/voices" => Ok(api_ok("status.list", status_data(targets)?)),
         "/v1/workflows" => Ok(api_ok("workflows.list", workflows_data(targets))),
-        "/v1/runs" => {
-            let limit = parse_optional_usize(query.get("limit").map(|s| s.as_str()), "limit")?;
-            let offset = parse_optional_usize(query.get("offset").map(|s| s.as_str()), "offset")?;
-            Ok(api_ok("runs.list", runs_data(targets, limit, offset)?))
-        }
+        "/v1/runs" => Ok(api_ok("runs.list", runs_data(targets)?)),
         "/v1/logs" => Ok(api_ok("logs.list", logs_data(targets)?)),
         "/v1/handoffs" => Ok(api_ok("handoffs.list", handoffs_data(targets)?)),
         "/v1/policy-decisions" => Ok(api_ok(
             "policy_decisions.list",
             policy_decisions_data(targets, query.get("workspace").map(|s| s.as_str()))?,
         )),
-        "/v1/events" => {
-            let limit = parse_optional_usize(query.get("limit").map(|s| s.as_str()), "limit")?;
-            let result = events_data(
+        "/v1/events" => Ok(api_ok(
+            "events.list",
+            events_data(
                 targets,
                 query.get("cursor").map(|s| s.as_str()),
                 query.get("workspace").map(|s| s.as_str()),
-                limit,
-            )?;
-            Ok(result)
-        }
+            )?,
+        )),
         _ if path.starts_with("/v1/health/") => {
             let parts: Vec<&str> = path.split('/').collect();
             if parts.len() == 5 {
@@ -463,35 +424,10 @@ fn parse_query(query: Option<&str>) -> HashMap<String, String> {
         if key.is_empty() {
             continue;
         }
-        let raw_value = parts.next().unwrap_or_default().trim();
-        let value = percent_decode(raw_value);
-        out.insert(key.to_string(), value);
+        let value = parts.next().unwrap_or_default().trim();
+        out.insert(key.to_string(), value.to_string());
     }
     out
-}
-
-fn percent_decode(input: &str) -> String {
-    let mut out = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(byte) = u8::from_str_radix(&input[i + 1..i + 3], 16)
-        {
-            out.push(byte);
-            i += 3;
-            continue;
-        }
-        // Also handle '+' as space (common in query strings)
-        if bytes[i] == b'+' {
-            out.push(b' ');
-        } else {
-            out.push(bytes[i]);
-        }
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| input.to_string())
 }
 
 fn route_action(
@@ -781,11 +717,7 @@ fn workflows_data(targets: &[WorkspaceTarget]) -> Value {
     Value::Array(rows)
 }
 
-fn runs_data(
-    targets: &[WorkspaceTarget],
-    limit: Option<usize>,
-    offset: Option<usize>,
-) -> Result<Value> {
+fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     let mut rows = Vec::new();
     for target in targets {
         let path = target
@@ -806,25 +738,7 @@ fn runs_data(
             }
         }
     }
-    // Sort by timestamp descending for browser timeline rendering
-    rows.sort_by(|a, b| {
-        let ts_a = a.get("timestamp").and_then(Value::as_str).unwrap_or("");
-        let ts_b = b.get("timestamp").and_then(Value::as_str).unwrap_or("");
-        ts_b.cmp(ts_a)
-    });
-    let total = rows.len();
-    let offset = offset.unwrap_or(0);
-    let rows: Vec<Value> = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit.unwrap_or(usize::MAX))
-        .collect();
-    Ok(json!({
-        "items": rows,
-        "total": total,
-        "offset": offset,
-        "limit": limit
-    }))
+    Ok(Value::Array(rows))
 }
 
 fn logs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
@@ -909,62 +823,21 @@ fn events_data(
     targets: &[WorkspaceTarget],
     cursor: Option<&str>,
     workspace: Option<&str>,
-    limit: Option<usize>,
 ) -> Result<Value> {
-    let (cursor_ts, cursor_skip) = parse_cursor(cursor)?;
-    // When cursor_skip > 0, include events at the cursor timestamp so we can
-    // skip exactly the right number of same-timestamp duplicates.
-    let include_cursor_ts = cursor_skip > 0;
-    let all_events = load_events_for_targets(targets, workspace, cursor_ts, include_cursor_ts)?;
-
-    // When cursor_skip > 0, skip events at the cursor boundary that were
-    // already returned on the previous page.
-    let events: Vec<_> = if cursor_skip > 0 {
+    let parsed = parse_cursor(cursor)?;
+    let cursor_ts = parsed.as_ref().map(|c| c.timestamp);
+    let skip_count = parsed.as_ref().map(|c| c.skip_count).unwrap_or(0);
+    let mut events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
+    // Skip events at the cursor boundary that were already seen
+    if skip_count > 0 {
         if let Some(ts) = cursor_ts {
-            let skip_count = all_events.iter().take_while(|e| e.timestamp == ts).count();
-            if skip_count >= cursor_skip {
-                // We already saw cursor_skip events at this timestamp; drop them.
-                all_events.into_iter().skip(cursor_skip).collect()
-            } else {
-                // All same-timestamp events were already consumed; keep rest.
-                all_events
-                    .into_iter()
-                    .skip_while(|e| e.timestamp == ts)
-                    .collect()
+            let boundary_count = events.iter().take_while(|e| e.timestamp == ts).count();
+            if boundary_count > 0 && skip_count <= boundary_count {
+                events = events.into_iter().skip(skip_count).collect();
             }
-        } else {
-            all_events
         }
-    } else {
-        all_events
-    };
-
-    let total = events.len();
-    let page: Vec<_> = events
-        .into_iter()
-        .take(limit.unwrap_or(usize::MAX))
-        .collect();
-    let next_cursor = if let Some(last) = page.last() {
-        // Count how many trailing events in the page share the last timestamp
-        // so the next page can skip past them.
-        let last_ts = last.timestamp;
-        let same_ts_count = page
-            .iter()
-            .rev()
-            .take_while(|e| e.timestamp == last_ts)
-            .count();
-        Some(format!("{}|{}", last_ts.to_rfc3339(), same_ts_count))
-    } else {
-        None
-    };
-    Ok(api_ok(
-        "events.list",
-        json!({
-            "items": page,
-            "total": total,
-            "next_cursor": next_cursor
-        }),
-    ))
+    }
+    Ok(json!(events))
 }
 
 fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
@@ -975,8 +848,23 @@ fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
     };
     let query_map = parse_query(query.as_deref());
     let workspace = query_map.get("workspace").map(|v| v.to_string());
-    let cursor_ts = match parse_cursor_ts(query_map.get("cursor").map(|v| v.as_str())) {
-        Ok(value) => value,
+    let cursor_ts = match parse_cursor(query_map.get("cursor").map(|v| v.as_str())) {
+        Ok(Some(parsed)) if parsed.skip_count > 0 => {
+            let body = api_err(
+                "events.stream",
+                "bad_request",
+                "stream endpoint does not support skip_count cursors; use a bare timestamp"
+                    .to_string(),
+            )
+            .to_string();
+            let mut response = Response::from_string(body).with_status_code(StatusCode(400));
+            if let Some(h) = header("Content-Type", "application/json") {
+                response = response.with_header(h);
+            }
+            let _ = request.respond(response);
+            return;
+        }
+        Ok(parsed) => parsed.map(|c| c.timestamp),
         Err(e) => {
             let body = api_err("events.stream", "bad_request", e.to_string()).to_string();
             let mut response = Response::from_string(body).with_status_code(StatusCode(400));
@@ -1064,52 +952,59 @@ fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
     if let Some(h) = header("Connection", "keep-alive") {
         headers.push(h);
     }
-    headers.extend(cors_headers());
     let reader = ChannelReader::new(rx);
     let response =
         Response::new(StatusCode(200), headers, reader, None, None).with_chunked_threshold(0);
     let _ = request.respond(response);
 }
 
-fn parse_optional_usize(value: Option<&str>, name: &str) -> Result<Option<usize>> {
-    match value {
-        Some(v) if !v.trim().is_empty() => v.trim().parse::<usize>().map(Some).map_err(|_| {
+struct ParsedCursor {
+    timestamp: DateTime<Utc>,
+    skip_count: usize,
+}
+
+fn parse_cursor(cursor: Option<&str>) -> Result<Option<ParsedCursor>> {
+    let Some(raw) = cursor else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some((ts_part, skip_part)) = raw.rsplit_once('|') {
+        let timestamp = DateTime::parse_from_rfc3339(ts_part)
+            .map_err(|e| {
+                TuttiError::ConfigValidation(format!(
+                    "invalid cursor '{}': expected RFC3339 timestamp ({e})",
+                    raw
+                ))
+            })?
+            .with_timezone(&Utc);
+        let skip_count: usize = skip_part.parse().map_err(|_| {
             TuttiError::ConfigValidation(format!(
-                "invalid {name} '{v}': expected a non-negative integer"
+                "invalid cursor '{}': skip count '{}' is not a valid number",
+                raw, skip_part
             ))
-        }),
-        _ => Ok(None),
+        })?;
+        Ok(Some(ParsedCursor {
+            timestamp,
+            skip_count,
+        }))
+    } else {
+        let timestamp = DateTime::parse_from_rfc3339(raw)
+            .map_err(|e| {
+                TuttiError::ConfigValidation(format!(
+                    "invalid cursor '{}': expected RFC3339 timestamp ({e})",
+                    raw
+                ))
+            })?
+            .with_timezone(&Utc);
+        Ok(Some(ParsedCursor {
+            timestamp,
+            skip_count: 0,
+        }))
     }
-}
-
-/// Parse a cursor that may be either a bare RFC3339 timestamp or a
-/// `timestamp|skip_count` pair (the new format that disambiguates
-/// same-timestamp events).
-fn parse_cursor(cursor: Option<&str>) -> Result<(Option<DateTime<Utc>>, usize)> {
-    match cursor {
-        Some(raw) if !raw.trim().is_empty() => {
-            let (ts_str, skip) = if let Some((ts_part, idx_part)) = raw.rsplit_once('|') {
-                let idx = idx_part.parse::<usize>().unwrap_or(0);
-                (ts_part, idx)
-            } else {
-                (raw, 0)
-            };
-            let ts = DateTime::parse_from_rfc3339(ts_str)
-                .map_err(|e| {
-                    TuttiError::ConfigValidation(format!(
-                        "invalid cursor '{}': expected RFC3339 timestamp ({e})",
-                        raw
-                    ))
-                })?
-                .with_timezone(&Utc);
-            Ok((Some(ts), skip))
-        }
-        _ => Ok((None, 0)),
-    }
-}
-
-fn parse_cursor_ts(cursor: Option<&str>) -> Result<Option<DateTime<Utc>>> {
-    parse_cursor(cursor).map(|(ts, _)| ts)
 }
 
 fn load_events_for_targets(
@@ -1307,26 +1202,6 @@ fn _assert_path(_: &Path) {}
 mod tests {
     use super::*;
 
-    fn minimal_test_config() -> TuttiConfig {
-        TuttiConfig {
-            workspace: crate::config::WorkspaceConfig {
-                name: "test".to_string(),
-                description: None,
-                env: None,
-                auth: None,
-            },
-            defaults: Default::default(),
-            launch: None,
-            agents: vec![],
-            tool_packs: vec![],
-            workflows: vec![],
-            hooks: vec![],
-            handoff: None,
-            observe: None,
-            budget: None,
-        }
-    }
-
     #[test]
     fn strategy_requests_rotation_matches_supported_values() {
         assert!(strategy_requests_rotation(Some("rotate_profile")));
@@ -1390,204 +1265,5 @@ mod tests {
             Duration::from_secs(30)
         ));
         assert!(recovery_cooldown_elapsed(Some(&now), Duration::ZERO));
-    }
-
-    #[test]
-    fn cors_headers_are_present() {
-        let headers = cors_headers();
-        assert!(headers.len() >= 4);
-        let names: Vec<String> = headers.iter().map(|h| h.field.to_string()).collect();
-        assert!(names.iter().any(|n| n == "Access-Control-Allow-Origin"));
-        assert!(names.iter().any(|n| n == "Access-Control-Allow-Methods"));
-        assert!(names.iter().any(|n| n == "Access-Control-Allow-Headers"));
-        assert!(names.iter().any(|n| n == "Vary"));
-
-        // Verify origin is restricted to localhost, not wildcard
-        let origin_header = headers
-            .iter()
-            .find(|h| h.field.to_string() == "Access-Control-Allow-Origin")
-            .unwrap();
-        assert_eq!(origin_header.value.as_str(), "http://127.0.0.1");
-    }
-
-    #[test]
-    fn runs_data_pagination_slices_results() {
-        let dir =
-            std::env::temp_dir().join(format!("tutti-test-runs-paginate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::state::ensure_tutti_dir(&dir).unwrap();
-
-        // Write 5 automation run records
-        for i in 0..5 {
-            let record = crate::state::AutomationRunRecord {
-                workflow_name: format!("wf-{i}"),
-                timestamp: chrono::Utc::now() + chrono::TimeDelta::seconds(i as i64),
-                trigger: "run".to_string(),
-                success: true,
-                strict: false,
-                failed_steps: vec![],
-                warning_count: 0,
-                agent_scope: None,
-                hook_event: None,
-                hook_agent: None,
-            };
-            crate::state::append_automation_run(&dir, &record).unwrap();
-        }
-
-        let config = minimal_test_config();
-        let targets = vec![WorkspaceTarget {
-            name: "test".to_string(),
-            project_root: dir.clone(),
-            config,
-        }];
-
-        // No pagination — all 5 returned
-        let result = runs_data(&targets, None, None).unwrap();
-        assert_eq!(result["total"], 5);
-        assert_eq!(result["items"].as_array().unwrap().len(), 5);
-
-        // limit=2 offset=0
-        let result = runs_data(&targets, Some(2), Some(0)).unwrap();
-        assert_eq!(result["total"], 5);
-        assert_eq!(result["items"].as_array().unwrap().len(), 2);
-
-        // limit=2 offset=3 — only 2 left
-        let result = runs_data(&targets, Some(2), Some(3)).unwrap();
-        assert_eq!(result["items"].as_array().unwrap().len(), 2);
-
-        // offset=10 — past end
-        let result = runs_data(&targets, None, Some(10)).unwrap();
-        assert_eq!(result["items"].as_array().unwrap().len(), 0);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn events_data_pagination_with_next_cursor() {
-        let dir =
-            std::env::temp_dir().join(format!("tutti-test-events-paginate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::state::ensure_tutti_dir(&dir).unwrap();
-
-        for i in 0..4 {
-            let event = crate::state::ControlEvent {
-                event: format!("test.event.{i}"),
-                workspace: "test".to_string(),
-                agent: Some("backend".to_string()),
-                timestamp: chrono::Utc::now() + chrono::TimeDelta::seconds(i as i64),
-                correlation_id: format!("corr-{i}"),
-                data: None,
-            };
-            crate::state::append_control_event(&dir, &event).unwrap();
-        }
-
-        let config = minimal_test_config();
-        let targets = vec![WorkspaceTarget {
-            name: "test".to_string(),
-            project_root: dir.clone(),
-            config,
-        }];
-
-        // No limit — all 4 returned
-        let result = events_data(&targets, None, None, None).unwrap();
-        let data = &result["data"];
-        assert_eq!(data["total"], 4);
-        assert_eq!(data["items"].as_array().unwrap().len(), 4);
-        assert!(data["next_cursor"].is_string());
-
-        // limit=2
-        let result = events_data(&targets, None, None, Some(2)).unwrap();
-        let data = &result["data"];
-        assert_eq!(data["total"], 4);
-        assert_eq!(data["items"].as_array().unwrap().len(), 2);
-        assert!(data["next_cursor"].is_string());
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn parse_optional_usize_rejects_non_numeric() {
-        assert!(parse_optional_usize(Some("abc"), "limit").is_err());
-        assert!(parse_optional_usize(Some("-1"), "offset").is_err());
-        assert!(parse_optional_usize(Some("3.5"), "limit").is_err());
-    }
-
-    #[test]
-    fn parse_optional_usize_accepts_valid_or_empty() {
-        assert_eq!(parse_optional_usize(None, "limit").unwrap(), None);
-        assert_eq!(parse_optional_usize(Some(""), "limit").unwrap(), None);
-        assert_eq!(parse_optional_usize(Some("42"), "limit").unwrap(), Some(42));
-    }
-
-    #[test]
-    fn percent_decode_round_trips_rfc3339() {
-        // A cursor value as it might appear percent-encoded in a URL
-        let encoded = "2026-03-20T07%3A15%3A58%2B00%3A00%7C2";
-        let decoded = percent_decode(encoded);
-        assert_eq!(decoded, "2026-03-20T07:15:58+00:00|2");
-    }
-
-    #[test]
-    fn parse_cursor_with_skip_index() {
-        let (ts, skip) = parse_cursor(Some("2026-03-20T00:00:00+00:00|3")).unwrap();
-        assert!(ts.is_some());
-        assert_eq!(skip, 3);
-
-        // Bare timestamp (backward-compatible)
-        let (ts, skip) = parse_cursor(Some("2026-03-20T00:00:00+00:00")).unwrap();
-        assert!(ts.is_some());
-        assert_eq!(skip, 0);
-
-        // Empty/None
-        let (ts, skip) = parse_cursor(None).unwrap();
-        assert!(ts.is_none());
-        assert_eq!(skip, 0);
-    }
-
-    #[test]
-    fn events_cursor_disambiguates_same_timestamp() {
-        let dir =
-            std::env::temp_dir().join(format!("tutti-test-events-sameTs-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::state::ensure_tutti_dir(&dir).unwrap();
-
-        let base_ts = chrono::Utc::now();
-        // Create 3 events with the SAME timestamp
-        for i in 0..3 {
-            let event = crate::state::ControlEvent {
-                event: format!("same.ts.{i}"),
-                workspace: "test".to_string(),
-                agent: Some("backend".to_string()),
-                timestamp: base_ts,
-                correlation_id: format!("corr-{i}"),
-                data: None,
-            };
-            crate::state::append_control_event(&dir, &event).unwrap();
-        }
-
-        let config = minimal_test_config();
-        let targets = vec![WorkspaceTarget {
-            name: "test".to_string(),
-            project_root: dir.clone(),
-            config,
-        }];
-
-        // Page 1: limit=2
-        let result = events_data(&targets, None, None, Some(2)).unwrap();
-        let data = &result["data"];
-        assert_eq!(data["items"].as_array().unwrap().len(), 2);
-        let cursor = data["next_cursor"].as_str().unwrap();
-        assert!(cursor.contains('|'), "cursor should contain skip index");
-
-        // Page 2: use cursor from page 1 — should get the remaining 1 event
-        let result = events_data(&targets, Some(cursor), None, Some(2)).unwrap();
-        let data = &result["data"];
-        assert_eq!(
-            data["items"].as_array().unwrap().len(),
-            1,
-            "second page should contain exactly the remaining event"
-        );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
