@@ -522,6 +522,7 @@ mod tests {
                     runtime: "claude-code".to_string(),
                     session_name: "sess".to_string(),
                     inject_files: vec![],
+                    expected_output_files: vec![],
                     output_json: None,
                     wait_for_idle: false,
                     wait_timeout_secs: 900,

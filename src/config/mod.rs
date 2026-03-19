@@ -150,6 +150,9 @@ pub enum WorkflowStepConfig {
         text: String,
         #[serde(default)]
         inject_files: Vec<String>,
+        /// Expected output artifacts that must exist (and be non-empty) after step completion.
+        #[serde(default)]
+        output_files: Vec<String>,
         #[serde(default)]
         output_json: Option<String>,
         #[serde(default)]
@@ -654,6 +657,7 @@ impl TuttiConfig {
                         agent,
                         text,
                         inject_files,
+                        output_files,
                         output_json,
                         ..
                     } => {
@@ -684,6 +688,24 @@ impl TuttiConfig {
                             if std::path::Path::new(trimmed).is_absolute() {
                                 return Err(TuttiError::ConfigValidation(format!(
                                     "workflow '{}', step {} inject_files must be workspace-relative: '{}'",
+                                    workflow.name,
+                                    idx + 1,
+                                    trimmed
+                                )));
+                            }
+                        }
+                        for path in output_files {
+                            let trimmed = path.trim();
+                            if trimmed.is_empty() {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} has empty output_files entry",
+                                    workflow.name,
+                                    idx + 1
+                                )));
+                            }
+                            if std::path::Path::new(trimmed).is_absolute() {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} output_files must be workspace-relative: '{}'",
                                     workflow.name,
                                     idx + 1,
                                     trimmed
@@ -1689,6 +1711,77 @@ inject_files = ["/tmp/snapshot.json"]
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("workspace-relative"));
+    }
+
+    #[test]
+    fn validate_prompt_output_files_must_be_relative() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "prompt"
+agent = "backend"
+text = "check"
+output_files = ["/tmp/plan.json"]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("output_files must be workspace-relative"));
+    }
+
+    #[test]
+    fn validate_prompt_output_files_cannot_be_empty_string() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "prompt"
+agent = "backend"
+text = "check"
+output_files = [""]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty output_files entry"));
+    }
+
+    #[test]
+    fn validate_prompt_output_files_accepts_relative_paths() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "backend"
+runtime = "claude-code"
+
+[[workflow]]
+name = "verify"
+
+[[workflow.step]]
+type = "prompt"
+agent = "backend"
+text = "check"
+output_files = [".tutti/state/plan.json"]
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
     }
 
     #[test]

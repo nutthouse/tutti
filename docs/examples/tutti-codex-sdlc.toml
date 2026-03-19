@@ -128,19 +128,20 @@ id = "plan_issue"
 type = "prompt"
 agent = "planner"
 inject_files = [".tutti/state/auto/selected_issue.json"]
+output_files = [".tutti/state/workflow-outputs/plan_issue.json"]
 wait_for_idle = true
 wait_timeout_secs = 1200
-text = "Create a concrete execution plan for the selected issue. Include: scope, constraints, implementation tasks, tests to add/update, docs/changelog/version actions, and potential risks. Summarize key steps in your final response for downstream agents."
+text = "Create a concrete execution plan for the selected issue. You MUST write a JSON file to .tutti/state/workflow-outputs/plan_issue.json containing: scope_summary, target_files, implementation_tasks, test_tasks, docs_release_tasks, risks, and first_slice fields. Summarize key steps in your final response for downstream agents."
 
 # 4) Implementation specialization (Codex)
 [[workflow.step]]
 id = "implement_code"
 type = "prompt"
 agent = "implementer"
-inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
+inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json", ".tutti/state/workflow-outputs/plan_issue.json"]
 wait_for_idle = true
 wait_timeout_secs = 3600
-text = "Implement the selected issue in src/ using the provided plan and the full issue body from selected_issue.json. Use branch.json as source of truth for the target branch and ensure your commits are made on that branch (checkout/switch if needed before committing). Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push that branch. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
+text = "Read the full issue body from .tutti/state/auto/selected_issue.json, read the planner handoff JSON from plan_issue.json, and use .tutti/state/auto/branch.json as source of truth for the target branch. Implement only the smallest coherent code slice that advances the issue and aligns with plan_issue.first_slice. Keep scope tight. You must produce concrete code changes that address acceptance criteria, then commit and push that branch. In your final response include changed files, test command(s) run, branch name, and the pushed commit SHA. If blocked, state the exact blocker and what missing input is required."
 
 [[workflow.step]]
 id = "verify_impl_progress"

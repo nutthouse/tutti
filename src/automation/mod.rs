@@ -161,6 +161,7 @@ impl<'a> WorkflowResolver<'a> {
                     agent,
                     text,
                     inject_files,
+                    output_files,
                     output_json,
                     wait_for_idle,
                     wait_timeout_secs,
@@ -176,6 +177,10 @@ impl<'a> WorkflowResolver<'a> {
                         .find(|a| a.name == effective_agent)
                         .and_then(|a| a.resolved_runtime(&self.config.defaults))
                         .unwrap_or_else(|| "unknown".to_string());
+                    let resolved_expected_output_files = output_files
+                        .iter()
+                        .map(|p| self.project_root.join(p))
+                        .collect();
                     steps.push(ResolvedStep::Prompt {
                         step_id: id.clone(),
                         depends_on: depends_on.clone(),
@@ -185,6 +190,7 @@ impl<'a> WorkflowResolver<'a> {
                         session_name,
                         inject_files: self
                             .resolve_prompt_injected_files(effective_agent, inject_files),
+                        expected_output_files: resolved_expected_output_files,
                         output_json: self
                             .resolve_prompt_output_path(effective_agent, output_json)?,
                         wait_for_idle: wait_for_idle.unwrap_or(false),
@@ -458,6 +464,8 @@ pub enum ResolvedStep {
         runtime: String,
         session_name: String,
         inject_files: Vec<PromptInjectedFile>,
+        /// Paths that must exist and be non-empty after the step completes.
+        expected_output_files: Vec<PathBuf>,
         output_json: Option<PathBuf>,
         wait_for_idle: bool,
         wait_timeout_secs: u64,
@@ -849,6 +857,7 @@ impl<'a> WorkflowExecutor<'a> {
 
                         if let ResolvedStep::Prompt {
                             runtime,
+                            expected_output_files,
                             output_json,
                             wait_for_idle,
                             wait_timeout_secs,
@@ -931,6 +940,30 @@ impl<'a> WorkflowExecutor<'a> {
                                         break;
                                     }
                                 }
+                            }
+
+                            // Validate declared expected_output_files exist and are non-empty
+                            if let Some(missing) = expected_output_files.iter().find(|p| {
+                                !p.exists()
+                                    || p.metadata().map(|m| m.len() == 0).unwrap_or(true)
+                            }) {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(format!(
+                                        "expected output file missing or empty after step completion: {}",
+                                        missing.display()
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
                             }
                         }
 
@@ -3864,6 +3897,61 @@ mod tests {
             std::fs::read_to_string(destination).unwrap(),
             "{\"ok\":true}\n"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expected_output_files_validation_detects_missing_file() {
+        let dir = std::env::temp_dir().join("tutti-test-expected-output-missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("plan.json");
+        let expected: Vec<PathBuf> = vec![missing.clone()];
+
+        // File does not exist — should be detected
+        let result = expected
+            .iter()
+            .find(|p| !p.exists() || p.metadata().map(|m| m.len() == 0).unwrap_or(true));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &missing);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expected_output_files_validation_detects_empty_file() {
+        let dir = std::env::temp_dir().join("tutti-test-expected-output-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let empty_file = dir.join("plan.json");
+        std::fs::write(&empty_file, "").unwrap();
+        let expected: Vec<PathBuf> = vec![empty_file.clone()];
+
+        let result = expected
+            .iter()
+            .find(|p| !p.exists() || p.metadata().map(|m| m.len() == 0).unwrap_or(true));
+        assert!(result.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expected_output_files_validation_passes_for_non_empty_file() {
+        let dir = std::env::temp_dir().join("tutti-test-expected-output-ok");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good_file = dir.join("plan.json");
+        std::fs::write(&good_file, "{\"ok\":true}").unwrap();
+        let expected: Vec<PathBuf> = vec![good_file];
+
+        let result = expected
+            .iter()
+            .find(|p| !p.exists() || p.metadata().map(|m| m.len() == 0).unwrap_or(true));
+        assert!(result.is_none());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
