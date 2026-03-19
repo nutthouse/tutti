@@ -41,40 +41,6 @@ pub struct VerifyLastSummary {
     pub agent_scope: Option<String>,
 }
 
-/// Lifecycle stage of a workflow step in the timeline.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum StepLifecycle {
-    Planned,
-    Running,
-    Succeeded,
-    Failed,
-    Skipped,
-    Resumed,
-}
-
-/// A single entry in a workflow run's step timeline.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StepTimelineEntry {
-    pub run_id: String,
-    pub step_index: usize,
-    pub step_id: String,
-    pub step_type: String,
-    pub lifecycle: StepLifecycle,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub duration_ms: Option<u64>,
-    pub attempt: u32,
-}
-
-/// The full timeline for a workflow run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunTimeline {
-    pub run_id: String,
-    pub workflow_name: String,
-    pub entries: Vec<StepTimelineEntry>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStepIntentRecord {
     pub run_id: String,
