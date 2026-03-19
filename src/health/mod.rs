@@ -2,7 +2,7 @@ use crate::config::TuttiConfig;
 use crate::error::Result;
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
-use crate::state::{self, ActivityState, AgentHealth, AuthState, ControlEvent};
+use crate::state::{self, ActivityState, AgentHealth, AuthState, ControlEvent, HealthState};
 use chrono::{DateTime, Utc};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -13,6 +13,67 @@ const DEFAULT_CAPTURE_LINES: u32 = 200;
 const RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER: u32 = 2;
 const RATE_LIMIT_REASON_PREFIX: &str = "rate_limit:";
 const PROVIDER_DOWN_REASON_PREFIX: &str = "provider_down:";
+
+/// Default stall threshold: an agent idle for longer than this with no output
+/// change is classified as `Stalled`.
+const STALL_THRESHOLD: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Classify an `AgentHealth` snapshot into a unified `HealthState`.
+///
+/// The classification priority is:
+/// 1. Not running → `Stopped`
+/// 2. Auth failed → `AuthFailed`
+/// 3. Reason prefix `rate_limit:` → `RateLimited`
+/// 4. Reason prefix `provider_down:` → `ProviderDown`
+/// 5. Activity `Working` → `Working`
+/// 6. Activity `Idle` with stale output → `Stalled`
+/// 7. Activity `Idle` with recent output → `Idle`
+/// 8. Anything else → `Unknown`
+pub fn classify_health_state(health: &AgentHealth) -> HealthState {
+    classify_health_state_with_threshold(health, STALL_THRESHOLD)
+}
+
+/// Internal: allows tests to inject a custom stall threshold.
+fn classify_health_state_with_threshold(health: &AgentHealth, stall_threshold: Duration) -> HealthState {
+    if !health.running {
+        return HealthState::Stopped;
+    }
+
+    if matches!(health.auth_state, AuthState::Failed) {
+        return HealthState::AuthFailed;
+    }
+
+    if let Some(reason) = &health.reason {
+        let lower = reason.trim().to_ascii_lowercase();
+        if lower.starts_with(RATE_LIMIT_REASON_PREFIX) {
+            return HealthState::RateLimited;
+        }
+        if lower.starts_with(PROVIDER_DOWN_REASON_PREFIX) {
+            return HealthState::ProviderDown;
+        }
+    }
+
+    match health.activity_state {
+        ActivityState::Working => HealthState::Working,
+        ActivityState::Idle => {
+            let stalled = match health.last_output_change_at {
+                Some(last_change) => {
+                    let elapsed = Utc::now().signed_duration_since(last_change);
+                    elapsed > chrono::Duration::from_std(stall_threshold).unwrap_or(chrono::Duration::max_value())
+                }
+                // No output change ever recorded while idle → treat as stalled.
+                None => true,
+            };
+            if stalled {
+                HealthState::Stalled
+            } else {
+                HealthState::Idle
+            }
+        }
+        ActivityState::Stopped => HealthState::Stopped,
+        ActivityState::Unknown => HealthState::Unknown,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryTrigger {
@@ -526,6 +587,92 @@ mod tests {
     fn working_consecutive_threshold_is_at_least_two() {
         // The threshold prevents a single Working flicker from falsely setting saw_activity.
         assert!(WORKING_STATUS_CONSECUTIVE_THRESHOLD >= 2);
+    }
+
+    #[test]
+    fn classify_working() {
+        let h = sample_health(true, ActivityState::Working, AuthState::Ok, None);
+        assert_eq!(classify_health_state(&h), HealthState::Working);
+    }
+
+    #[test]
+    fn classify_idle_recent_output() {
+        let mut h = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        h.last_output_change_at = Some(Utc::now());
+        assert_eq!(classify_health_state(&h), HealthState::Idle);
+    }
+
+    #[test]
+    fn classify_stalled_old_output() {
+        let mut h = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        h.last_output_change_at = Some(Utc::now() - chrono::Duration::minutes(10));
+        assert_eq!(classify_health_state(&h), HealthState::Stalled);
+    }
+
+    #[test]
+    fn classify_stalled_no_output_ever() {
+        let mut h = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        h.last_output_change_at = None;
+        assert_eq!(classify_health_state(&h), HealthState::Stalled);
+    }
+
+    #[test]
+    fn classify_stalled_uses_threshold() {
+        let mut h = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
+        // 2 minutes ago — below the 5-minute default threshold
+        h.last_output_change_at = Some(Utc::now() - chrono::Duration::minutes(2));
+        assert_eq!(classify_health_state(&h), HealthState::Idle);
+
+        // Same health but with a 1-minute threshold → now stalled
+        assert_eq!(
+            classify_health_state_with_threshold(&h, Duration::from_secs(60)),
+            HealthState::Stalled
+        );
+    }
+
+    #[test]
+    fn classify_auth_failed() {
+        let h = sample_health(
+            true,
+            ActivityState::Working,
+            AuthState::Failed,
+            Some("token expired"),
+        );
+        assert_eq!(classify_health_state(&h), HealthState::AuthFailed);
+    }
+
+    #[test]
+    fn classify_rate_limited() {
+        let h = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("rate_limit: too many requests"),
+        );
+        assert_eq!(classify_health_state(&h), HealthState::RateLimited);
+    }
+
+    #[test]
+    fn classify_provider_down() {
+        let h = sample_health(
+            true,
+            ActivityState::Idle,
+            AuthState::Ok,
+            Some("provider_down: service unavailable"),
+        );
+        assert_eq!(classify_health_state(&h), HealthState::ProviderDown);
+    }
+
+    #[test]
+    fn classify_stopped() {
+        let h = sample_health(false, ActivityState::Stopped, AuthState::Ok, None);
+        assert_eq!(classify_health_state(&h), HealthState::Stopped);
+    }
+
+    #[test]
+    fn classify_unknown() {
+        let h = sample_health(true, ActivityState::Unknown, AuthState::Unknown, None);
+        assert_eq!(classify_health_state(&h), HealthState::Unknown);
     }
 
     #[test]

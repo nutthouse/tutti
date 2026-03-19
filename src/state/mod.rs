@@ -276,6 +276,54 @@ pub struct AgentHealth {
     pub pane_hash: Option<u64>,
 }
 
+/// Unified health-state classification for operator views.
+///
+/// Derived from `AgentHealth` probe data by `health::classify_health_state`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthState {
+    Working,
+    Idle,
+    Stalled,
+    AuthFailed,
+    RateLimited,
+    ProviderDown,
+    Stopped,
+    Unknown,
+}
+
+impl std::fmt::Display for HealthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            HealthState::Working => "Working",
+            HealthState::Idle => "Idle",
+            HealthState::Stalled => "Stalled",
+            HealthState::AuthFailed => "Auth Failed",
+            HealthState::RateLimited => "Rate Limited",
+            HealthState::ProviderDown => "Provider Down",
+            HealthState::Stopped => "Stopped",
+            HealthState::Unknown => "Unknown",
+        };
+        write!(f, "{label}")
+    }
+}
+
+impl HealthState {
+    /// Return a color name suitable for use with the `colored` crate.
+    pub fn color(&self) -> &'static str {
+        match self {
+            HealthState::Working => "green",
+            HealthState::Idle => "yellow",
+            HealthState::Stalled => "yellow",
+            HealthState::AuthFailed => "red",
+            HealthState::RateLimited => "magenta",
+            HealthState::ProviderDown => "magenta",
+            HealthState::Stopped => "white",
+            HealthState::Unknown => "white",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlEvent {
     pub event: String,
