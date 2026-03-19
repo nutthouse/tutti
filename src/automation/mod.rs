@@ -24,6 +24,7 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
+const DEFAULT_STARTUP_GRACE_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +165,7 @@ impl<'a> WorkflowResolver<'a> {
                     output_json,
                     wait_for_idle,
                     wait_timeout_secs,
+                    startup_grace_secs,
                 } => {
                     let effective_agent = agent_override.unwrap_or(agent.as_str());
                     self.ensure_agent_exists(effective_agent)?;
@@ -189,6 +191,8 @@ impl<'a> WorkflowResolver<'a> {
                             .resolve_prompt_output_path(effective_agent, output_json)?,
                         wait_for_idle: wait_for_idle.unwrap_or(false),
                         wait_timeout_secs: wait_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+                        startup_grace_secs: startup_grace_secs
+                            .unwrap_or(DEFAULT_STARTUP_GRACE_SECS),
                     });
                 }
                 WorkflowStepConfig::Command {
@@ -461,6 +465,7 @@ pub enum ResolvedStep {
         output_json: Option<PathBuf>,
         wait_for_idle: bool,
         wait_timeout_secs: u64,
+        startup_grace_secs: u64,
     },
     Command {
         step_id: Option<String>,
@@ -852,6 +857,7 @@ impl<'a> WorkflowExecutor<'a> {
                             output_json,
                             wait_for_idle,
                             wait_timeout_secs,
+                            startup_grace_secs,
                             ..
                         } = step
                         {
@@ -861,6 +867,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     session_name,
                                     Duration::from_secs((*wait_timeout_secs).max(1)),
                                     Duration::from_secs(5),
+                                    Duration::from_secs(*startup_grace_secs),
                                 )?;
                                 if !wait.is_completed() {
                                     let (timed_out, message) = match wait.failure_reason {

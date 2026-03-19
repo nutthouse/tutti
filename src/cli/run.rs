@@ -525,6 +525,7 @@ mod tests {
                     output_json: None,
                     wait_for_idle: false,
                     wait_timeout_secs: 900,
+                    startup_grace_secs: 30,
                 },
                 ResolvedStep::Command {
                     step_id: None,

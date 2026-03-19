@@ -183,11 +183,16 @@ pub fn recovery_trigger(health: &AgentHealth) -> Option<RecoveryTrigger> {
     None
 }
 
+/// Minimum consecutive Working polls (without hash change) required to count as activity.
+/// Prevents flicker between Working/Unknown from falsely setting `saw_activity`.
+const WORKING_STATUS_CONSECUTIVE_THRESHOLD: u32 = 2;
+
 pub fn wait_for_agent_idle(
     runtime_name: &str,
     session_name: &str,
     timeout: Duration,
     idle_stability: Duration,
+    startup_grace: Duration,
 ) -> Result<WaitForIdleResult> {
     let adapter = runtime::get_adapter(runtime_name, None);
     let runtime_prefers_signal = adapter
@@ -198,6 +203,7 @@ pub fn wait_for_agent_idle(
     let mut last_hash: Option<u64> = None;
     let mut idle_since: Option<Instant> = None;
     let mut runtime_fallback_since: Option<Instant> = None;
+    let mut consecutive_working_polls: u32 = 0;
     let runtime_fallback_grace = idle_stability
         .checked_mul(RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER)
         .unwrap_or(idle_stability);
@@ -212,7 +218,7 @@ pub fn wait_for_agent_idle(
 
         let output = TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES)?;
         let pane_hash = hash_output(&output);
-        let changed = last_hash.is_none_or(|h| h != pane_hash);
+        let changed = last_hash.is_some_and(|h| h != pane_hash);
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
 
         if let Some(adapter) = &adapter
@@ -224,19 +230,39 @@ pub fn wait_for_agent_idle(
             ));
         }
 
+        // Fast-path: completion signal before any working activity was observed
+        // means the prompt was consumed and finished instantly.
         if let Some(adapter) = &adapter
             && adapter.detect_completion_signal(&output).is_some()
-            && saw_activity
         {
-            return Ok(WaitForIdleResult::completed(
-                WaitCompletionSource::RuntimeSignal,
-            ));
+            if saw_activity {
+                return Ok(WaitForIdleResult::completed(
+                    WaitCompletionSource::RuntimeSignal,
+                ));
+            }
+            // Pre-activity completion: only accept if we're past the startup grace,
+            // or treat as fast-path completion for genuine instant results.
+            if start.elapsed() >= startup_grace {
+                return Ok(WaitForIdleResult::completed_with_detail(
+                    WaitCompletionSource::RuntimeSignal,
+                    Some("completion_before_activity_after_grace".to_string()),
+                ));
+            }
+        }
+
+        // Track whether the runtime reports Working status even without hash change.
+        let runtime_is_working = runtime_status
+            .as_ref()
+            .is_some_and(|s| matches!(s, AgentStatus::Working));
+        if runtime_is_working && !changed {
+            consecutive_working_polls += 1;
+        } else if !runtime_is_working {
+            consecutive_working_polls = 0;
         }
 
         if changed
-            || runtime_status
-                .as_ref()
-                .is_some_and(|s| matches!(s, AgentStatus::Working))
+            || (runtime_is_working
+                && consecutive_working_polls >= WORKING_STATUS_CONSECUTIVE_THRESHOLD)
         {
             saw_activity = true;
             idle_since = None;
@@ -267,6 +293,10 @@ pub fn wait_for_agent_idle(
             } else {
                 idle_since = Some(Instant::now());
             }
+        } else if !saw_activity && start.elapsed() < startup_grace {
+            // Within startup grace: keep polling without timing out.
+            // Do not advance idle_since or return timeout — the agent
+            // may not have consumed the prompt yet.
         }
 
         last_hash = Some(pane_hash);
@@ -490,6 +520,12 @@ mod tests {
             recovery_trigger(&provider),
             Some(RecoveryTrigger::ProviderDown)
         );
+    }
+
+    #[test]
+    fn working_consecutive_threshold_is_at_least_two() {
+        // The threshold prevents a single Working flicker from falsely setting saw_activity.
+        assert!(WORKING_STATUS_CONSECUTIVE_THRESHOLD >= 2);
     }
 
     #[test]
