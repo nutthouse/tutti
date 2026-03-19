@@ -170,6 +170,19 @@ pub fn run(
         let (working_dir, worktree_path, branch) =
             prepare_agent_working_dir(project_root, &config.defaults, agent, fresh_worktree);
 
+        // Inject persistent memory into agent working directory
+        let file_injected = inject_agent_memory(project_root, &working_dir, agent, &runtime_name)?;
+
+        // Build effective prompt (with memory prepended for non-Claude runtimes,
+        // or as fallback for claude-code when file injection was skipped)
+        let effective_prompt = prepend_memory_to_prompt(
+            project_root,
+            agent,
+            &runtime_name,
+            agent.prompt.as_deref(),
+            file_injected,
+        )?;
+
         // Merge workspace env with agent-level env (agent overrides workspace)
         let mut env = workspace_env.clone();
         for (k, v) in &agent.env {
@@ -205,7 +218,7 @@ pub fn run(
                 permissions_policy,
                 project_root,
                 &agent.name,
-                agent.prompt.as_deref(),
+                effective_prompt.as_deref(),
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -458,6 +471,183 @@ fn prepare_agent_working_dir(
     }
 }
 
+const MEMORY_SECTION_START: &str = "<!-- tutti:agent-memory:start -->";
+const MEMORY_SECTION_END: &str = "<!-- tutti:agent-memory:end -->";
+
+/// Validate that a path is not a symlink and resolves within an allowed root.
+fn validate_no_symlink(path: &Path, label: &str, allowed_root: &Path) -> Result<()> {
+    if let Ok(meta) = path.symlink_metadata()
+        && meta.file_type().is_symlink()
+    {
+        return Err(TuttiError::ConfigValidation(format!(
+            "{label} is a symlink, which is not allowed: {}. \
+             Replace it with a regular file under {}",
+            path.display(),
+            allowed_root.display()
+        )));
+    }
+    if let Ok(root) = allowed_root.canonicalize() {
+        // When the path exists, verify its canonical form lives under the root.
+        if path.exists() {
+            if let Ok(canonical) = path.canonicalize()
+                && !canonical.starts_with(&root)
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label} resolves outside the allowed directory ({}): {}. \
+                     Move the file into the workspace or update the memory path in your config",
+                    root.display(),
+                    path.display()
+                )));
+            }
+        } else if let Some(parent) = path.parent() {
+            // Path doesn't exist yet – validate the parent directory so that
+            // a later `fs::write` cannot be tricked into creating a file
+            // outside the allowed root via a symlinked parent.
+            if let Ok(canonical_parent) = parent.canonicalize()
+                && !canonical_parent.starts_with(&root)
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label} would be created outside the allowed directory ({}): {}. \
+                     Move the file into the workspace or update the memory path in your config",
+                    root.display(),
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inject agent memory file into the working directory.
+///
+/// For claude-code runtimes, writes a managed memory section into CLAUDE.md
+/// in the working dir. The section is bounded by markers so it can be
+/// replaced idempotently on relaunch (no duplicates). Skips injection
+/// when the working dir is the project root (no worktree) to avoid
+/// mutating the workspace's own CLAUDE.md.
+///
+/// Returns `true` if memory was successfully injected via file, `false` if
+/// skipped (caller should fall back to prompt prepending).
+fn inject_agent_memory(
+    project_root: &Path,
+    working_dir: &str,
+    agent: &AgentConfig,
+    runtime_name: &str,
+) -> Result<bool> {
+    let memory_path = match &agent.memory {
+        Some(p) => p.trim(),
+        None => return Ok(false),
+    };
+
+    // Only inject into CLAUDE.md for claude-code runtime
+    if runtime_name != "claude-code" {
+        return Ok(false);
+    }
+
+    let working = Path::new(working_dir);
+
+    // Don't mutate the workspace's own CLAUDE.md when worktrees are disabled
+    if working.canonicalize().ok() == project_root.canonicalize().ok() {
+        return Ok(false);
+    }
+
+    let resolved = project_root.join(memory_path);
+    if !resolved.exists() {
+        return Ok(false);
+    }
+
+    // Reject symlinked memory source
+    validate_no_symlink(&resolved, "memory file", project_root)?;
+
+    let memory_contents = fs::read_to_string(&resolved)?;
+    if memory_contents.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let claude_md_path = working.join("CLAUDE.md");
+
+    // Reject symlinked CLAUDE.md destination (check existing file and parent dir)
+    validate_no_symlink(&claude_md_path, "CLAUDE.md", working)?;
+    if let Some(parent) = claude_md_path.parent() {
+        validate_no_symlink(parent, "CLAUDE.md parent directory", working)?;
+    }
+
+    let existing = if claude_md_path.exists() {
+        fs::read_to_string(&claude_md_path)?
+    } else {
+        String::new()
+    };
+
+    // Strip any previous managed memory section
+    let base = if let Some(start) = existing.find(MEMORY_SECTION_START) {
+        if let Some(rel_end) = existing[start..].find(MEMORY_SECTION_END) {
+            let end = start + rel_end;
+            let before = &existing[..start];
+            let after = &existing[end + MEMORY_SECTION_END.len()..];
+            format!("{}{}", before.trim_end(), after)
+        } else {
+            existing[..start].trim_end().to_string()
+        }
+    } else {
+        existing
+    };
+
+    let memory_section = format!(
+        "\n\n{MEMORY_SECTION_START}\n# Agent Memory\n\n{}\n{MEMORY_SECTION_END}",
+        memory_contents.trim()
+    );
+    let combined = format!("{}{memory_section}\n", base.trim_end());
+    fs::write(&claude_md_path, combined)?;
+
+    Ok(true)
+}
+
+/// Prepend memory file contents to the agent prompt.
+///
+/// Used for non-Claude runtimes, and as a fallback for claude-code when
+/// file injection was skipped (e.g. no worktree).
+fn prepend_memory_to_prompt(
+    project_root: &Path,
+    agent: &AgentConfig,
+    runtime_name: &str,
+    base_prompt: Option<&str>,
+    file_injected: bool,
+) -> Result<Option<String>> {
+    let memory_path = match &agent.memory {
+        Some(p) => p.trim().to_string(),
+        None => return Ok(base_prompt.map(String::from)),
+    };
+
+    // If CLAUDE.md injection already succeeded, skip prompt prepending
+    if runtime_name == "claude-code" && file_injected {
+        return Ok(base_prompt.map(String::from));
+    }
+
+    let resolved = project_root.join(&memory_path);
+    if !resolved.exists() {
+        return Ok(base_prompt.map(String::from));
+    }
+
+    // Reject symlinked memory source
+    validate_no_symlink(&resolved, "memory file", project_root)?;
+
+    let memory_contents = fs::read_to_string(&resolved)?;
+    if memory_contents.trim().is_empty() {
+        return Ok(base_prompt.map(String::from));
+    }
+
+    let prompt = match base_prompt {
+        Some(p) => format!(
+            "## Agent Memory\n\n{}\n\n---\n\n{}",
+            memory_contents.trim(),
+            p
+        ),
+        None => format!("## Agent Memory\n\n{}", memory_contents.trim()),
+    };
+
+    Ok(Some(prompt))
+}
+
 fn resolve_launch_settings(
     config: &TuttiConfig,
     mode_override: Option<super::UpLaunchMode>,
@@ -604,8 +794,8 @@ fn build_launch_command(
                     "codex constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
-            let policy_appendix = runtime_policy_appendix("Codex", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "codex", policy)?;
+            let policy_appendix = runtime_policy_appendix("Codex", "codex", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let pre_args = vec![
                 "-a".to_string(),
@@ -630,8 +820,8 @@ fn build_launch_command(
                         .to_string(),
                 )
             })?;
-            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
-            let policy_appendix = runtime_policy_appendix("OpenClaw", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "openclaw", policy)?;
+            let policy_appendix = runtime_policy_appendix("OpenClaw", "openclaw", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((
@@ -649,8 +839,8 @@ fn build_launch_command(
                     "aider constrained launch requires configured [permissions] policy".to_string(),
                 )
             })?;
-            let shim_path = write_shell_policy_shims(project_root, agent_name, policy)?;
-            let policy_appendix = runtime_policy_appendix("Aider", policy);
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "aider", policy)?;
+            let policy_appendix = runtime_policy_appendix("Aider", "aider", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((
@@ -689,12 +879,25 @@ fn write_claude_settings_file(
     Ok(settings_path)
 }
 
+fn runtime_shell_allow_rules(runtime_name: &str, policy: &PermissionsConfig) -> Vec<String> {
+    let mut rules = shell_command_allow_rules(policy);
+    if runtime_name.eq_ignore_ascii_case("codex")
+        && !rules
+            .iter()
+            .any(|rule| normalize(rule).starts_with("apply_patch"))
+    {
+        rules.push("apply_patch *".to_string());
+    }
+    rules
+}
+
 fn write_shell_policy_shims(
     project_root: &Path,
     agent_name: &str,
+    runtime_name: &str,
     policy: &PermissionsConfig,
 ) -> Result<std::path::PathBuf> {
-    let rules = shell_command_allow_rules(policy);
+    let rules = runtime_shell_allow_rules(runtime_name, policy);
     if rules.is_empty() {
         return Err(TuttiError::ConfigValidation(format!(
             "{} constrained launch requires shell command allow rules in [permissions].allow",
@@ -803,13 +1006,12 @@ fn wrap_launch_command_with_shim_path(command: &str, shim_dir: &Path) -> String 
     )
 }
 
-fn runtime_policy_appendix(runtime_label: &str, policy: &PermissionsConfig) -> String {
-    let rules: Vec<String> = policy
-        .allow
-        .iter()
-        .map(normalize)
-        .filter(|entry| !entry.is_empty())
-        .collect();
+fn runtime_policy_appendix(
+    runtime_label: &str,
+    runtime_name: &str,
+    policy: &PermissionsConfig,
+) -> String {
+    let rules = runtime_shell_allow_rules(runtime_name, policy);
 
     let mut out = format!(
         "Tutti policy constraints for {runtime_label}:\n\
@@ -1333,6 +1535,18 @@ fn run_all(
                         agent,
                         fresh_worktree,
                     );
+
+                    // Inject persistent memory (same as run())
+                    let file_injected =
+                        inject_agent_memory(project_root, &working_dir, agent, &runtime_name)?;
+                    let effective_prompt = prepend_memory_to_prompt(
+                        project_root,
+                        agent,
+                        &runtime_name,
+                        agent.prompt.as_deref(),
+                        file_injected,
+                    )?;
+
                     let attempts = resolve_runtime_launch_attempts(
                         &config,
                         Some(&global),
@@ -1368,7 +1582,7 @@ fn run_all(
                             permissions_policy,
                             project_root,
                             &agent.name,
-                            agent.prompt.as_deref(),
+                            effective_prompt.as_deref(),
                         ) {
                             Ok(v) => v,
                             Err(e) => {
@@ -1514,6 +1728,7 @@ mod tests {
             fresh_worktree: None,
             branch: None,
             persistent: false,
+            memory: None,
             env: HashMap::new(),
         }
     }
@@ -2149,10 +2364,331 @@ mod tests {
             allow: vec!["Read".to_string(), "Edit".to_string()],
         };
 
-        let err = write_shell_policy_shims(&dir, "backend", &policy)
+        let err = write_shell_policy_shims(&dir, "backend", "openclaw", &policy)
             .expect_err("tool-only policy should fail");
         assert!(err.to_string().contains("shell command allow rules"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runtime_shell_allow_rules_adds_apply_patch_for_codex() {
+        let policy = PermissionsConfig {
+            allow: vec!["git *".to_string(), "cargo *".to_string()],
+        };
+
+        let codex_rules = runtime_shell_allow_rules("codex", &policy);
+        assert!(codex_rules.iter().any(|rule| rule == "apply_patch *"));
+
+        let aider_rules = runtime_shell_allow_rules("aider", &policy);
+        assert!(!aider_rules.iter().any(|rule| rule == "apply_patch *"));
+    }
+
+    #[test]
+    fn inject_agent_memory_writes_managed_section() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-inject-{}", std::process::id()));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(
+            memory_dir.join("backend.md"),
+            "ClickHouse LEFT JOIN returns empty string not NULL",
+        )
+        .unwrap();
+
+        // Create existing CLAUDE.md
+        std::fs::write(working.join("CLAUDE.md"), "# Project\nExisting content").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        let injected =
+            inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+        assert!(injected);
+
+        let contents = std::fs::read_to_string(working.join("CLAUDE.md")).unwrap();
+        assert!(contents.contains("Existing content"));
+        assert!(contents.contains("# Agent Memory"));
+        assert!(contents.contains("ClickHouse LEFT JOIN"));
+        assert!(contents.contains(MEMORY_SECTION_START));
+        assert!(contents.contains(MEMORY_SECTION_END));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-memory-idempotent-{}",
+            std::process::id()
+        ));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Learning v1").unwrap();
+
+        std::fs::write(working.join("CLAUDE.md"), "# Project").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        // Inject twice
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+        // Update memory and re-inject
+        std::fs::write(memory_dir.join("backend.md"), "Learning v2").unwrap();
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+
+        let contents = std::fs::read_to_string(working.join("CLAUDE.md")).unwrap();
+        // Should contain v2 but NOT v1
+        assert!(contents.contains("Learning v2"));
+        assert!(!contents.contains("Learning v1"));
+        // Markers should appear exactly once
+        assert_eq!(
+            contents.matches(MEMORY_SECTION_START).count(),
+            1,
+            "start marker should appear once"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_creates_claude_md_when_missing() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-create-{}", std::process::id()));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+
+        let contents = std::fs::read_to_string(working.join("CLAUDE.md")).unwrap();
+        assert!(contents.contains("# Agent Memory"));
+        assert!(contents.contains("Some memory"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_noop_when_no_memory_config() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-noop-{}", std::process::id()));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: None,
+            env: HashMap::new(),
+        };
+
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+
+        assert!(!working.join("CLAUDE.md").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_noop_when_memory_file_missing() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-missing-{}", std::process::id()));
+        let working = dir.join("worktree");
+        std::fs::create_dir_all(&working).unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
+
+        assert!(!working.join("CLAUDE.md").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inject_agent_memory_skips_project_root() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-skiproot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
+        std::fs::write(dir.join("CLAUDE.md"), "# Project").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        // working_dir == project_root → should not mutate CLAUDE.md, returns false
+        let injected =
+            inject_agent_memory(&dir, &dir.to_string_lossy(), &agent, "claude-code").unwrap();
+        assert!(!injected);
+
+        let contents = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+        assert_eq!(contents, "# Project");
+
+        // Fallback: prepend_memory_to_prompt should inject into prompt for
+        // claude-code when file_injected=false
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"), false)
+                .unwrap()
+                .unwrap();
+        assert!(result.contains("Some memory"));
+        assert!(result.contains("Original prompt"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn prepend_memory_to_prompt_adds_context() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-prompt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Important learning").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("codex".to_string()),
+            scope: None,
+            prompt: Some("You are a backend dev".to_string()),
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "codex", Some("You are a backend dev"), false)
+                .unwrap()
+                .unwrap();
+
+        assert!(result.contains("Important learning"));
+        assert!(result.contains("You are a backend dev"));
+        assert!(result.contains("## Agent Memory"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn prepend_memory_to_prompt_noop_for_claude_code() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-memory-cc-noop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let memory_dir = dir.join(".tutti/state/memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("backend.md"), "Some memory").unwrap();
+
+        let agent = AgentConfig {
+            name: "backend".to_string(),
+            runtime: Some("claude-code".to_string()),
+            scope: None,
+            prompt: Some("Original prompt".to_string()),
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: Some(".tutti/state/memory/backend.md".to_string()),
+            env: HashMap::new(),
+        };
+
+        // file_injected=true → claude-code skips prompt prepending
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"), true)
+                .unwrap()
+                .unwrap();
+        assert_eq!(result, "Original prompt");
+
+        // file_injected=false → claude-code falls back to prompt prepending
+        let result =
+            prepend_memory_to_prompt(&dir, &agent, "claude-code", Some("Original prompt"), false)
+                .unwrap()
+                .unwrap();
+        assert!(result.contains("Some memory"));
+        assert!(result.contains("Original prompt"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

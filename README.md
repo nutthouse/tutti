@@ -54,6 +54,15 @@ tt permissions check git status
 tt permissions check git status --json
                          # machine-readable policy decision
 tt logs backend -f       # follow captured output for an agent
+tt issue-claim acquire --label agent-ops
+                         # get exclusive lease on an unclaimed issue
+tt issue-claim heartbeat --state .tutti/state/auto/selected_issue.json
+                         # renew lease during long workflows
+tt issue-claim release --state .tutti/state/auto/selected_issue.json
+                         # release lease when workflow completes
+tt issue-claim sweep     # release all stale leases
+tt permissions suggest sdlc-auto
+                         # list all commands a workflow needs pre-approved
 ```
 
 ## The Problem
@@ -88,7 +97,10 @@ Runtime detector patterns are versioned in `src/runtime/*.rs` and validated agai
 ## Quick Start
 
 ```bash
-# Install (from source)
+# Install from crates.io
+cargo install tutti
+
+# Or install from source
 git clone https://github.com/nutthouse/tutti.git
 cd tutti
 cargo install --path . --locked
@@ -111,10 +123,10 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (March 2026)
+## Project Status (v0.3.0 — March 2026)
 
 ### Built and usable now
-- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`
+- Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
 - Runtime adapters: Claude Code, Codex CLI, Aider
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
@@ -123,6 +135,13 @@ source ~/.zshrc
 - `max_concurrent` launch guardrails per profile (`tt up` refuses launches above limit)
 - Workspace `[[tool_pack]]` declarations + `tt doctor` prerequisite checks (commands/env/profile/runtime)
 - API-profile budget guardrails (`[budget]`) with pre-exec checks on `tt up/send/run/verify`
+- Issue claim leases with `tt issue-claim acquire|heartbeat|release|sweep` for autonomous SDLC loops
+- `tt permissions suggest <workflow>` for batch command pre-approval
+- Permission block errors include actionable fix hints
+- `tt run --dry-run --json` includes literal command strings for pre-validation
+- Resume intent log + compensator preflight for safe workflow replay
+- SDLC automation framework with 6-agent topology (planner, conductor, implementer, tester, docs-release, reviewer)
+- Orchestration state machine + run ledger for deterministic recovery
 
 ### Planned / in progress
 - Session replacement flow (`tt handoff apply`) hardening and richer packet templates
@@ -443,9 +462,14 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [ ] Web dashboard
 - [ ] Cost tracking and attribution (provider-accurate)
 - [x] OpenClaw skill for Tutti orchestration workflows
+- [x] Issue claim leases for autonomous SDLC loops
+- [x] `tt permissions suggest` for batch workflow pre-approval
+- [x] SDLC automation framework (issue → implement → test → PR → review → merge)
+- [x] Published on crates.io (`cargo install tutti`)
+- [ ] Agent-to-agent message bus
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
-- [ ] Agent-to-agent communication protocol
+- [ ] Web dashboard
 
 ## License
 

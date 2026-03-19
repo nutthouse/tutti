@@ -36,10 +36,32 @@ fn normalize_no_ws(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+fn tmux_is_usable() -> bool {
+    if Command::new("tmux").arg("-V").output().is_err() {
+        return false;
+    }
+
+    let session = format!("tutti-itest-preflight-{}", std::process::id());
+    let create = Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session])
+        .output();
+    let Ok(create) = create else {
+        return false;
+    };
+    if !create.status.success() {
+        return false;
+    }
+
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session])
+        .output();
+    true
+}
+
 #[test]
 fn send_auto_up_wait_output_preserves_long_prompt() {
-    if Command::new("tmux").arg("-V").output().is_err() {
-        // Skip if tmux is unavailable in this environment.
+    if !tmux_is_usable() {
+        // Skip if tmux is unavailable or unusable in this environment.
         return;
     }
 

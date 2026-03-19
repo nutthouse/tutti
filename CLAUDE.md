@@ -34,3 +34,9 @@
 - `cargo fmt` and `cargo clippy` must pass (CI enforced)
 - Prefer explicit imports over glob imports
 - Keep functions focused — if it's doing two things, split it
+
+## Dogfooding
+- This project uses itself (`tt`) to orchestrate development — tutti developing tutti
+- When a tutti feature doesn't work during a dogfood run, **fix the framework** (the `tt` command / runtime / session code), don't work around it by doing the task manually
+- Always validate the fix by re-running the original orchestration flow through `tt`
+- The purpose of dogfood runs is to surface real bugs in tutti's agent orchestration, not to ship the target feature by any means necessary

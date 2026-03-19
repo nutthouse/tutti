@@ -109,6 +109,13 @@ impl TmuxSession {
     }
 
     /// Send text to a running session and press Enter.
+    ///
+    /// The entire text is pasted as a single tmux buffer then submitted.
+    /// Multi-line text uses bracketed paste mode (`-p`) so it arrives
+    /// atomically; a second Enter is sent because some TUI applications
+    /// (e.g. codex) consume the first Enter as "finalize paste" rather
+    /// than "submit". Single-line text skips bracketed paste to avoid
+    /// that extra-Enter issue with simple shell commands.
     pub fn send_text(session: &str, text: &str) -> Result<()> {
         if !Self::session_exists(session) {
             return Err(TuttiError::TmuxError(format!(
@@ -117,27 +124,19 @@ impl TmuxSession {
             )));
         }
 
-        // Preserve line boundaries: each line is sent literally, then Enter.
-        let lines: Vec<&str> = if text.is_empty() {
-            vec![""]
-        } else {
-            text.lines().collect()
-        };
+        let is_multiline = text.contains('\n');
 
-        for line in lines {
-            if !line.is_empty() {
-                send_line_via_tmux_buffer(session, line)?;
-            }
+        if !text.is_empty() {
+            send_text_via_tmux_buffer(session, text, is_multiline)?;
+        }
 
-            let out = Command::new("tmux")
-                .args(["send-keys", "-t", session, "Enter"])
-                .output()?;
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return Err(TuttiError::TmuxError(format!(
-                    "failed to send Enter to '{session}': {stderr}"
-                )));
-            }
+        // First Enter: for multi-line bracketed pastes, some TUIs treat this
+        // as "close the paste bracket" rather than "submit".
+        send_enter(session)?;
+
+        // Second Enter when bracketed paste was used — actually submits.
+        if is_multiline {
+            send_enter(session)?;
         }
 
         Ok(())
@@ -190,7 +189,25 @@ fn shell_escape_value(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn send_line_via_tmux_buffer(session: &str, line: &str) -> Result<()> {
+fn send_enter(session: &str) -> Result<()> {
+    let out = Command::new("tmux")
+        .args(["send-keys", "-t", session, "Enter"])
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(TuttiError::TmuxError(format!(
+            "failed to send Enter to '{session}': {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Load text into a tmux buffer and paste it into the target session.
+///
+/// When `bracketed` is true, uses `-p` flag for bracketed paste mode so the
+/// receiving application treats embedded newlines as part of the paste rather
+/// than as individual Enter keypresses.
+fn send_text_via_tmux_buffer(session: &str, text: &str, bracketed: bool) -> Result<()> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -205,7 +222,7 @@ fn send_line_via_tmux_buffer(session: &str, line: &str) -> Result<()> {
         .spawn()?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(line.as_bytes())?;
+        stdin.write_all(text.as_bytes())?;
     }
     let load_output = child.wait_with_output()?;
     if !load_output.status.success() {
@@ -215,9 +232,12 @@ fn send_line_via_tmux_buffer(session: &str, line: &str) -> Result<()> {
         )));
     }
 
-    let paste_output = Command::new("tmux")
-        .args(["paste-buffer", "-d", "-b", &buffer_name, "-t", session])
-        .output()?;
+    let mut paste_args = vec!["paste-buffer", "-d"];
+    if bracketed {
+        paste_args.push("-p");
+    }
+    paste_args.extend(["-b", &buffer_name, "-t", session]);
+    let paste_output = Command::new("tmux").args(&paste_args).output()?;
     if !paste_output.status.success() {
         let stderr = String::from_utf8_lossy(&paste_output.stderr);
         return Err(TuttiError::TmuxError(format!(
