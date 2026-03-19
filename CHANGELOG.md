@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.0 - 2026-03-20
+
+First fully unattended dogfood milestone. `tt run sdlc-auto --strict` completes
+all 23 steps end-to-end without operator intervention.
+
+### Added
+- **PR review loop + merge gate** (`tt land`): enforce CI-green + CodeRabbit-approved
+  before landing agent branches. Configurable via `TT_ENFORCE_MERGE_GATE` env var.
+- **`tt runs`** subcommand for listing workflow run history from the SDLC ledger.
+- **Health-state classification** in `status`/`watch`: unified `HealthState` enum
+  (Working, Idle, Stalled, AuthFailed, RateLimited, ProviderDown, Stopped, Unknown)
+  derived from health probe data (#64, #19).
+- **`verify_clean_baseline.sh`**: asserts HEAD == base_sha and clean porcelain after
+  branch creation, catching worktree contamination before implementation starts.
+- **`--milestone` flag** on `tt issue-claim acquire` for filtering by GitHub milestone.
+- **Worktree preservation guard**: agent worktrees on `auto/issue-*` branches are
+  preserved across `tt up` instead of being reset, preventing mid-workflow state loss.
+- Config validation rejects `wait_timeout_secs`/`startup_grace_secs` when
+  `wait_for_idle` is false.
+
+### Fixed
+- **False idle detection between Claude Code tool calls**: completion signal now
+  requires idle stability window before firing, preventing premature completion
+  when the prompt bar flashes briefly between tool invocations.
+- **Uninitialized agent sessions**: `ensure_running` and all auto-start paths now
+  wait for the agent to reach idle/ready state via `start_and_wait_ready()` instead
+  of a fixed 3-second sleep.
+- **Dirty worktree contamination**: `create_issue_branch.sh` pre-cleans, post-cleans
+  with `git clean -ffdx`, and asserts clean baseline before proceeding.
+- **CodeRabbit timeout handling**: `wait_coderabbit.sh` treats timeout as soft exit,
+  detects rate-limit and kickoff-only comments, and passes JSON via env var instead
+  of argv (fixing arg-length and stdin-conflict issues).
+- **Stale output_json**: prompt steps now delete leftover output files before sending
+  to prevent wait helpers from short-circuiting on previous attempt artifacts.
+- **Merge gate ordering**: gate now runs after `commit_wip_if_needed` and push so it
+  evaluates the final branch state.
+- **Hardcoded "codex" in retry**: implement_code retry path uses the agent's actual
+  runtime and configured timeout instead of fixed values.
+- Permission suggestions no longer append wildcard `*`; single-token commands now
+  return a suggestion instead of `None`.
+- `git_current_branch` handles detached HEAD by returning `None`.
+- Git subprocess calls in automation scripts include 60-second timeouts.
+- Explicit UTF-8 encoding on all automation script file I/O.
+
+### Changed
+- `SdlcRunLedgerRecord` gains `issue_title`, `branch`, and `failure_message` fields.
+- `wait_for_agent_idle` accepts `startup_grace` parameter across all call sites.
+- `stop_idle_agents` step added before `final_review` to free `max_concurrent` slots.
+- Claude Code runtime detection expanded: `Searching for`, `Unravelling`, `(thinking)`
+  working patterns; `don't ask on`, `shift+tab to cycle` idle/completion patterns.
+
 ## 0.3.0 - 2026-03-19
 
 Highlights:
