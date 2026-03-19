@@ -829,12 +829,12 @@ fn events_data(
     let skip_count = parsed.as_ref().map(|c| c.skip_count).unwrap_or(0);
     let mut events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
     // Skip events at the cursor boundary that were already seen
-    if skip_count > 0 {
-        if let Some(ts) = cursor_ts {
-            let boundary_count = events.iter().take_while(|e| e.timestamp == ts).count();
-            if boundary_count > 0 && skip_count <= boundary_count {
-                events = events.into_iter().skip(skip_count).collect();
-            }
+    if skip_count > 0
+        && let Some(ts) = cursor_ts
+    {
+        let boundary_count = events.iter().take_while(|e| e.timestamp == ts).count();
+        if boundary_count > 0 && skip_count <= boundary_count {
+            events = events.into_iter().skip(skip_count).collect();
         }
     }
     Ok(json!(events))
