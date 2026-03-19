@@ -37,14 +37,16 @@ fetch_branch = subprocess.run(
     capture_output=True,
     text=True,
 )
+remote_ref_missing = False
 if fetch_branch.returncode != 0:
     err = (fetch_branch.stderr or "").lower()
     if "couldn't find remote ref" not in err:
         print(fetch_branch.stderr.strip() or f"Failed to fetch origin/{branch}", file=sys.stderr)
         sys.exit(1)
+    remote_ref_missing = True
 
 remote_ref = f"origin/{branch}"
-if ref_exists(remote_ref):
+if not remote_ref_missing and ref_exists(remote_ref):
     branch_ref = remote_ref
 elif ref_exists(branch):
     branch_ref = branch

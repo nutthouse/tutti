@@ -78,7 +78,10 @@ def main() -> int:
         if line.strip()
     ]
     if not changed_files:
-        print("HEAD commit does not contain any changed files", file=sys.stderr)
+        print(
+            f"No changed files found between branch baseline {base_sha} and HEAD",
+            file=sys.stderr,
+        )
         return 1
 
     subprocess.run(
