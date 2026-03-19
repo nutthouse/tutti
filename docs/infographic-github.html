@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280, height=640">
+<title>tutti — GitHub social preview (1280x640)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1280px;
+    height: 640px;
+    background: #0d0f1a;
+    font-family: 'Outfit', sans-serif;
+    overflow: hidden;
+    position: relative;
+  }
+
+  body::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(99,102,241,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(99,102,241,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: 0;
+  }
+
+  .glow-1 {
+    position: absolute;
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, rgba(99,102,241,0.1) 0%, transparent 70%);
+    top: -150px; left: 50px;
+    z-index: 0;
+  }
+  .glow-2 {
+    position: absolute;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(245,158,11,0.06) 0%, transparent 70%);
+    top: 200px; right: 200px;
+    z-index: 0;
+  }
+  .glow-3 {
+    position: absolute;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(168,85,247,0.08) 0%, transparent 70%);
+    bottom: -100px; right: 0;
+    z-index: 0;
+  }
+
+  .canvas {
+    position: relative;
+    width: 1280px;
+    height: 640px;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .title-block {
+    text-align: center;
+    margin-bottom: 32px;
+    margin-top: 40px;
+  }
+  .title-block h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 56px;
+    font-weight: 700;
+    color: #818cf8;
+    letter-spacing: -1px;
+  }
+  .title-block p {
+    font-size: 18px;
+    font-weight: 400;
+    color: #94a3b8;
+    margin-top: 6px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  .feature-row {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 28px;
+  }
+
+  .feature-card {
+    border-radius: 12px;
+    padding: 16px 22px;
+    border: 1px solid;
+    backdrop-filter: blur(8px);
+    width: 200px;
+    text-align: center;
+  }
+  .feature-card .card-icon {
+    font-size: 20px;
+    margin-bottom: 8px;
+    opacity: 0.9;
+  }
+  .feature-card h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .feature-card p {
+    font-size: 11px;
+    color: #94a3b8;
+    line-height: 1.4;
+  }
+
+  .fc-blue {
+    background: rgba(99,102,241,0.08);
+    border-color: rgba(99,102,241,0.25);
+  }
+  .fc-blue h3 { color: #a5b4fc; }
+  .fc-blue .card-icon { color: #818cf8; }
+
+  .fc-cyan {
+    background: rgba(34,211,238,0.06);
+    border-color: rgba(34,211,238,0.2);
+  }
+  .fc-cyan h3 { color: #67e8f9; }
+  .fc-cyan .card-icon { color: #22d3ee; }
+
+  .fc-green {
+    background: rgba(34,197,94,0.07);
+    border-color: rgba(34,197,94,0.22);
+  }
+  .fc-green h3 { color: #86efac; }
+  .fc-green .card-icon { color: #22c55e; }
+
+  .fc-orange {
+    background: rgba(245,158,11,0.07);
+    border-color: rgba(245,158,11,0.22);
+  }
+  .fc-orange h3 { color: #fcd34d; }
+  .fc-orange .card-icon { color: #f59e0b; }
+
+  .fc-purple {
+    background: rgba(168,85,247,0.07);
+    border-color: rgba(168,85,247,0.22);
+  }
+  .fc-purple h3 { color: #c4b5fd; }
+  .fc-purple .card-icon { color: #a855f7; }
+
+  .bottom-bar {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .runtime-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 6px;
+  }
+  .badge-claude {
+    background: rgba(245,158,11,0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245,158,11,0.25);
+  }
+  .badge-codex {
+    background: rgba(34,197,94,0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34,197,94,0.25);
+  }
+  .badge-aider {
+    background: rgba(168,85,247,0.15);
+    color: #c084fc;
+    border: 1px solid rgba(168,85,247,0.25);
+  }
+  .sep {
+    color: #1e293b;
+    font-size: 14px;
+  }
+  .meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #475569;
+  }
+
+  .github-url {
+    position: absolute;
+    bottom: 28px;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .github-url svg { opacity: 0.4; }
+  .github-url span {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #64748b;
+  }
+</style>
+</head>
+<body>
+
+<div class="glow-1"></div>
+<div class="glow-2"></div>
+<div class="glow-3"></div>
+
+<div class="canvas">
+
+  <div class="title-block">
+    <h1>tutti</h1>
+    <p>multi-agent orchestration</p>
+  </div>
+
+  <div class="feature-row">
+    <div class="feature-card fc-blue">
+      <div class="card-icon">{ }</div>
+      <h3>tt up</h3>
+      <p>Config-driven launch with dependency ordering & worktree isolation</p>
+    </div>
+    <div class="feature-card fc-green">
+      <div class="card-icon">
+        <svg width="20" height="20" viewBox="0 0 10 10" fill="none"><rect x="0" y="0" width="4" height="4" rx="0.5" fill="#86efac"/><rect x="5.5" y="0" width="4" height="4" rx="0.5" fill="#86efac" opacity="0.5"/><rect x="0" y="5.5" width="4" height="4" rx="0.5" fill="#86efac" opacity="0.5"/><rect x="5.5" y="5.5" width="4" height="4" rx="0.5" fill="#86efac" opacity="0.3"/></svg>
+      </div>
+      <h3>tt watch</h3>
+      <p>Live TUI dashboard with crash restart & auto-handoff</p>
+    </div>
+    <div class="feature-card fc-orange">
+      <div class="card-icon">
+        <svg width="20" height="20" viewBox="0 0 10 10" fill="none"><polygon points="2,0 10,5 2,10" fill="#fcd34d"/></svg>
+      </div>
+      <h3>tt run</h3>
+      <p>Declarative workflows mixing prompts & shell commands</p>
+    </div>
+    <div class="feature-card fc-purple">
+      <div class="card-icon">
+        <svg width="20" height="20" viewBox="0 0 10 10" fill="none"><rect x="0" y="6" width="2.5" height="4" rx="0.5" fill="#c4b5fd"/><rect x="3.75" y="3" width="2.5" height="7" rx="0.5" fill="#c4b5fd" opacity="0.7"/><rect x="7.5" y="0" width="2.5" height="10" rx="0.5" fill="#c4b5fd" opacity="0.5"/></svg>
+      </div>
+      <h3>tt usage</h3>
+      <p>Token capacity tracking across all agents & runtimes</p>
+    </div>
+    <div class="feature-card fc-cyan">
+      <div class="card-icon">
+        <svg width="20" height="20" viewBox="0 0 10 10" fill="none"><path d="M1,5 L3,5 L4,2 L5.5,8 L7,4 L8,5 L9.5,5" stroke="#67e8f9" stroke-width="1.2" fill="none"/></svg>
+      </div>
+      <h3>tt health</h3>
+      <p>Agent health probes with CLI & HTTP endpoints</p>
+    </div>
+  </div>
+
+  <div class="bottom-bar">
+    <span class="runtime-badge badge-claude">Claude Code</span>
+    <span class="runtime-badge badge-codex">Codex</span>
+    <span class="runtime-badge badge-aider">Aider</span>
+    <span class="sep">|</span>
+    <span class="meta">Rust + tmux</span>
+    <span class="sep">|</span>
+    <span class="meta">local-first</span>
+    <span class="sep">|</span>
+    <span class="meta">config-driven</span>
+    <span class="sep">|</span>
+    <span class="meta">open source</span>
+  </div>
+
+</div>
+
+<div class="github-url">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="#94a3b8"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+  <span>github.com/nutthouse/tutti</span>
+</div>
+
+</body>
+</html>

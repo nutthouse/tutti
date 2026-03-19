@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1200, height=800">
+<title>tutti — architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1200px;
+    height: 800px;
+    background: #0d0f1a;
+    font-family: 'Outfit', sans-serif;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Subtle grid background */
+  body::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(99,102,241,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(99,102,241,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: 0;
+  }
+
+  /* Ambient glow spots */
+  .glow-1 {
+    position: absolute;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%);
+    top: -100px; left: 100px;
+    z-index: 0;
+  }
+  .glow-2 {
+    position: absolute;
+    width: 350px; height: 350px;
+    background: radial-gradient(circle, rgba(245,158,11,0.06) 0%, transparent 70%);
+    top: 250px; left: 500px;
+    z-index: 0;
+  }
+  .glow-3 {
+    position: absolute;
+    width: 300px; height: 300px;
+    background: radial-gradient(circle, rgba(168,85,247,0.07) 0%, transparent 70%);
+    top: 100px; right: 50px;
+    z-index: 0;
+  }
+
+  svg.connections {
+    position: absolute;
+    inset: 0;
+    width: 1200px;
+    height: 800px;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .canvas {
+    position: relative;
+    width: 1200px;
+    height: 800px;
+    z-index: 2;
+  }
+
+  /* ── Title ── */
+  .title-block {
+    position: absolute;
+    top: 22px;
+    left: 40px;
+  }
+  .title-block h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 32px;
+    font-weight: 700;
+    color: #e2e8f0;
+    letter-spacing: -0.5px;
+  }
+  .title-block h1 span {
+    color: #818cf8;
+  }
+  .title-block p {
+    font-size: 13px;
+    font-weight: 400;
+    color: #64748b;
+    margin-top: 2px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* GitHub badge */
+  .github-badge {
+    position: absolute;
+    top: 30px;
+    right: 40px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border: 1px solid rgba(99,102,241,0.25);
+    border-radius: 8px;
+    background: rgba(99,102,241,0.06);
+  }
+  .github-badge svg { opacity: 0.6; }
+  .github-badge span {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+
+  /* ── Section Labels ── */
+  .section-label {
+    position: absolute;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #475569;
+  }
+
+  /* ── Node base ── */
+  .node {
+    position: absolute;
+    border-radius: 10px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border: 1px solid;
+    backdrop-filter: blur(8px);
+  }
+  .node-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .node-sub {
+    font-size: 11px;
+    font-weight: 400;
+    color: #94a3b8;
+    line-height: 1.4;
+  }
+  .node-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* ── Color themes ── */
+  /* Blue — core/config */
+  .node-blue {
+    background: rgba(99,102,241,0.08);
+    border-color: rgba(99,102,241,0.25);
+  }
+  .node-blue .node-title { color: #a5b4fc; }
+  .node-blue .node-icon { background: rgba(99,102,241,0.3); color: #c7d2fe; }
+
+  /* Cyan — agents */
+  .node-cyan {
+    background: rgba(34,211,238,0.06);
+    border-color: rgba(34,211,238,0.2);
+  }
+  .node-cyan .node-title { color: #67e8f9; }
+  .node-cyan .node-icon { background: rgba(34,211,238,0.25); color: #cffafe; }
+
+  /* Green — monitoring */
+  .node-green {
+    background: rgba(34,197,94,0.07);
+    border-color: rgba(34,197,94,0.22);
+  }
+  .node-green .node-title { color: #86efac; }
+  .node-green .node-icon { background: rgba(34,197,94,0.25); color: #dcfce7; }
+
+  /* Orange — automation */
+  .node-orange {
+    background: rgba(245,158,11,0.07);
+    border-color: rgba(245,158,11,0.22);
+  }
+  .node-orange .node-title { color: #fcd34d; }
+  .node-orange .node-icon { background: rgba(245,158,11,0.25); color: #fef3c7; }
+
+  /* Purple — intelligence */
+  .node-purple {
+    background: rgba(168,85,247,0.07);
+    border-color: rgba(168,85,247,0.22);
+  }
+  .node-purple .node-title { color: #c4b5fd; }
+  .node-purple .node-icon { background: rgba(168,85,247,0.25); color: #ede9fe; }
+
+  /* Slate — integration */
+  .node-slate {
+    background: rgba(100,116,139,0.08);
+    border-color: rgba(100,116,139,0.22);
+  }
+  .node-slate .node-title { color: #cbd5e1; }
+  .node-slate .node-icon { background: rgba(100,116,139,0.25); color: #e2e8f0; }
+
+  /* ── Agent badge ── */
+  .runtime-badge {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-top: 2px;
+  }
+  .badge-claude {
+    background: rgba(245,158,11,0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245,158,11,0.25);
+  }
+  .badge-codex {
+    background: rgba(34,197,94,0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34,197,94,0.25);
+  }
+
+  /* ── Capacity bar ── */
+  .capacity-bar {
+    width: 120px;
+    height: 8px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .capacity-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #22c55e 0%, #22c55e 55%, #eab308 75%, #ef4444 100%);
+    width: 68%;
+  }
+
+  /* ── Worktree group ── */
+  .worktree-group {
+    position: absolute;
+    border: 1px dashed rgba(34,211,238,0.15);
+    border-radius: 14px;
+    padding: 8px;
+  }
+  .worktree-label {
+    position: absolute;
+    top: -9px;
+    left: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: #475569;
+    background: #0d0f1a;
+    padding: 0 6px;
+    letter-spacing: 1px;
+  }
+
+  /* ── Mini feature list ── */
+  .feature-list {
+    list-style: none;
+    margin-top: 4px;
+  }
+  .feature-list li {
+    font-size: 10px;
+    color: #94a3b8;
+    padding: 1px 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .feature-list li::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .node-green .feature-list li::before { background: #22c55e; }
+  .node-orange .feature-list li::before { background: #f59e0b; }
+  .node-purple .feature-list li::before { background: #a855f7; }
+
+  /* ── Flow arrow labels ── */
+  .arrow-label {
+    position: absolute;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: #475569;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="glow-1"></div>
+<div class="glow-2"></div>
+<div class="glow-3"></div>
+
+<!-- ── SVG Connections ── -->
+<svg class="connections" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-blue" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#6366f1" stroke-width="1.2"/>
+    </marker>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#22d3ee" stroke-width="1.2"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#22c55e" stroke-width="1.2"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#f59e0b" stroke-width="1.2"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#a855f7" stroke-width="1.2"/>
+    </marker>
+    <marker id="arr-slate" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#64748b" stroke-width="1.2"/>
+    </marker>
+
+    <filter id="glow-blue">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-green">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-orange">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Config → tt up -->
+  <path d="M 175,155 L 175,195" stroke="#6366f1" stroke-width="1.2" fill="none" marker-end="url(#arr-blue)" opacity="0.6" filter="url(#glow-blue)"/>
+
+  <!-- tt up → worktree group -->
+  <path d="M 175,255 L 175,295" stroke="#22d3ee" stroke-width="1.2" fill="none" marker-end="url(#arr-cyan)" opacity="0.5"/>
+
+  <!-- Agents → tt watch (curved) -->
+  <path d="M 310,370 Q 400,370 460,280" stroke="#22c55e" stroke-width="1.2" fill="none" marker-end="url(#arr-green)" opacity="0.45" filter="url(#glow-green)"/>
+  <path d="M 310,420 Q 420,420 470,295" stroke="#22c55e" stroke-width="1" fill="none" opacity="0.3"/>
+  <path d="M 310,470 Q 440,470 475,305" stroke="#22c55e" stroke-width="1" fill="none" opacity="0.3"/>
+
+  <!-- tt watch → tt run -->
+  <path d="M 560,305 L 560,380" stroke="#f59e0b" stroke-width="1.2" fill="none" marker-end="url(#arr-orange)" opacity="0.5"/>
+
+  <!-- tt run hook loop back to agents -->
+  <path d="M 500,440 Q 380,500 250,480" stroke="#f59e0b" stroke-width="1" fill="none" marker-end="url(#arr-orange)" opacity="0.35" stroke-dasharray="4,3"/>
+
+  <!-- tt watch → tt usage -->
+  <path d="M 620,260 Q 720,220 810,230" stroke="#a855f7" stroke-width="1.2" fill="none" marker-end="url(#arr-purple)" opacity="0.5"/>
+
+  <!-- Logs → tt usage -->
+  <path d="M 960,340 L 910,295" stroke="#a855f7" stroke-width="1" fill="none" marker-end="url(#arr-purple)" opacity="0.35"/>
+  <path d="M 1020,410 L 930,300" stroke="#a855f7" stroke-width="1" fill="none" marker-end="url(#arr-purple)" opacity="0.35"/>
+
+  <!-- Bottom integration lines -->
+  <path d="M 250,590 L 250,650" stroke="#64748b" stroke-width="1" fill="none" marker-end="url(#arr-slate)" opacity="0.35"/>
+  <path d="M 560,520 L 560,650" stroke="#64748b" stroke-width="1" fill="none" marker-end="url(#arr-slate)" opacity="0.3" stroke-dasharray="4,3"/>
+  <path d="M 880,310 L 880,650" stroke="#64748b" stroke-width="1" fill="none" marker-end="url(#arr-slate)" opacity="0.3" stroke-dasharray="4,3"/>
+</svg>
+
+<div class="canvas">
+
+  <!-- ── Title ── -->
+  <div class="title-block">
+    <h1><span>tutti</span></h1>
+    <p>multi-agent orchestration</p>
+  </div>
+
+  <div class="github-badge">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="#94a3b8"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+    <span>nutthouse/tutti</span>
+  </div>
+
+  <!-- ── Section labels ── -->
+  <span class="section-label" style="top:88px; left:40px;">CONFIG & LAUNCH</span>
+  <span class="section-label" style="top:88px; left:445px;">MONITOR & AUTOMATE</span>
+  <span class="section-label" style="top:88px; left:830px;">INTELLIGENCE</span>
+  <span class="section-label" style="top:628px; left:40px;">INTEGRATION LAYER</span>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- LEFT: Config & Launch                    -->
+  <!-- ════════════════════════════════════════ -->
+
+  <!-- tutti.toml -->
+  <div class="node node-blue" style="left:40px; top:110px; width:270px;">
+    <div class="node-title">
+      <div class="node-icon">{ }</div>
+      tutti.toml
+    </div>
+    <div class="node-sub">Agents, workflows, hooks, permissions, env vars</div>
+  </div>
+
+  <!-- tt up -->
+  <div class="node node-blue" style="left:65px; top:200px; width:220px;">
+    <div class="node-title">
+      <div class="node-icon">&gt;_</div>
+      tt up
+    </div>
+    <div class="node-sub">Topological launch with dep ordering</div>
+  </div>
+
+  <!-- Worktree group -->
+  <div class="worktree-group" style="left:30px; top:300px; width:290px; height:210px;">
+    <span class="worktree-label">ISOLATED GIT WORKTREES</span>
+
+    <!-- Agent: backend -->
+    <div class="node node-cyan" style="position:relative; left:8px; top:12px; width:260px; margin-bottom:8px;">
+      <div class="node-title">
+        <div class="node-icon">&gt;_</div>
+        backend
+      </div>
+      <span class="runtime-badge badge-claude">Claude Code</span>
+    </div>
+
+    <!-- Agent: frontend -->
+    <div class="node node-cyan" style="position:relative; left:8px; top:12px; width:260px; margin-bottom:8px;">
+      <div class="node-title">
+        <div class="node-icon">&gt;_</div>
+        frontend
+      </div>
+      <span class="runtime-badge badge-claude">Claude Code</span>
+    </div>
+
+    <!-- Agent: etl -->
+    <div class="node node-cyan" style="position:relative; left:8px; top:12px; width:260px;">
+      <div class="node-title">
+        <div class="node-icon">&gt;_</div>
+        etl
+      </div>
+      <span class="runtime-badge badge-codex">Codex</span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- CENTER: Monitoring & Automation          -->
+  <!-- ════════════════════════════════════════ -->
+
+  <!-- tt watch -->
+  <div class="node node-green" style="left:400px; top:115px; width:260px;">
+    <div class="node-title">
+      <div class="node-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="0" y="0" width="4" height="4" rx="0.5" fill="#86efac"/><rect x="5.5" y="0" width="4" height="4" rx="0.5" fill="#86efac" opacity="0.5"/><rect x="0" y="5.5" width="4" height="4" rx="0.5" fill="#86efac" opacity="0.5"/><rect x="5.5" y="5.5" width="4" height="4" rx="0.5" fill="#86efac" opacity="0.3"/></svg>
+      </div>
+      tt watch
+    </div>
+    <div class="node-sub">Live TUI dashboard</div>
+    <ul class="feature-list">
+      <li>Real-time agent status</li>
+      <li>Crash detection + auto-restart</li>
+      <li>Context monitoring + auto-handoff</li>
+      <li>PLAN / CTX columns</li>
+    </ul>
+  </div>
+
+  <!-- tt run -->
+  <div class="node node-orange" style="left:400px; top:385px; width:260px;">
+    <div class="node-title">
+      <div class="node-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><polygon points="2,0 10,5 2,10" fill="#fcd34d"/></svg>
+      </div>
+      tt run
+    </div>
+    <div class="node-sub">Workflow automation engine</div>
+    <ul class="feature-list">
+      <li>Prompt steps → agent sessions</li>
+      <li>Command steps → shell execution</li>
+      <li>Hooks: agent_stop → verify</li>
+      <li>Strict / lenient fail modes</li>
+    </ul>
+  </div>
+
+  <!-- Arrow labels -->
+  <span class="arrow-label" style="top:290px; left:370px; color:#22c55e;">probes</span>
+  <span class="arrow-label" style="top:355px; left:510px; color:#f59e0b;">triggers</span>
+  <span class="arrow-label" style="top:505px; left:355px; color:#f59e0b; opacity:0.6;">hooks</span>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- RIGHT: Intelligence                      -->
+  <!-- ════════════════════════════════════════ -->
+
+  <!-- tt usage -->
+  <div class="node node-purple" style="left:760px; top:115px; width:240px;">
+    <div class="node-title">
+      <div class="node-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="0" y="6" width="2.5" height="4" rx="0.5" fill="#c4b5fd"/><rect x="3.75" y="3" width="2.5" height="7" rx="0.5" fill="#c4b5fd" opacity="0.7"/><rect x="7.5" y="0" width="2.5" height="10" rx="0.5" fill="#c4b5fd" opacity="0.5"/></svg>
+      </div>
+      tt usage
+    </div>
+    <div class="node-sub">Capacity tracking & token attribution</div>
+    <ul class="feature-list">
+      <li>Per-agent token breakdown</li>
+      <li>Weekly reset tracking</li>
+      <li>Multi-runtime aggregation</li>
+    </ul>
+    <div class="capacity-bar"><div class="capacity-fill"></div></div>
+    <div style="display:flex; justify-content:space-between; margin-top:2px;">
+      <span style="font-size:9px; color:#22c55e; font-family:'JetBrains Mono',monospace;">0%</span>
+      <span style="font-size:9px; color:#c4b5fd; font-family:'JetBrains Mono',monospace;">~68% of 45h</span>
+      <span style="font-size:9px; color:#ef4444; font-family:'JetBrains Mono',monospace;">100%</span>
+    </div>
+  </div>
+
+  <!-- Claude Code logs -->
+  <div class="node node-purple" style="left:870px; top:320px; width:180px; padding:10px 14px;">
+    <div class="node-title" style="font-size:11px;">
+      <div class="node-icon" style="width:16px; height:16px; font-size:9px;">
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1,1 L7,1 L7,7 L1,7 Z" stroke="#c4b5fd" stroke-width="0.8" fill="none"/><path d="M2.5,3 L5.5,3 M2.5,4.5 L4.5,4.5" stroke="#c4b5fd" stroke-width="0.6"/></svg>
+      </div>
+      Claude Code
+    </div>
+    <div class="node-sub">~/.claude/ JSONL logs</div>
+  </div>
+
+  <!-- Codex logs -->
+  <div class="node node-purple" style="left:910px; top:400px; width:180px; padding:10px 14px;">
+    <div class="node-title" style="font-size:11px;">
+      <div class="node-icon" style="width:16px; height:16px; font-size:9px;">
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1,1 L7,1 L7,7 L1,7 Z" stroke="#c4b5fd" stroke-width="0.8" fill="none"/><path d="M2.5,3 L5.5,3 M2.5,4.5 L4.5,4.5" stroke="#c4b5fd" stroke-width="0.6"/></svg>
+      </div>
+      Codex
+    </div>
+    <div class="node-sub">~/.codex/ session logs</div>
+  </div>
+
+  <span class="arrow-label" style="top:220px; left:680px; color:#a855f7;">tokens</span>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- BOTTOM: Integration Layer                -->
+  <!-- ════════════════════════════════════════ -->
+
+  <!-- OpenClaw -->
+  <div class="node node-slate" style="left:40px; top:560px; width:220px;">
+    <div class="node-title">
+      <div class="node-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="4" stroke="#cbd5e1" stroke-width="1" fill="none"/><path d="M3,5 L4.5,6.5 L7,3.5" stroke="#cbd5e1" stroke-width="1" fill="none"/></svg>
+      </div>
+      OpenClaw Skill
+    </div>
+    <div class="node-sub">JSON API for external agent loops<br/>16 actions, stable envelope contract</div>
+  </div>
+
+  <!-- State persistence -->
+  <div class="node node-slate" style="left:340px; top:660px; width:220px;">
+    <div class="node-title">
+      <div class="node-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><ellipse cx="5" cy="2.5" rx="4.5" ry="1.5" stroke="#cbd5e1" stroke-width="0.8" fill="none"/><path d="M0.5,2.5 L0.5,7.5 Q0.5,9 5,9 Q9.5,9 9.5,7.5 L9.5,2.5" stroke="#cbd5e1" stroke-width="0.8" fill="none"/></svg>
+      </div>
+      .tutti/state/
+    </div>
+    <div class="node-sub">Agent state, automation runs, verify summaries, handoff packets, logs</div>
+  </div>
+
+  <!-- Health -->
+  <div class="node node-slate" style="left:680px; top:660px; width:220px;">
+    <div class="node-title">
+      <div class="node-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1,5 L3,5 L4,2 L5.5,8 L7,4 L8,5 L9.5,5" stroke="#cbd5e1" stroke-width="1" fill="none"/></svg>
+      </div>
+      tt health
+    </div>
+    <div class="node-sub">Agent health probes<br/>CLI + HTTP endpoint</div>
+  </div>
+
+  <!-- ── Bottom runtime badges ── -->
+  <div style="position:absolute; bottom:18px; left:40px; display:flex; gap:12px; align-items:center;">
+    <span style="font-size:10px; color:#475569; font-weight:500;">Supports:</span>
+    <span class="runtime-badge badge-claude" style="font-size:10px;">Claude Code</span>
+    <span class="runtime-badge badge-codex" style="font-size:10px;">Codex</span>
+    <span class="runtime-badge" style="font-size:10px; background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.25);">Aider</span>
+    <span style="font-size:10px; color:#334155; margin-left:8px;">|</span>
+    <span style="font-size:10px; color:#475569; font-family:'JetBrains Mono',monospace;">Rust + tmux</span>
+    <span style="font-size:10px; color:#334155;">|</span>
+    <span style="font-size:10px; color:#475569; font-family:'JetBrains Mono',monospace;">local-first</span>
+    <span style="font-size:10px; color:#334155;">|</span>
+    <span style="font-size:10px; color:#475569; font-family:'JetBrains Mono',monospace;">config-driven</span>
+  </div>
+
+</div>
+</body>
+</html>

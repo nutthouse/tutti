@@ -183,6 +183,10 @@ pub fn recovery_trigger(health: &AgentHealth) -> Option<RecoveryTrigger> {
     None
 }
 
+/// Minimum consecutive Working polls (without hash change) required to count as activity.
+/// Prevents flicker between Working/Unknown from falsely setting `saw_activity`.
+const WORKING_STATUS_CONSECUTIVE_THRESHOLD: u32 = 2;
+
 pub fn wait_for_agent_idle(
     runtime_name: &str,
     session_name: &str,
@@ -199,6 +203,7 @@ pub fn wait_for_agent_idle(
     let mut last_hash: Option<u64> = None;
     let mut idle_since: Option<Instant> = None;
     let mut runtime_fallback_since: Option<Instant> = None;
+    let mut consecutive_working_polls: u32 = 0;
     let runtime_fallback_grace = idle_stability
         .checked_mul(RUNTIME_SIGNAL_FALLBACK_GRACE_MULTIPLIER)
         .unwrap_or(idle_stability);
@@ -213,15 +218,7 @@ pub fn wait_for_agent_idle(
 
         let output = TmuxSession::capture_pane(session_name, DEFAULT_CAPTURE_LINES)?;
         let pane_hash = hash_output(&output);
-        let in_startup = start.elapsed() < startup_grace;
-        // During startup grace, the first observation (None → Some) is not
-        // a real content change — suppress it so we don't set saw_activity
-        // before the agent has actually started producing output.
-        let changed = if in_startup && last_hash.is_none() {
-            false
-        } else {
-            last_hash.is_none_or(|h| h != pane_hash)
-        };
+        let changed = last_hash.is_some_and(|h| h != pane_hash);
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
 
         if let Some(adapter) = &adapter
@@ -233,29 +230,46 @@ pub fn wait_for_agent_idle(
             ));
         }
 
-        let has_completion_signal = adapter
+        // Fast-path: completion signal before any working activity was observed
+        // means the prompt was consumed and finished instantly.
+        if let Some(adapter) = &adapter
+            && adapter.detect_completion_signal(&output).is_some()
+        {
+            if saw_activity {
+                return Ok(WaitForIdleResult::completed(
+                    WaitCompletionSource::RuntimeSignal,
+                ));
+            }
+            // Pre-activity completion: only accept if we're past the startup grace,
+            // or treat as fast-path completion for genuine instant results.
+            if start.elapsed() >= startup_grace {
+                return Ok(WaitForIdleResult::completed_with_detail(
+                    WaitCompletionSource::RuntimeSignal,
+                    Some("completion_before_activity_after_grace".to_string()),
+                ));
+            }
+        }
+
+        // Track whether the runtime reports Working status even without hash change.
+        let runtime_is_working = runtime_status
             .as_ref()
-            .is_some_and(|a| a.detect_completion_signal(&output).is_some());
+            .is_some_and(|s| matches!(s, AgentStatus::Working));
+        if runtime_is_working && !changed {
+            consecutive_working_polls += 1;
+        } else if !runtime_is_working {
+            consecutive_working_polls = 0;
+        }
 
         if changed
-            || runtime_status
-                .as_ref()
-                .is_some_and(|s| matches!(s, AgentStatus::Working))
+            || (runtime_is_working
+                && consecutive_working_polls >= WORKING_STATUS_CONSECUTIVE_THRESHOLD)
         {
             saw_activity = true;
             idle_since = None;
             runtime_fallback_since = None;
-        } else if saw_activity || (!in_startup && has_completion_signal) {
-            // After startup grace, a stable completion signal without prior
-            // saw_activity means the agent already finished processing before
-            // we started watching — treat as valid idle.
+        } else if saw_activity {
             if let Some(since) = idle_since {
                 if since.elapsed() >= idle_stability {
-                    if has_completion_signal {
-                        return Ok(WaitForIdleResult::completed(
-                            WaitCompletionSource::RuntimeSignal,
-                        ));
-                    }
                     if runtime_prefers_signal {
                         if let Some(fallback_since) = runtime_fallback_since {
                             if fallback_since.elapsed() >= runtime_fallback_grace {
@@ -279,6 +293,10 @@ pub fn wait_for_agent_idle(
             } else {
                 idle_since = Some(Instant::now());
             }
+        } else if !saw_activity && start.elapsed() < startup_grace {
+            // Within startup grace: keep polling without timing out.
+            // Do not advance idle_since or return timeout — the agent
+            // may not have consumed the prompt yet.
         }
 
         last_hash = Some(pane_hash);
@@ -502,6 +520,12 @@ mod tests {
             recovery_trigger(&provider),
             Some(RecoveryTrigger::ProviderDown)
         );
+    }
+
+    #[test]
+    fn working_consecutive_threshold_is_at_least_two() {
+        // The threshold prevents a single Working flicker from falsely setting saw_activity.
+        assert!(WORKING_STATUS_CONSECUTIVE_THRESHOLD >= 2);
     }
 
     #[test]

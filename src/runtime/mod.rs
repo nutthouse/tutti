@@ -810,6 +810,19 @@ mod tests {
     }
 
     #[test]
+    fn claude_detect_working_from_searching_and_unravelling() {
+        let a = adapter("claude-code");
+        assert_eq!(
+            a.detect_status("Searching for relevant files..."),
+            AgentStatus::Working
+        );
+        assert_eq!(
+            a.detect_status("Unravelling... (thinking)"),
+            AgentStatus::Working
+        );
+    }
+
+    #[test]
     fn diagnose_output_returns_runtime_error_for_unknown_runtime() {
         let err = diagnose_output("unknown", "anything", None).unwrap_err();
         assert!(matches!(err, TuttiError::RuntimeUnknown(runtime) if runtime == "unknown"));
