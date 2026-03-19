@@ -884,10 +884,24 @@ fn events_data(
     targets: &[WorkspaceTarget],
     cursor: Option<&str>,
     workspace: Option<&str>,
+    limit: Option<usize>,
 ) -> Result<Value> {
     let cursor_ts = parse_cursor_ts(cursor)?;
     let events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
-    Ok(json!(events))
+    let total = events.len();
+    let page: Vec<_> = events
+        .into_iter()
+        .take(limit.unwrap_or(usize::MAX))
+        .collect();
+    let next_cursor = page.last().map(|e| e.timestamp.to_rfc3339());
+    Ok(api_ok(
+        "events.list",
+        json!({
+            "items": page,
+            "total": total,
+            "next_cursor": next_cursor
+        }),
+    ))
 }
 
 fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
@@ -987,6 +1001,7 @@ fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
     if let Some(h) = header("Connection", "keep-alive") {
         headers.push(h);
     }
+    headers.extend(cors_headers());
     let reader = ChannelReader::new(rx);
     let response =
         Response::new(StatusCode(200), headers, reader, None, None).with_chunked_threshold(0);
@@ -1204,6 +1219,26 @@ fn _assert_path(_: &Path) {}
 mod tests {
     use super::*;
 
+    fn minimal_test_config() -> TuttiConfig {
+        TuttiConfig {
+            workspace: crate::config::WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: None,
+            },
+            defaults: Default::default(),
+            launch: None,
+            agents: vec![],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+            budget: None,
+        }
+    }
+
     #[test]
     fn strategy_requests_rotation_matches_supported_values() {
         assert!(strategy_requests_rotation(Some("rotate_profile")));
@@ -1267,5 +1302,108 @@ mod tests {
             Duration::from_secs(30)
         ));
         assert!(recovery_cooldown_elapsed(Some(&now), Duration::ZERO));
+    }
+
+    #[test]
+    fn cors_headers_are_present() {
+        let headers = cors_headers();
+        assert!(headers.len() >= 3);
+        let names: Vec<String> = headers.iter().map(|h| h.field.to_string()).collect();
+        assert!(names.iter().any(|n| n == "Access-Control-Allow-Origin"));
+        assert!(names.iter().any(|n| n == "Access-Control-Allow-Methods"));
+        assert!(names.iter().any(|n| n == "Access-Control-Allow-Headers"));
+    }
+
+    #[test]
+    fn runs_data_pagination_slices_results() {
+        let dir = std::env::temp_dir().join(format!("tutti-test-runs-paginate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        // Write 5 automation run records
+        for i in 0..5 {
+            let record = crate::state::AutomationRunRecord {
+                workflow_name: format!("wf-{i}"),
+                timestamp: chrono::Utc::now() + chrono::TimeDelta::seconds(i as i64),
+                trigger: "run".to_string(),
+                success: true,
+                strict: false,
+                failed_steps: vec![],
+                warning_count: 0,
+                agent_scope: None,
+                hook_event: None,
+                hook_agent: None,
+            };
+            crate::state::append_automation_run(&dir, &record).unwrap();
+        }
+
+        let config = minimal_test_config();
+        let targets = vec![WorkspaceTarget {
+            name: "test".to_string(),
+            project_root: dir.clone(),
+            config,
+        }];
+
+        // No pagination — all 5 returned
+        let result = runs_data(&targets, None, None).unwrap();
+        assert_eq!(result["total"], 5);
+        assert_eq!(result["items"].as_array().unwrap().len(), 5);
+
+        // limit=2 offset=0
+        let result = runs_data(&targets, Some(2), Some(0)).unwrap();
+        assert_eq!(result["total"], 5);
+        assert_eq!(result["items"].as_array().unwrap().len(), 2);
+
+        // limit=2 offset=3 — only 2 left
+        let result = runs_data(&targets, Some(2), Some(3)).unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 2);
+
+        // offset=10 — past end
+        let result = runs_data(&targets, None, Some(10)).unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 0);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn events_data_pagination_with_next_cursor() {
+        let dir = std::env::temp_dir().join(format!("tutti-test-events-paginate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::state::ensure_tutti_dir(&dir).unwrap();
+
+        for i in 0..4 {
+            let event = crate::state::ControlEvent {
+                event: format!("test.event.{i}"),
+                workspace: "test".to_string(),
+                agent: Some("backend".to_string()),
+                timestamp: chrono::Utc::now() + chrono::TimeDelta::seconds(i as i64),
+                correlation_id: format!("corr-{i}"),
+                data: None,
+            };
+            crate::state::append_control_event(&dir, &event).unwrap();
+        }
+
+        let config = minimal_test_config();
+        let targets = vec![WorkspaceTarget {
+            name: "test".to_string(),
+            project_root: dir.clone(),
+            config,
+        }];
+
+        // No limit — all 4 returned
+        let result = events_data(&targets, None, None, None).unwrap();
+        let data = &result["data"];
+        assert_eq!(data["total"], 4);
+        assert_eq!(data["items"].as_array().unwrap().len(), 4);
+        assert!(data["next_cursor"].is_string());
+
+        // limit=2
+        let result = events_data(&targets, None, None, Some(2)).unwrap();
+        let data = &result["data"];
+        assert_eq!(data["total"], 4);
+        assert_eq!(data["items"].as_array().unwrap().len(), 2);
+        assert!(data["next_cursor"].is_string());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
