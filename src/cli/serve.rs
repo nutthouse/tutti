@@ -824,8 +824,19 @@ fn events_data(
     cursor: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<Value> {
-    let cursor_ts = parse_cursor_ts(cursor)?;
-    let events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
+    let parsed = parse_cursor(cursor)?;
+    let cursor_ts = parsed.as_ref().map(|c| c.timestamp);
+    let skip_count = parsed.as_ref().map(|c| c.skip_count).unwrap_or(0);
+    let mut events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
+    // Skip events at the cursor boundary that were already seen
+    if skip_count > 0 {
+        if let Some(ts) = cursor_ts {
+            let boundary_count = events.iter().take_while(|e| e.timestamp == ts).count();
+            if boundary_count > 0 && skip_count <= boundary_count {
+                events = events.into_iter().skip(skip_count).collect();
+            }
+        }
+    }
     Ok(json!(events))
 }
 
@@ -837,8 +848,23 @@ fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
     };
     let query_map = parse_query(query.as_deref());
     let workspace = query_map.get("workspace").map(|v| v.to_string());
-    let cursor_ts = match parse_cursor_ts(query_map.get("cursor").map(|v| v.as_str())) {
-        Ok(value) => value,
+    let cursor_ts = match parse_cursor(query_map.get("cursor").map(|v| v.as_str())) {
+        Ok(Some(parsed)) if parsed.skip_count > 0 => {
+            let body = api_err(
+                "events.stream",
+                "bad_request",
+                "stream endpoint does not support skip_count cursors; use a bare timestamp"
+                    .to_string(),
+            )
+            .to_string();
+            let mut response = Response::from_string(body).with_status_code(StatusCode(400));
+            if let Some(h) = header("Content-Type", "application/json") {
+                response = response.with_header(h);
+            }
+            let _ = request.respond(response);
+            return;
+        }
+        Ok(parsed) => parsed.map(|c| c.timestamp),
         Err(e) => {
             let body = api_err("events.stream", "bad_request", e.to_string()).to_string();
             let mut response = Response::from_string(body).with_status_code(StatusCode(400));
@@ -932,19 +958,52 @@ fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
     let _ = request.respond(response);
 }
 
-fn parse_cursor_ts(cursor: Option<&str>) -> Result<Option<DateTime<Utc>>> {
-    match cursor {
-        Some(raw) if !raw.trim().is_empty() => Ok(Some(
-            DateTime::parse_from_rfc3339(raw)
-                .map_err(|e| {
-                    TuttiError::ConfigValidation(format!(
-                        "invalid cursor '{}': expected RFC3339 timestamp ({e})",
-                        raw
-                    ))
-                })?
-                .with_timezone(&Utc),
-        )),
-        _ => Ok(None),
+struct ParsedCursor {
+    timestamp: DateTime<Utc>,
+    skip_count: usize,
+}
+
+fn parse_cursor(cursor: Option<&str>) -> Result<Option<ParsedCursor>> {
+    let Some(raw) = cursor else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some((ts_part, skip_part)) = raw.rsplit_once('|') {
+        let timestamp = DateTime::parse_from_rfc3339(ts_part)
+            .map_err(|e| {
+                TuttiError::ConfigValidation(format!(
+                    "invalid cursor '{}': expected RFC3339 timestamp ({e})",
+                    raw
+                ))
+            })?
+            .with_timezone(&Utc);
+        let skip_count: usize = skip_part.parse().map_err(|_| {
+            TuttiError::ConfigValidation(format!(
+                "invalid cursor '{}': skip count '{}' is not a valid number",
+                raw, skip_part
+            ))
+        })?;
+        Ok(Some(ParsedCursor {
+            timestamp,
+            skip_count,
+        }))
+    } else {
+        let timestamp = DateTime::parse_from_rfc3339(raw)
+            .map_err(|e| {
+                TuttiError::ConfigValidation(format!(
+                    "invalid cursor '{}': expected RFC3339 timestamp ({e})",
+                    raw
+                ))
+            })?
+            .with_timezone(&Utc);
+        Ok(Some(ParsedCursor {
+            timestamp,
+            skip_count: 0,
+        }))
     }
 }
 
