@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-const DEFAULT_STARTUP_GRACE_SECS: u64 = 30;
+const DEFAULT_STARTUP_GRACE_SECS: u64 = 10;
 const AUTO_UP_READY_TIMEOUT_SECS: u64 = 45;
 const AUTO_UP_READY_STABLE_MS: u64 = 750;
 const AUTO_UP_READY_POLL_MS: u64 = 250;

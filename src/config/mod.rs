@@ -657,8 +657,20 @@ impl TuttiConfig {
                         text,
                         inject_files,
                         output_json,
+                        wait_for_idle,
+                        wait_timeout_secs,
+                        startup_grace_secs,
                         ..
                     } => {
+                        if !wait_for_idle.unwrap_or(false)
+                            && (wait_timeout_secs.is_some() || startup_grace_secs.is_some())
+                        {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} sets wait_timeout_secs/startup_grace_secs but wait_for_idle is false; set wait_for_idle = true or remove the wait settings",
+                                workflow.name,
+                                idx + 1
+                            )));
+                        }
                         if !agent_names.contains(agent.as_str()) {
                             return Err(TuttiError::ConfigValidation(format!(
                                 "workflow '{}', step {} references unknown agent '{}'",
