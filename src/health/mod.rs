@@ -16,6 +16,7 @@ const PROVIDER_DOWN_REASON_PREFIX: &str = "provider_down:";
 
 /// Default stall threshold: an agent idle for longer than this with no output
 /// change is classified as `Stalled`.
+#[allow(dead_code)]
 const STALL_THRESHOLD: Duration = Duration::from_secs(300); // 5 minutes
 
 /// Classify an `AgentHealth` snapshot into a unified `HealthState`.
@@ -29,12 +30,17 @@ const STALL_THRESHOLD: Duration = Duration::from_secs(300); // 5 minutes
 /// 6. Activity `Idle` with stale output → `Stalled`
 /// 7. Activity `Idle` with recent output → `Idle`
 /// 8. Anything else → `Unknown`
+#[allow(dead_code)]
 pub fn classify_health_state(health: &AgentHealth) -> HealthState {
     classify_health_state_with_threshold(health, STALL_THRESHOLD)
 }
 
 /// Internal: allows tests to inject a custom stall threshold.
-fn classify_health_state_with_threshold(health: &AgentHealth, stall_threshold: Duration) -> HealthState {
+#[allow(dead_code)]
+fn classify_health_state_with_threshold(
+    health: &AgentHealth,
+    stall_threshold: Duration,
+) -> HealthState {
     if !health.running {
         return HealthState::Stopped;
     }
@@ -59,7 +65,9 @@ fn classify_health_state_with_threshold(health: &AgentHealth, stall_threshold: D
             let stalled = match health.last_output_change_at {
                 Some(last_change) => {
                     let elapsed = Utc::now().signed_duration_since(last_change);
-                    elapsed > chrono::Duration::from_std(stall_threshold).unwrap_or(chrono::Duration::max_value())
+                    elapsed
+                        > chrono::Duration::from_std(stall_threshold)
+                            .unwrap_or(chrono::TimeDelta::MAX)
                 }
                 // No output change ever recorded while idle → treat as stalled.
                 None => true,

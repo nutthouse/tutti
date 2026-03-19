@@ -279,6 +279,7 @@ pub struct AgentHealth {
 /// Unified health-state classification for operator views.
 ///
 /// Derived from `AgentHealth` probe data by `health::classify_health_state`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthState {
@@ -308,6 +309,7 @@ impl std::fmt::Display for HealthState {
     }
 }
 
+#[allow(dead_code)]
 impl HealthState {
     /// Return a color name suitable for use with the `colored` crate.
     pub fn color(&self) -> &'static str {
@@ -1305,5 +1307,15 @@ mod tests {
         assert!(summary.contains("run-ledger-summary"));
         assert!(summary.contains("Transitions:"));
         assert!(summary.contains("tests passed"));
+    }
+
+    #[test]
+    fn health_state_display_and_color() {
+        assert_eq!(HealthState::Working.to_string(), "Working");
+        assert_eq!(HealthState::AuthFailed.to_string(), "Auth Failed");
+        assert_eq!(HealthState::RateLimited.to_string(), "Rate Limited");
+        assert_eq!(HealthState::Working.color(), "green");
+        assert_eq!(HealthState::AuthFailed.color(), "red");
+        assert_eq!(HealthState::ProviderDown.color(), "magenta");
     }
 }
