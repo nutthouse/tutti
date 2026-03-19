@@ -285,7 +285,7 @@ fail_mode = "closed"
 [[workflow.step]]
 id = "stop_idle_agents"
 type = "command"
-run = "cargo run --quiet -- down planner && cargo run --quiet -- down conductor && cargo run --quiet -- down tester && cargo run --quiet -- down docs-release"
+run = "cargo run --quiet -- down planner; cargo run --quiet -- down conductor; cargo run --quiet -- down tester; cargo run --quiet -- down docs-release; true"
 fail_mode = "open"
 
 [[workflow.step]]

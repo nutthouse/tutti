@@ -29,9 +29,9 @@ PY
   fi
 
   DATA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup,comments)
-  RESULT=$(python3 - <<'PY' "$DATA"
+  RESULT=$(echo "$DATA" | python3 - <<'PY'
 import json,sys
-obj=json.loads(sys.argv[1])
+obj=json.load(sys.stdin)
 
 # Check status checks first
 checks=obj.get("statusCheckRollup") or []
@@ -51,16 +51,21 @@ if cr:
     raise SystemExit
 
 # Fallback: check for CodeRabbit PR comments (review may appear as comment, not check)
+KICKOFF_MARKERS = ["review triggered", "walkthrough", "<!-- This is an auto-generated comment: summarize"]
 comments=obj.get("comments") or []
 for c in comments:
     author=(c.get("author") or {}).get("login","").lower()
     if "coderabbit" in author:
         body=(c.get("body") or "")
-        if "rate limit" in body.lower():
+        body_lower=body.lower()
+        if "rate limit" in body_lower:
             # Rate-limited — treat as no review available
             print("PASS")
             raise SystemExit
-        # CodeRabbit posted a comment — review is available
+        # Skip kickoff-only comments (not a real review)
+        if any(marker in body_lower for marker in KICKOFF_MARKERS) and "actionable" not in body_lower:
+            continue
+        # CodeRabbit posted a substantive comment — review is available
         print("PASS")
         raise SystemExit
 

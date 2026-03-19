@@ -170,7 +170,7 @@ pub fn inspect_worktree(project_root: &Path, agent_name: &str) -> Result<Worktre
         exists: true,
         dirty,
         at_project_head: root_head == worktree_head,
-        current_branch: Some(current_branch),
+        current_branch,
     })
 }
 
@@ -196,7 +196,7 @@ fn git_rev_parse(path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn git_current_branch(path: &Path) -> Result<String> {
+fn git_current_branch(path: &Path) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(path)
@@ -208,7 +208,13 @@ fn git_current_branch(path: &Path) -> Result<String> {
             path.display()
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // "HEAD" means detached state — no branch
+    if branch == "HEAD" {
+        Ok(None)
+    } else {
+        Ok(Some(branch))
+    }
 }
 
 #[cfg(test)]

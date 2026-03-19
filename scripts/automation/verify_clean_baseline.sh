@@ -22,7 +22,7 @@ if [ ! -f "$BRANCH_JSON" ]; then
   exit 1
 fi
 
-BASE_SHA=$(python3 -c "import json; print(json.load(open('$BRANCH_JSON'))['base_sha'])")
+BASE_SHA=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['base_sha'])" "$BRANCH_JSON")
 HEAD_SHA=$(git rev-parse HEAD)
 
 if [ "$HEAD_SHA" != "$BASE_SHA" ]; then

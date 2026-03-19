@@ -1149,7 +1149,7 @@ impl<'a> WorkflowExecutor<'a> {
                                             exit_code: None,
                                             timed_out: true,
                                             message: Some(
-                                                "implement_code retry did not start activity or produce output within 20s"
+                                                "implement_code retry did not start activity or produce output within 60s"
                                                     .to_string(),
                                             ),
                                             stdout: None,

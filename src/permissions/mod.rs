@@ -77,11 +77,11 @@ pub fn evaluate_command_policy(
 
 fn suggested_prefix_rule(command_line: &str) -> Option<String> {
     let tokens: Vec<&str> = command_line.split_whitespace().collect();
-    if tokens.len() < 2 {
-        return None;
+    match tokens.as_slice() {
+        [] => None,
+        [only] => Some((*only).to_string()),
+        [first, second, ..] => Some(format!("{first} {second}")),
     }
-
-    Some(format!("{} {}", tokens[0], tokens[1]))
 }
 
 pub fn render_claude_settings(policy: &PermissionsConfig) -> Result<String> {
