@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 - 2026-03-19
+
+Highlights:
+- Added `output_files` field for prompt workflow steps: declares expected output artifacts that must exist and be non-empty after step completion. Steps fail with a clear error if declared outputs are missing, enabling deterministic handoff validation between workflow agents.
+- Updated SDLC example workflow (`tutti-codex-sdlc.toml`) to use `output_files` for planner→implementer handoff via `plan_issue.json`.
+
+Release impact:
+- New optional `output_files` array on prompt steps. Existing workflows without `output_files` are unaffected.
+- `output_files` paths must be workspace-relative (validated at config load time).
+- Steps declaring `output_files` will fail if any declared file is missing or empty after the step completes.
+
 ## 0.2.0 - 2026-03-14
 
 Highlights:
