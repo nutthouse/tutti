@@ -76,6 +76,12 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             (None, None)
         };
 
+        let agent_health = health_records.iter().find(|h| h.agent == agent.name);
+        let health_state = agent_health
+            .map(|h| health::classify_health_state(h))
+            .unwrap_or(if running { HealthState::Unknown } else { HealthState::Stopped });
+        let health_reason = agent_health.and_then(|h| h.reason.clone());
+
         snapshots.push(build_snapshot(SnapshotBuildArgs {
             workspace_name: &config.workspace.name,
             agent_name: &agent.name,
@@ -84,6 +90,8 @@ pub fn gather_workspace_snapshots_with_selected_tail(
             running,
             detected_status: detected,
             ctx_pct,
+            health_state,
+            health_reason,
             tail_lines: tail,
             tail_error,
         }));
@@ -100,6 +108,8 @@ struct SnapshotBuildArgs<'a> {
     running: bool,
     detected_status: Option<AgentStatus>,
     ctx_pct: Option<u8>,
+    health_state: HealthState,
+    health_reason: Option<String>,
     tail_lines: Option<Vec<String>>,
     tail_error: Option<String>,
 }
@@ -115,6 +125,8 @@ fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
             session_name: "—".to_string(),
             running: false,
             ctx_pct: None,
+            health_state: HealthState::Stopped,
+            health_reason: None,
             tail_lines: None,
             tail_error: None,
         };
@@ -131,6 +143,8 @@ fn build_snapshot(args: SnapshotBuildArgs<'_>) -> AgentSnapshot {
         session_name: args.session,
         running: true,
         ctx_pct: args.ctx_pct,
+        health_state: args.health_state,
+        health_reason: args.health_reason,
         tail_lines: args.tail_lines,
         tail_error: args.tail_error,
     }
@@ -271,6 +285,8 @@ mod tests {
             running: true,
             detected_status: Some(AgentStatus::Working),
             ctx_pct: Some(67),
+            health_state: HealthState::Working,
+            health_reason: Some("healthy".to_string()),
             tail_lines: Some(vec!["line".to_string()]),
             tail_error: None,
         });
@@ -281,6 +297,8 @@ mod tests {
         assert_eq!(snapshot.session_name, "tutti-ws-backend");
         assert!(snapshot.running);
         assert_eq!(snapshot.ctx_pct, Some(67));
+        assert_eq!(snapshot.health_state, HealthState::Working);
+        assert_eq!(snapshot.health_reason.as_deref(), Some("healthy"));
         assert_eq!(snapshot.tail_lines.unwrap(), vec!["line".to_string()]);
     }
 
@@ -294,6 +312,8 @@ mod tests {
             running: false,
             detected_status: Some(AgentStatus::Working),
             ctx_pct: Some(52),
+            health_state: HealthState::Working,
+            health_reason: Some("ignored".to_string()),
             tail_lines: Some(vec!["ignored".to_string()]),
             tail_error: Some("ignored".to_string()),
         });
@@ -304,6 +324,8 @@ mod tests {
         assert_eq!(snapshot.session_name, "—");
         assert!(!snapshot.running);
         assert!(snapshot.ctx_pct.is_none());
+        assert_eq!(snapshot.health_state, HealthState::Stopped);
+        assert!(snapshot.health_reason.is_none());
         assert!(snapshot.tail_lines.is_none());
         assert!(snapshot.tail_error.is_none());
     }
