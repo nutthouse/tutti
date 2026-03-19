@@ -27,8 +27,8 @@ def main() -> int:
         )
         return 2
 
-    selected_issue = json.loads(Path(sys.argv[1]).read_text())
-    branch_info = json.loads(Path(sys.argv[2]).read_text())
+    selected_issue = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    branch_info = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
     output_path = Path(sys.argv[3])
 
     target_branch = branch_info["branch"]
@@ -109,7 +109,7 @@ def main() -> int:
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2) + "\n")
+    output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return 0
 
 
