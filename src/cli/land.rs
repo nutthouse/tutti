@@ -36,7 +36,6 @@ pub fn run_with_options(
         ensure_git_clean(&resolved.project_root)?;
     }
     ensure_branch_exists(&resolved.project_root, &branch)?;
-    maybe_enforce_merge_gate(&resolved.project_root, &branch, enforce_merge_gate)?;
     let wip_committed = commit_wip_if_needed(&worktree_path, &resolved.agent_name)?;
 
     if pr {
@@ -47,8 +46,13 @@ pub fn run_with_options(
                 resolved.agent_name
             );
         }
+        // Run merge gate after push so the PR exists and checks can be evaluated
+        maybe_enforce_merge_gate(&resolved.project_root, &branch, enforce_merge_gate)?;
         return Ok(());
     }
+
+    // For local cherry-pick flow, gate after WIP is committed but before merge
+    maybe_enforce_merge_gate(&resolved.project_root, &branch, enforce_merge_gate)?;
 
     let merge_base = git_output(
         &["merge-base", "HEAD", branch.as_str()],

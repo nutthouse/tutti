@@ -273,6 +273,15 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_command_policy_suggests_single_token_rule() {
+        let policy = PermissionsConfig {
+            allow: vec!["git status".to_string()],
+        };
+        let decision = evaluate_command_policy(Some(&policy), "make");
+        assert_eq!(decision.suggested_rule.as_deref(), Some("make"));
+    }
+
+    #[test]
     fn evaluate_command_policy_matches_prefix_rule() {
         let policy = PermissionsConfig {
             allow: vec!["cargo test".to_string()],

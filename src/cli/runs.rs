@@ -122,3 +122,55 @@ fn format_issue(run: &crate::state::SdlcRunLedgerRecord) -> String {
         _ => format!("#{}", run.issue_number),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{SdlcRunLedgerRecord, SdlcRunState};
+    use chrono::Utc;
+
+    fn stub_record(issue_title: Option<&str>) -> SdlcRunLedgerRecord {
+        SdlcRunLedgerRecord {
+            run_id: "1234567890123-99999".to_string(),
+            issue_number: 42,
+            issue_title: issue_title.map(|s| s.to_string()),
+            repository: "test/repo".to_string(),
+            workflow_name: "sdlc-auto".to_string(),
+            state: SdlcRunState::InProgress,
+            updated_at: Utc::now(),
+            actor: "test".to_string(),
+            branch: None,
+            failure_message: None,
+            transitions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn truncate_run_id_short() {
+        assert_eq!(truncate_run_id("abc"), "abc");
+        assert_eq!(truncate_run_id("exactly12chr"), "exactly12chr");
+    }
+
+    #[test]
+    fn truncate_run_id_long() {
+        assert_eq!(truncate_run_id("1234567890123-99999"), "123456789...");
+    }
+
+    #[test]
+    fn format_issue_with_title() {
+        let run = stub_record(Some("fix the bug"));
+        assert_eq!(format_issue(&run), "#42 fix the bug");
+    }
+
+    #[test]
+    fn format_issue_without_title() {
+        let run = stub_record(None);
+        assert_eq!(format_issue(&run), "#42");
+    }
+
+    #[test]
+    fn format_issue_with_blank_title() {
+        let run = stub_record(Some("   "));
+        assert_eq!(format_issue(&run), "#42");
+    }
+}

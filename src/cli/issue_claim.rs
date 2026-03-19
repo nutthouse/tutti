@@ -527,8 +527,12 @@ pub fn acquire(
     }
 
     if candidates.is_empty() {
+        let filter = match milestone {
+            Some(m) => format!("label '{label}', milestone '{m}'"),
+            None => format!("label '{label}'"),
+        };
         return Err(TuttiError::IssueClaim(format!(
-            "no unclaimed open issues found for label '{label}'"
+            "no unclaimed open issues found for {filter}"
         )));
     }
 

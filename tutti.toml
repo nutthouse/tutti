@@ -71,6 +71,11 @@ name = "sdlc-smoke"
 description = "Preflight release-train smoke run before unattended automation"
 
 [[workflow.step]]
+id = "ensure_implementer_smoke"
+type = "ensure_running"
+agent = "implementer"
+
+[[workflow.step]]
 id = "select_issue"
 type = "command"
 run = "bash -lc 'set -euo pipefail; cmd=(cargo run --quiet -- issue-claim acquire --output .tutti/state/auto/selected_issue.json --label \"${ISSUE_LABEL:-agent-ops}\" --lease-ttl-secs 1800); if [ -n \"${ISSUE_MILESTONE:-}\" ]; then cmd+=(--milestone \"$ISSUE_MILESTONE\"); fi; \"${cmd[@]}\"'"

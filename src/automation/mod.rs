@@ -799,6 +799,8 @@ impl<'a> WorkflowExecutor<'a> {
                         text,
                         inject_files,
                         session_name,
+                        runtime: step_runtime,
+                        wait_timeout_secs: step_wait_timeout,
                         ..
                     } => {
                         let started = std::time::Instant::now();
@@ -1237,13 +1239,6 @@ impl<'a> WorkflowExecutor<'a> {
                                 });
                                 continue;
                             }
-                            let agent_runtime = self
-                                .config
-                                .agents
-                                .iter()
-                                .find(|a| a.name == *agent)
-                                .map(|a| a.runtime.as_deref().unwrap_or("claude-code"))
-                                .unwrap_or("claude-code");
                             let retry_prompt = "You still have not produced a commit beyond the branch baseline in .tutti/state/auto/branch.json. If your worktree already has local code changes, stop exploring and commit the smallest valid diff now. Otherwise make the smallest coherent code change now, commit it, and push it to the target branch. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
                             if !TmuxSession::session_exists(session_name) {
                                 start_and_wait_ready(
@@ -1257,7 +1252,7 @@ impl<'a> WorkflowExecutor<'a> {
                             maybe_submit_buffered_prompt(session_name, retry_prompt)?;
 
                             if !wait_for_prompt_activity_or_output(
-                                agent_runtime,
+                                step_runtime,
                                 session_name,
                                 retry_prompt,
                                 None,
@@ -1307,9 +1302,9 @@ impl<'a> WorkflowExecutor<'a> {
                             }
 
                             let retry_wait = health::wait_for_agent_idle(
-                                agent_runtime,
+                                step_runtime,
                                 session_name,
-                                Duration::from_secs(3600),
+                                Duration::from_secs((*step_wait_timeout).max(1)),
                                 Duration::from_secs(5),
                                 Duration::from_secs(10),
                             )?;
@@ -2439,13 +2434,19 @@ fn start_and_wait_ready(
         .find(|a| a.name == agent)
         .map(|a| a.runtime.as_deref().unwrap_or("claude-code"))
         .unwrap_or("claude-code");
-    let _ = health::wait_for_agent_idle(
+    let wait_result = health::wait_for_agent_idle(
         agent_runtime,
         session_name,
         Duration::from_secs(30),
         Duration::from_secs(3),
         Duration::from_secs(5),
-    );
+    )?;
+    if !wait_result.is_completed() {
+        eprintln!(
+            "  warn: agent '{}' did not reach ready state within 30s, proceeding anyway",
+            agent
+        );
+    }
     Ok(())
 }
 
