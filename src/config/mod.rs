@@ -663,7 +663,44 @@ impl TuttiConfig {
         self.validate_automation()?;
         self.validate_tool_packs()?;
         self.validate_budget()?;
+        self.validate_webhooks()?;
 
+        Ok(())
+    }
+
+    fn validate_webhooks(&self) -> Result<()> {
+        let agent_names: std::collections::HashSet<&str> =
+            self.agents.iter().map(|a| a.name.as_str()).collect();
+        let workflow_names: std::collections::HashSet<&str> =
+            self.workflows.iter().map(|w| w.name.as_str()).collect();
+
+        for (i, wh) in self.webhooks.iter().enumerate() {
+            if wh.source.trim().is_empty() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] source cannot be empty"
+                )));
+            }
+            if wh.workflow.is_none() && wh.agent.is_none() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] (source '{}') must specify either 'workflow' or 'agent'",
+                    wh.source
+                )));
+            }
+            if let Some(ref workflow) = wh.workflow
+                && !workflow_names.contains(workflow.as_str())
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] references unknown workflow '{workflow}'"
+                )));
+            }
+            if let Some(ref agent) = wh.agent
+                && !agent_names.contains(agent.as_str())
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] references unknown agent '{agent}'"
+                )));
+            }
+        }
         Ok(())
     }
 

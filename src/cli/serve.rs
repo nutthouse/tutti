@@ -6,14 +6,15 @@ use crate::scheduler;
 use crate::session::TmuxSession;
 use crate::state;
 use crate::state::ControlEvent;
+use crate::webhook;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -705,21 +706,14 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
 /// Maximum webhook payload size (1 MB)
 const WEBHOOK_MAX_BODY_BYTES: usize = 1_048_576;
 
+/// Mutex to serialize webhook dispatches so that `with_project_root` cwd changes
+/// do not race across concurrent request threads.
+static WEBHOOK_DISPATCH_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
 /// Handle POST /v1/webhooks/generic
 fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<Value> {
-    // Payload size guard
-    let content_length = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Content-Length"))
-        .and_then(|h| h.value.as_str().parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > WEBHOOK_MAX_BODY_BYTES {
-        return Err(TuttiError::ConfigValidation(format!(
-            "webhook payload too large ({content_length} bytes, max {WEBHOOK_MAX_BODY_BYTES})"
-        )));
-    }
-
+    // Body size is enforced inside read_json_body via take()
     let body = read_json_body(request)?;
 
     let source = body
@@ -730,29 +724,24 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
         .get("event")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    let payload = body.get("payload").cloned().unwrap_or_else(|| body.clone());
     let workspace_hint = body.get("workspace").and_then(Value::as_str);
 
     let target = resolve_action_workspace(targets, workspace_hint)?;
-    let webhooks = &target.config.webhooks;
 
-    // Find matching webhook triggers
-    let matched: Vec<_> = webhooks
-        .iter()
-        .filter(|wh| {
-            // Match source
-            if wh.source != source && wh.source != "*" {
-                return false;
-            }
-            // Match event type
-            if wh.events.is_empty() {
-                return true; // no events filter means match all
-            }
-            wh.events.iter().any(|e| e == "*" || e == event_type)
-        })
-        .collect();
+    // Deduplication: derive an idempotency key from the delivery ID header,
+    // Idempotency-Key header, or a hash of the payload to prevent duplicate
+    // workflow runs from GitHub retries or concurrent identical deliveries.
+    let dedup_key = webhook_dedup_key(request, &body);
+    if let Some(cached) = idempotency_lookup(target, &dedup_key)? {
+        return Ok(cached.response);
+    }
+
+    let matched = webhook::match_triggers(&target.config.webhooks, source, event_type);
 
     if matched.is_empty() {
-        return Ok(api_ok(
+        webhook::log_event(&target.project_root, source, event_type, None, "no_match");
+        let response = api_ok(
             "webhook.received",
             json!({
                 "source": source,
@@ -760,8 +749,16 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                 "matched": false,
                 "triggers_fired": 0
             }),
-        ));
+        );
+        idempotency_save(target, &dedup_key, "webhook.received", response.clone())?;
+        return Ok(response);
     }
+
+    // Serialize webhook dispatches behind a mutex so that concurrent requests
+    // cannot race on the process-wide cwd changed by `with_project_root`.
+    let _guard = WEBHOOK_DISPATCH_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let mut dispatched = Vec::new();
     for wh in &matched {
@@ -777,16 +774,24 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                     false,
                 )
             })?;
+            webhook::log_event(
+                &target.project_root,
+                source,
+                event_type,
+                Some(workflow),
+                "dispatched_workflow",
+            );
             dispatched.push(json!({
                 "type": "workflow",
                 "workflow": workflow,
                 "agent": wh.agent,
             }));
         } else if let Some(agent) = &wh.agent {
-            let prompt = wh
+            let raw_prompt = wh
                 .prompt
                 .as_deref()
                 .unwrap_or("Webhook event received — check recent events for details.");
+            let prompt = webhook::expand_template(raw_prompt, &payload);
             let options = super::send::SendOptions {
                 auto_up: false,
                 wait: false,
@@ -796,8 +801,15 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                 output_lines: 200,
             };
             with_project_root(&target.project_root, || {
-                super::send::run(agent, &[prompt.to_string()], options).map(|_| ())
+                super::send::run(agent, std::slice::from_ref(&prompt), options).map(|_| ())
             })?;
+            webhook::log_event(
+                &target.project_root,
+                source,
+                event_type,
+                Some(agent),
+                "dispatched_send",
+            );
             dispatched.push(json!({
                 "type": "send",
                 "agent": agent,
@@ -805,7 +817,7 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
         }
     }
 
-    Ok(api_ok(
+    let response = api_ok(
         "webhook.received",
         json!({
             "source": source,
@@ -814,7 +826,34 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
             "triggers_fired": dispatched.len(),
             "dispatched": dispatched
         }),
-    ))
+    );
+    idempotency_save(target, &dedup_key, "webhook.received", response.clone())?;
+    Ok(response)
+}
+
+/// Derive a deduplication key for a webhook request.
+/// Prefers X-GitHub-Delivery or Idempotency-Key headers; falls back to a
+/// hash of the payload body for generic webhook sources.
+fn webhook_dedup_key(request: &Request, body: &Value) -> String {
+    // Check X-GitHub-Delivery header (unique per GitHub webhook delivery)
+    for header in request.headers() {
+        if header.field.equiv("X-GitHub-Delivery") {
+            let val = header.value.as_str().trim();
+            if !val.is_empty() {
+                return format!("webhook:{val}");
+            }
+        }
+    }
+    // Check Idempotency-Key header or body field
+    if let Some(key) = read_idempotency_key(request, body) {
+        return format!("webhook:{key}");
+    }
+    // Fall back to payload content hash
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let serialized = body.to_string();
+    let mut hasher = DefaultHasher::new();
+    serialized.hash(&mut hasher);
+    format!("webhook:hash:{:x}", hasher.finish())
 }
 
 /// Resolve the target workspace for an action, defaulting to the only one if singular
@@ -837,10 +876,20 @@ fn resolve_action_workspace<'a>(
     ))
 }
 
-/// Read and parse the request body as JSON, defaulting to an empty object
+/// Read and parse the request body as JSON, defaulting to an empty object.
+/// Enforces the body size cap while reading via `take()` to prevent memory exhaustion
+/// from oversized payloads (a malicious client could send more bytes than Content-Length).
 fn read_json_body(request: &mut Request) -> Result<Value> {
     let mut body = String::new();
-    request.as_reader().read_to_string(&mut body)?;
+    request
+        .as_reader()
+        .take((WEBHOOK_MAX_BODY_BYTES + 1) as u64)
+        .read_to_string(&mut body)?;
+    if body.len() > WEBHOOK_MAX_BODY_BYTES {
+        return Err(TuttiError::ConfigValidation(format!(
+            "webhook payload too large (>{WEBHOOK_MAX_BODY_BYTES} bytes)"
+        )));
+    }
     if body.trim().is_empty() {
         return Ok(json!({}));
     }

@@ -153,6 +153,9 @@ pub fn run(
 
         if let Some(limit) = &profile_limit
             && active_for_profile >= limit.max_concurrent
+            && global
+                .as_ref()
+                .is_some_and(|g| agent_uses_profile(&config, g, agent, &limit.profile_name))
         {
             refused_by_limit = true;
             eprintln!(
@@ -330,7 +333,16 @@ pub fn run(
         );
 
         launched.push((agent.name.clone(), session, runtime_name));
-        if profile_limit.is_some() {
+        if profile_limit.is_some()
+            && global.as_ref().is_some_and(|g| {
+                agent_uses_profile(
+                    &config,
+                    g,
+                    agent,
+                    &profile_limit.as_ref().unwrap().profile_name,
+                )
+            })
+        {
             active_for_profile += 1;
         }
     }
@@ -1540,7 +1552,9 @@ fn run_all(
 
                     if let Some(limit) = &profile_limit {
                         let active = *active_by_profile.get(&limit.profile_name).unwrap_or(&0);
-                        if active >= limit.max_concurrent {
+                        if active >= limit.max_concurrent
+                            && agent_uses_profile(&config, &global, agent, &limit.profile_name)
+                        {
                             eprintln!(
                                 "  Skipping {} (profile '{}' at max_concurrent {}/{})",
                                 agent.name, limit.profile_name, active, limit.max_concurrent
