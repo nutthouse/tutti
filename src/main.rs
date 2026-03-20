@@ -11,6 +11,7 @@ mod scheduler;
 mod session;
 mod state;
 mod usage;
+mod webhook;
 mod worktree;
 
 use clap::Parser;

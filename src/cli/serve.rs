@@ -7,6 +7,7 @@ use crate::scheduler;
 use crate::session::TmuxSession;
 use crate::state;
 use crate::state::ControlEvent;
+use crate::webhook;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -791,26 +792,12 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
         .unwrap_or("unknown");
     let workspace_hint = body.get("workspace").and_then(Value::as_str);
 
+    let payload = body.get("payload").cloned().unwrap_or_else(|| body.clone());
     let target = resolve_action_workspace(targets, workspace_hint)?;
-    let webhooks = &target.config.webhooks;
-
-    // Find matching webhook triggers
-    let matched: Vec<_> = webhooks
-        .iter()
-        .filter(|wh| {
-            // Match source
-            if wh.source != source && wh.source != "*" {
-                return false;
-            }
-            // Match event type
-            if wh.events.is_empty() {
-                return true; // no events filter means match all
-            }
-            wh.events.iter().any(|e| e == "*" || e == event_type)
-        })
-        .collect();
+    let matched = webhook::match_triggers(&target.config.webhooks, source, event_type);
 
     if matched.is_empty() {
+        webhook::log_event(&target.project_root, source, event_type, None, "no_match");
         return Ok(api_ok(
             "webhook.received",
             json!({
@@ -836,16 +823,24 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                     false,
                 )
             })?;
+            webhook::log_event(
+                &target.project_root,
+                source,
+                event_type,
+                Some(workflow),
+                "dispatched_workflow",
+            );
             dispatched.push(json!({
                 "type": "workflow",
                 "workflow": workflow,
                 "agent": wh.agent,
             }));
         } else if let Some(agent) = &wh.agent {
-            let prompt = wh
+            let raw_prompt = wh
                 .prompt
                 .as_deref()
                 .unwrap_or("Webhook event received — check recent events for details.");
+            let prompt = webhook::expand_template(raw_prompt, &payload);
             let options = super::send::SendOptions {
                 auto_up: false,
                 wait: false,
@@ -855,8 +850,15 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                 output_lines: 200,
             };
             with_project_root(&target.project_root, || {
-                super::send::run(agent, &[prompt.to_string()], options).map(|_| ())
+                super::send::run(agent, std::slice::from_ref(&prompt), options).map(|_| ())
             })?;
+            webhook::log_event(
+                &target.project_root,
+                source,
+                event_type,
+                Some(agent),
+                "dispatched_send",
+            );
             dispatched.push(json!({
                 "type": "send",
                 "agent": agent,
