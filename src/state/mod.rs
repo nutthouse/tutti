@@ -397,6 +397,7 @@ impl From<&TuttiError> for FailureCategory {
             }
             TuttiError::IssueClaim(_) => FailureCategory::Policy,
             TuttiError::AgentNotFound(_) => FailureCategory::Config,
+            TuttiError::Ssh(_) | TuttiError::RemoteConnection(_) => FailureCategory::Runtime,
             TuttiError::Io(_) => FailureCategory::Unknown,
         }
     }
@@ -448,6 +449,12 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
         }
         TuttiError::IssueClaim(_) => {
             "Another agent may hold the claim — check issue comments".to_string()
+        }
+        TuttiError::Ssh(_) => {
+            "Check SSH connectivity and that the remote host is reachable".to_string()
+        }
+        TuttiError::RemoteConnection(_) => {
+            "Verify the remote tutti instance is running with `tt remote status`".to_string()
         }
         TuttiError::Io(_) => "Check file permissions and disk space".to_string(),
         TuttiError::Json(_) => {

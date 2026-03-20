@@ -1902,6 +1902,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
 
         let limit = resolve_profile_limit(&config, &global).unwrap();
@@ -1951,6 +1952,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
 
         assert!(resolve_profile_limit(&config, &global).is_none());
@@ -2012,6 +2014,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
 
         assert_eq!(
@@ -2062,6 +2065,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
 
         assert_eq!(
@@ -2145,6 +2149,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
 
         let attempts = resolve_runtime_launch_attempts(&config, Some(&global), "codex", true);

@@ -14,6 +14,7 @@ pub mod land;
 pub mod logs;
 pub mod peek;
 pub mod permissions;
+pub mod remote;
 pub mod review;
 pub mod run;
 pub mod send;
@@ -375,6 +376,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: IssueClaimSubcommand,
     },
+
+    /// Manage remote tutti hosts (SSH tunnels, status)
+    Remote {
+        #[command(subcommand)]
+        command: RemoteSubcommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -515,4 +522,23 @@ pub enum HandoffSubcommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum RemoteSubcommand {
+    /// Open an SSH tunnel to a remote tutti host
+    Attach {
+        /// Remote host (e.g. user@host or hostname)
+        host: String,
+
+        /// Local/remote port for the tunnel (default: 4040)
+        #[arg(short, long, default_value = "4040")]
+        port: u16,
+
+        /// Friendly name for this remote (default: host value)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Show registered remotes and their reachability
+    Status,
 }

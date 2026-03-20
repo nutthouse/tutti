@@ -338,6 +338,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
         let map = HashMap::from([("a".to_string(), "personal".to_string())]);
 
@@ -366,6 +367,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
         let map = HashMap::from([("a".to_string(), "work".to_string())]);
 
