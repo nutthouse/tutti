@@ -209,6 +209,16 @@ pub struct SdlcRunLedgerRecord {
     #[serde(default)]
     pub failure_message: Option<String>,
     #[serde(default)]
+    pub failure_class: Option<String>,
+    #[serde(default)]
+    pub current_step_id: Option<String>,
+    #[serde(default)]
+    pub last_successful_step_id: Option<String>,
+    #[serde(default)]
+    pub resume_eligible: bool,
+    #[serde(default)]
+    pub active_agents: Vec<String>,
+    #[serde(default)]
     pub transitions: Vec<SdlcTransitionRecord>,
 }
 
@@ -859,6 +869,39 @@ pub fn load_workflow_intent(
     Ok(Some(record))
 }
 
+/// Load all workflow step intent records for a run, sorted by step_index.
+pub fn load_run_steps(project_root: &Path, run_id: &str) -> Result<Vec<WorkflowStepIntentRecord>> {
+    validate_run_id(run_id)?;
+    let dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("workflow-intents")
+        .join(run_id);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut steps = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            let body = std::fs::read_to_string(&path)?;
+            match serde_json::from_str::<WorkflowStepIntentRecord>(&body) {
+                Ok(record) => steps.push(record),
+                Err(e) => {
+                    eprintln!(
+                        "warning: skipping malformed intent file {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+    steps.sort_by_key(|s| s.step_index);
+    Ok(steps)
+}
+
 pub fn append_control_event(project_root: &Path, event: &ControlEvent) -> Result<()> {
     let state_dir = project_root.join(".tutti").join("state");
     std::fs::create_dir_all(&state_dir)?;
@@ -1318,6 +1361,11 @@ mod tests {
             issue_title: None,
             branch: None,
             failure_message: None,
+            failure_class: None,
+            current_step_id: None,
+            last_successful_step_id: None,
+            resume_eligible: false,
+            active_agents: Vec::new(),
             transitions: vec![],
         };
 
@@ -1358,6 +1406,11 @@ mod tests {
             issue_title: None,
             branch: None,
             failure_message: None,
+            failure_class: None,
+            current_step_id: None,
+            last_successful_step_id: None,
+            resume_eligible: false,
+            active_agents: Vec::new(),
             transitions: vec![],
         };
 
@@ -1389,6 +1442,11 @@ mod tests {
             issue_title: None,
             branch: None,
             failure_message: None,
+            failure_class: None,
+            current_step_id: None,
+            last_successful_step_id: None,
+            resume_eligible: false,
+            active_agents: Vec::new(),
             transitions: vec![],
         };
 
@@ -1470,6 +1528,11 @@ mod tests {
             issue_title: None,
             branch: None,
             failure_message: None,
+            failure_class: None,
+            current_step_id: None,
+            last_successful_step_id: None,
+            resume_eligible: false,
+            active_agents: Vec::new(),
             transitions: vec![SdlcTransitionRecord {
                 from: SdlcRunState::Implemented,
                 to: SdlcRunState::Tested,
