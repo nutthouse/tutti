@@ -1776,6 +1776,7 @@ dependencies = [
  "cron",
  "crossterm",
  "fuzzy-matcher",
+ "getrandom 0.4.2",
  "ratatui",
  "serde",
  "serde_json",

@@ -31,6 +31,7 @@ wait-timeout = "0.2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "signal", "macros"] }
 cron = "0.12"
 tiny_http = "0.12"
+getrandom = "0.4.2"
 
 [dev-dependencies]
 serial_test = "3"

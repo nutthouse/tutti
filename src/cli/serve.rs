@@ -1279,7 +1279,6 @@ fn api_err(action: &str, code: &str, message: String) -> Value {
     })
 }
 
-/// Resolve the default port from global config, falling back to 4040
 /// Load an existing serve token or generate and persist a new one.
 /// Token is stored at ~/.config/tutti/serve-token.
 fn load_or_generate_serve_token() -> Result<String> {
@@ -1300,9 +1299,9 @@ fn load_or_generate_serve_token() -> Result<String> {
 
     // Generate a 256-bit (32-byte) random hex token
     let mut bytes = [0u8; 32];
-    let f = std::fs::File::open("/dev/urandom")?;
-    let mut reader = io::BufReader::new(f);
-    io::Read::read_exact(&mut reader, &mut bytes)?;
+    getrandom::fill(&mut bytes).map_err(|e| {
+        TuttiError::ConfigValidation(format!("failed to generate random token: {e}"))
+    })?;
     let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
 
     std::fs::create_dir_all(&config_dir)?;
