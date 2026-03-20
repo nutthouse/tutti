@@ -161,7 +161,9 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        let attr = state::classify_failure(&e);
+        eprintln!("error[{}]: {}", attr.category, attr.message);
+        eprintln!("  hint: {}", attr.hint);
         process::exit(1);
     }
 }

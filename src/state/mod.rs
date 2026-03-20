@@ -450,7 +450,9 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
             "Another agent may hold the claim — check issue comments".to_string()
         }
         TuttiError::Io(_) => "Check file permissions and disk space".to_string(),
-        TuttiError::Json(_) => "State file may be corrupted — inspect the JSON manually".to_string(),
+        TuttiError::Json(_) => {
+            "State file may be corrupted — inspect the JSON manually".to_string()
+        }
     };
     FailureAttribution {
         category,
