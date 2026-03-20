@@ -3907,6 +3907,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         }
     }
 
@@ -5186,6 +5187,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
 
         let dir = std::env::temp_dir().join("tutti-test-resolver-control-steps");

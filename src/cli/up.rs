@@ -1814,6 +1814,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let env = build_workspace_env(&config);
         assert_eq!(env.get("GIT_AUTHOR_NAME").unwrap(), "Test User");
@@ -1848,6 +1849,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let mut env = build_workspace_env(&config);
         // Simulate agent-level override
@@ -1883,6 +1885,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let global = GlobalConfig {
             user: None,
@@ -1933,6 +1936,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let global = GlobalConfig {
             user: None,
@@ -1995,6 +1999,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let global = GlobalConfig {
             user: None,
@@ -2046,6 +2051,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let global = GlobalConfig {
             user: None,
@@ -2106,6 +2112,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let global = GlobalConfig {
             user: None,
@@ -2191,6 +2198,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
 
         let resolved = resolve_launch_settings(
@@ -2223,6 +2231,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         };
         let launch_settings = LaunchSettings {
             mode: LaunchMode::Auto,

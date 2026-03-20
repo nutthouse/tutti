@@ -585,6 +585,7 @@ mod tests {
             }),
             observe: None,
             budget: None,
+            webhooks: vec![],
         }
     }
 

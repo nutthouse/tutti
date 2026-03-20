@@ -599,6 +599,7 @@ mod tests {
             handoff: None,
             observe: None,
             budget: None,
+            webhooks: vec![],
         }
     }
 
