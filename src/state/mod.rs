@@ -516,6 +516,20 @@ pub fn ensure_tutti_dir(project_root: &Path) -> Result<PathBuf> {
     Ok(tutti_dir)
 }
 
+/// Ensure `.tutti/uploads/` exists inside the given directory (typically an agent worktree)
+/// and write a `.gitignore` containing `*` so uploaded files are never committed.
+pub fn ensure_uploads_dir(base: &Path) -> Result<PathBuf> {
+    let uploads_dir = base.join(".tutti").join("uploads");
+    std::fs::create_dir_all(&uploads_dir)?;
+
+    let gitignore = uploads_dir.join(".gitignore");
+    if !gitignore.exists() {
+        std::fs::write(&gitignore, "*\n")?;
+    }
+
+    Ok(uploads_dir)
+}
+
 /// Save agent state to .tutti/state/{agent}.json.
 pub fn save_agent_state(project_root: &Path, state: &AgentState) -> Result<()> {
     let state_dir = project_root.join(".tutti").join("state");

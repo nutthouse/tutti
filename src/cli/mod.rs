@@ -22,6 +22,7 @@ pub mod snapshot;
 pub mod status;
 pub mod switch;
 pub mod up;
+pub mod upload;
 pub mod usage;
 pub mod verify;
 pub mod watch;
@@ -366,6 +367,23 @@ pub enum Commands {
     IssueClaim {
         #[command(subcommand)]
         command: IssueClaimSubcommand,
+    },
+
+    /// Upload a file into an agent's worktree
+    Upload {
+        /// Agent name (or workspace/agent for cross-workspace)
+        agent: String,
+
+        /// Path to the local file to upload
+        file: std::path::PathBuf,
+
+        /// Destination path relative to worktree root (default: .tutti/uploads/{timestamp}-{name})
+        #[arg(long)]
+        dest: Option<String>,
+
+        /// Target a specific workspace by name
+        #[arg(short, long)]
+        workspace: Option<String>,
     },
 }
 

@@ -34,3 +34,4 @@ tiny_http = "0.12"
 
 [dev-dependencies]
 serial_test = "3"
+tempfile = "3"

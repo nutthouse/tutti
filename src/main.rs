@@ -158,6 +158,12 @@ fn main() {
             } => cli::issue_claim::release(state, reason.as_deref()),
             IssueClaimSubcommand::Sweep => cli::issue_claim::sweep(),
         },
+        Commands::Upload {
+            ref agent,
+            ref file,
+            ref dest,
+            ref workspace,
+        } => cli::upload::run(agent, file, dest.as_deref(), workspace.as_deref()),
     };
 
     if let Err(e) = result {
