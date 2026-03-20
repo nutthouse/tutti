@@ -827,14 +827,18 @@ fn events_data(
     let parsed = parse_cursor(cursor)?;
     let cursor_ts = parsed.as_ref().map(|c| c.timestamp);
     let skip_count = parsed.as_ref().map(|c| c.skip_count).unwrap_or(0);
-    let mut events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
+    let include_boundary = skip_count > 0;
+    let mut events = load_events_for_targets(targets, workspace, cursor_ts, include_boundary)?;
     // Skip events at the cursor boundary that were already seen
     if skip_count > 0
         && let Some(ts) = cursor_ts
     {
         let boundary_count = events.iter().take_while(|e| e.timestamp == ts).count();
-        if boundary_count > 0 && skip_count <= boundary_count {
-            events = events.into_iter().skip(skip_count).collect();
+        if boundary_count > 0 {
+            events = events
+                .into_iter()
+                .skip(skip_count.min(boundary_count))
+                .collect();
         }
     }
     Ok(json!(events))
