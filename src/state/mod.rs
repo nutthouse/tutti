@@ -332,6 +332,133 @@ impl HealthState {
     }
 }
 
+/// Stable operator-facing failure category for run summaries and diagnostics.
+///
+/// Each variant maps to a class of root cause so that operators can quickly
+/// triage failures without reading raw error text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCategory {
+    /// Git, worktree, or branch-routing failures.
+    Routing,
+    /// Tmux, runtime availability, or agent-stall failures.
+    Runtime,
+    /// State persistence or internal tool failures.
+    Tool,
+    /// Policy enforcement or issue-claim rejections.
+    Policy,
+    /// Upstream provider errors (rate limits, outages).
+    Provider,
+    /// Configuration parse or validation errors.
+    Config,
+    /// Catch-all for unclassified failures.
+    Unknown,
+}
+
+impl std::fmt::Display for FailureCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            FailureCategory::Routing => "routing",
+            FailureCategory::Runtime => "runtime",
+            FailureCategory::Tool => "tool",
+            FailureCategory::Policy => "policy",
+            FailureCategory::Provider => "provider",
+            FailureCategory::Config => "config",
+            FailureCategory::Unknown => "unknown",
+        };
+        write!(f, "{label}")
+    }
+}
+
+/// An attributed failure with a stable category, human-readable message, and
+/// actionable hint for the operator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureAttribution {
+    pub category: FailureCategory,
+    pub message: String,
+    pub hint: String,
+}
+
+impl From<&TuttiError> for FailureCategory {
+    fn from(err: &TuttiError) -> Self {
+        match err {
+            TuttiError::Git(_) | TuttiError::Worktree(_) => FailureCategory::Routing,
+            TuttiError::TmuxNotInstalled
+            | TuttiError::TmuxError(_)
+            | TuttiError::RuntimeNotAvailable(_)
+            | TuttiError::RuntimeUnknown(_)
+            | TuttiError::AgentNotRunning(_) => FailureCategory::Runtime,
+            TuttiError::ConfigAlreadyExists(_)
+            | TuttiError::ConfigNotFound(_)
+            | TuttiError::ConfigParse(_)
+            | TuttiError::ConfigValidation(_) => FailureCategory::Config,
+            TuttiError::State(_) | TuttiError::UsageData(_) | TuttiError::Json(_) => {
+                FailureCategory::Tool
+            }
+            TuttiError::IssueClaim(_) => FailureCategory::Policy,
+            TuttiError::AgentNotFound(_) => FailureCategory::Config,
+            TuttiError::Io(_) => FailureCategory::Unknown,
+        }
+    }
+}
+
+impl From<&HealthState> for FailureCategory {
+    fn from(state: &HealthState) -> Self {
+        match state {
+            HealthState::AuthFailed => FailureCategory::Policy,
+            HealthState::RateLimited | HealthState::ProviderDown => FailureCategory::Provider,
+            HealthState::Stalled => FailureCategory::Runtime,
+            _ => FailureCategory::Unknown,
+        }
+    }
+}
+
+/// Classify a `TuttiError` into a `FailureAttribution` with category, message,
+/// and an actionable operator hint.
+pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
+    let category = FailureCategory::from(error);
+    let message = error.to_string();
+    let hint = match error {
+        TuttiError::Git(_) | TuttiError::Worktree(_) => {
+            "Check git status and worktree health with `tt status`".to_string()
+        }
+        TuttiError::TmuxNotInstalled => "Install tmux: brew install tmux".to_string(),
+        TuttiError::TmuxError(_) => "Check tmux is running and sessions are accessible".to_string(),
+        TuttiError::RuntimeNotAvailable(rt) => {
+            format!("Ensure '{rt}' is installed and on PATH")
+        }
+        TuttiError::RuntimeUnknown(rt) => {
+            format!("Check tutti.toml — runtime '{rt}' is not recognized")
+        }
+        TuttiError::AgentNotFound(name) => {
+            format!("Add agent '{name}' to tutti.toml or check spelling")
+        }
+        TuttiError::AgentNotRunning(name) => {
+            format!("Start the agent first: tt up {name}")
+        }
+        TuttiError::ConfigAlreadyExists(_) => {
+            "Remove or rename existing tutti.toml before re-initializing".to_string()
+        }
+        TuttiError::ConfigNotFound(_) => "Run `tt init` to create tutti.toml".to_string(),
+        TuttiError::ConfigParse(_) | TuttiError::ConfigValidation(_) => {
+            "Review tutti.toml for syntax or schema errors".to_string()
+        }
+        TuttiError::State(_) | TuttiError::UsageData(_) => {
+            "Check .tutti/state/ directory permissions and disk space".to_string()
+        }
+        TuttiError::IssueClaim(_) => {
+            "Another agent may hold the claim — check issue comments".to_string()
+        }
+        TuttiError::Io(_) => "Check file permissions and disk space".to_string(),
+        TuttiError::Json(_) => "State file may be corrupted — inspect the JSON manually".to_string(),
+    };
+    FailureAttribution {
+        category,
+        message,
+        hint,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlEvent {
     pub event: String,
