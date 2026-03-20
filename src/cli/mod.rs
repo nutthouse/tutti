@@ -17,6 +17,7 @@ pub mod permissions;
 pub mod remote;
 pub mod review;
 pub mod run;
+pub mod runs;
 pub mod send;
 pub mod serve;
 pub mod snapshot;
