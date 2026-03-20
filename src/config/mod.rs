@@ -28,6 +28,8 @@ pub struct TuttiConfig {
     pub observe: Option<ObserveConfig>,
     #[serde(default)]
     pub budget: Option<BudgetConfig>,
+    #[serde(default, rename = "webhook")]
+    pub webhooks: Vec<WebhookConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,6 +310,24 @@ pub struct BudgetConfig {
     pub workspace_weekly_tokens: Option<u64>,
     #[serde(default)]
     pub agent_weekly_tokens: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Source identifier (e.g. "github", "slack", "generic")
+    pub source: String,
+    /// Event types to match (e.g. ["issues.labeled", "push"]). Use ["*"] for all.
+    #[serde(default)]
+    pub events: Vec<String>,
+    /// Workflow name to trigger on match
+    #[serde(default)]
+    pub workflow: Option<String>,
+    /// Agent to send a prompt to on match (alternative to workflow)
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Prompt to send when using agent dispatch
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 // ── Global config (~/.config/tutti/config.toml) ──
@@ -643,7 +663,55 @@ impl TuttiConfig {
         self.validate_automation()?;
         self.validate_tool_packs()?;
         self.validate_budget()?;
+        self.validate_webhooks()?;
 
+        Ok(())
+    }
+
+    fn validate_webhooks(&self) -> Result<()> {
+        let agent_names: std::collections::HashSet<&str> =
+            self.agents.iter().map(|a| a.name.as_str()).collect();
+        let workflow_names: std::collections::HashSet<&str> =
+            self.workflows.iter().map(|w| w.name.as_str()).collect();
+
+        for (i, wh) in self.webhooks.iter().enumerate() {
+            if wh.source.trim().is_empty() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] source cannot be empty"
+                )));
+            }
+            if wh.workflow.is_some() && wh.prompt.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] prompt is only supported for direct agent dispatch; remove 'prompt' or switch to agent-only dispatch"
+                )));
+            }
+            if wh.workflow.is_none() && wh.agent.is_none() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] (source '{}') must specify either 'workflow' or 'agent'",
+                    wh.source
+                )));
+            }
+            if wh.workflow.is_some() && wh.agent.is_some() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] (source '{}') must specify 'workflow' or 'agent', not both",
+                    wh.source
+                )));
+            }
+            if let Some(ref workflow) = wh.workflow
+                && !workflow_names.contains(workflow.as_str())
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] references unknown workflow '{workflow}'"
+                )));
+            }
+            if let Some(ref agent) = wh.agent
+                && !agent_names.contains(agent.as_str())
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] references unknown agent '{agent}'"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -2179,5 +2247,49 @@ workflow_source = "run"
             config.registered_workspaces[0].path,
             PathBuf::from("/tmp/test2")
         );
+    }
+
+    #[test]
+    fn webhook_config_serde_round_trip() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[webhook]]
+source = "github"
+events = ["issues.labeled", "push"]
+workflow = "sdlc-auto"
+
+[[webhook]]
+source = "generic"
+events = ["*"]
+agent = "implementer"
+prompt = "Handle incoming event"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.webhooks.len(), 2);
+
+        let wh0 = &config.webhooks[0];
+        assert_eq!(wh0.source, "github");
+        assert_eq!(wh0.events, vec!["issues.labeled", "push"]);
+        assert_eq!(wh0.workflow.as_deref(), Some("sdlc-auto"));
+        assert!(wh0.agent.is_none());
+
+        let wh1 = &config.webhooks[1];
+        assert_eq!(wh1.source, "generic");
+        assert_eq!(wh1.events, vec!["*"]);
+        assert!(wh1.workflow.is_none());
+        assert_eq!(wh1.agent.as_deref(), Some("implementer"));
+        assert_eq!(wh1.prompt.as_deref(), Some("Handle incoming event"));
+    }
+
+    #[test]
+    fn webhook_config_empty_is_default() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.webhooks.is_empty());
     }
 }
