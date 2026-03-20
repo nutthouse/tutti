@@ -16,10 +16,15 @@ function stageFor(agent) {
 
 // ── State ──
 var appState = {
-  agents: {},      // agent name -> latest health record
+  agents: {},      // composite key (workspace:agent) -> latest health record
   events: [],      // recent events (newest first), capped at 50
   eventCount: 0,
 };
+
+// Build a composite key for workspace-scoped agent storage
+function agentKey(workspace, agent) {
+  return (workspace || "_") + ":" + agent;
+}
 
 // ── DOM refs ──
 var $pipeline  = document.getElementById("pipeline");
@@ -176,11 +181,15 @@ function fetchHealth() {
     return res.json();
   }).then(function(json) {
     var records = json.data || [];
+    // Rebuild agents from the fresh snapshot so removed agents disappear
+    var fresh = {};
     for (var i = 0; i < records.length; i++) {
       var r = records[i];
-      appState.agents[r.agent] = r;
+      var key = agentKey(r.workspace, r.agent);
+      fresh[key] = r;
       if (r.workspace) $wsName.textContent = r.workspace;
     }
+    appState.agents = fresh;
     renderPipeline();
   }).catch(function(e) {
     console.warn("health fetch failed:", e);
@@ -210,14 +219,15 @@ function connectSSE() {
 
       // If the event carries health-like data, update agent state
       if (data.agent && data.data) {
-        var existing = appState.agents[data.agent] || {};
+        var key = agentKey(data.workspace, data.agent);
+        var existing = appState.agents[key] || {};
         var merged = {};
         var k;
         for (k in existing) merged[k] = existing[k];
         for (k in data.data) merged[k] = data.data[k];
         merged.agent = data.agent;
         if (data.workspace) merged.workspace = data.workspace;
-        appState.agents[data.agent] = merged;
+        appState.agents[key] = merged;
       }
 
       scheduleRender();
