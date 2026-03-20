@@ -24,6 +24,13 @@ pub fn match_triggers<'a>(
 
 /// Expand `{{event.field}}` and `{{event.nested.field}}` placeholders in a
 /// template string using values from the JSON payload.
+///
+/// # Security
+///
+/// Interpolated values come from untrusted webhook payloads and are inserted
+/// verbatim — no escaping or sanitization is applied. Operators configuring
+/// webhook triggers should treat expanded prompts as untrusted input and
+/// avoid granting agents destructive permissions on webhook-triggered workflows.
 pub fn expand_template(template: &str, payload: &Value) -> String {
     let mut result = String::with_capacity(template.len());
     let mut rest = template;
