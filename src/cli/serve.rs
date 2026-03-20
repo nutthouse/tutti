@@ -762,24 +762,25 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
     }
 }
 
-/// Maximum webhook payload size (1 MB)
-const WEBHOOK_MAX_BODY_BYTES: usize = 1_048_576;
-
 /// Handle POST /v1/webhooks/generic
 fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<Value> {
-    // Payload size guard
-    let content_length = request
+    // Extract delivery-related headers before consuming the body reader
+    let delivery_header = request
         .headers()
         .iter()
-        .find(|h| h.field.equiv("Content-Length"))
-        .and_then(|h| h.value.as_str().parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > WEBHOOK_MAX_BODY_BYTES {
-        return Err(TuttiError::ConfigValidation(format!(
-            "webhook payload too large ({content_length} bytes, max {WEBHOOK_MAX_BODY_BYTES})"
-        )));
-    }
+        .find(|h| {
+            h.field.equiv("X-GitHub-Delivery")
+                || h.field.equiv("X-Delivery-ID")
+                || h.field.equiv("X-Request-Id")
+        })
+        .map(|h| h.value.as_str().to_string());
+    let idempotency_header = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Idempotency-Key"))
+        .map(|h| h.value.as_str().to_string());
 
+    // Body size is enforced by read_json_body via .take() on the reader
     let body = read_json_body(request)?;
 
     let source = body
@@ -793,17 +794,74 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
     let workspace_hint = body.get("workspace").and_then(Value::as_str);
 
     let payload = body.get("payload").cloned().unwrap_or_else(|| body.clone());
-    let target = resolve_action_workspace(targets, workspace_hint)?;
-    let matched = webhook::match_triggers(&target.config.webhooks, source, event_type);
 
-    if matched.is_empty() {
-        webhook::log_event(&target.project_root, source, event_type, None, "no_match");
+    // Match triggers across all targets before resolving workspace, so that
+    // the workspace is determined by which target has matching triggers.
+    let mut matched_target: Option<&WorkspaceTarget> = None;
+    let mut matched: Vec<&crate::config::WebhookConfig> = Vec::new();
+
+    if let Some(ws_hint) = workspace_hint {
+        // Explicit workspace hint — resolve first, then match triggers within it
+        let target = resolve_action_workspace(targets, Some(ws_hint))?;
+        matched = webhook::match_triggers(&target.config.webhooks, source, event_type);
+        if !matched.is_empty() {
+            matched_target = Some(target);
+        }
+    } else {
+        // No explicit workspace — find first target with matching triggers
+        for target in targets {
+            let hits = webhook::match_triggers(&target.config.webhooks, source, event_type);
+            if !hits.is_empty() {
+                matched = hits;
+                matched_target = Some(target);
+                break;
+            }
+        }
+    }
+
+    let Some(target) = matched_target else {
+        // No matching triggers in any workspace
+        webhook::log_event(
+            &targets[0].project_root,
+            source,
+            event_type,
+            None,
+            "no_match",
+        )?;
         return Ok(api_ok(
             "webhook.received",
             json!({
                 "source": source,
                 "event": event_type,
                 "matched": false,
+                "triggers_fired": 0
+            }),
+        ));
+    };
+
+    // Replay protection: derive a delivery ID from headers or payload hash
+    let delivery_id = webhook::delivery_id(
+        delivery_header.as_deref(),
+        idempotency_header.as_deref(),
+        &payload,
+    );
+    if let Some(id) = &delivery_id
+        && webhook::is_replay(&target.project_root, id)?
+    {
+        webhook::log_event(
+            &target.project_root,
+            source,
+            event_type,
+            None,
+            "replay_skipped",
+        )?;
+        return Ok(api_ok(
+            "webhook.received",
+            json!({
+                "source": source,
+                "event": event_type,
+                "matched": true,
+                "replay": true,
                 "triggers_fired": 0
             }),
         ));
@@ -829,7 +887,7 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                 event_type,
                 Some(workflow),
                 "dispatched_workflow",
-            );
+            )?;
             dispatched.push(json!({
                 "type": "workflow",
                 "workflow": workflow,
@@ -858,12 +916,17 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
                 event_type,
                 Some(agent),
                 "dispatched_send",
-            );
+            )?;
             dispatched.push(json!({
                 "type": "send",
                 "agent": agent,
             }));
         }
+    }
+
+    // Record delivery ID after successful dispatch for replay protection
+    if let Some(id) = &delivery_id {
+        webhook::record_delivery(&target.project_root, id)?;
     }
 
     Ok(api_ok(
@@ -898,12 +961,25 @@ fn resolve_action_workspace<'a>(
     ))
 }
 
-/// Read and parse the request body as JSON, defaulting to an empty object
+/// Maximum bytes read from any request body (1 MiB)
+const MAX_BODY_READ_BYTES: u64 = 1_048_576;
+
+/// Read and parse the request body as JSON, defaulting to an empty object.
+/// Enforces a 1 MiB cap on bytes actually read via `.take()`.
 fn read_json_body(request: &mut Request) -> Result<Value> {
     let mut body = String::new();
-    request.as_reader().read_to_string(&mut body)?;
+    request
+        .as_reader()
+        .take(MAX_BODY_READ_BYTES)
+        .read_to_string(&mut body)?;
     if body.trim().is_empty() {
         return Ok(json!({}));
+    }
+    if body.len() as u64 >= MAX_BODY_READ_BYTES {
+        return Err(TuttiError::ConfigValidation(format!(
+            "request body exceeds {} byte limit",
+            MAX_BODY_READ_BYTES
+        )));
     }
     let parsed: Value = serde_json::from_str(&body)?;
     Ok(parsed)

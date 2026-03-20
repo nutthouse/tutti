@@ -663,6 +663,7 @@ impl TuttiConfig {
         self.validate_automation()?;
         self.validate_tool_packs()?;
         self.validate_budget()?;
+        self.validate_webhooks()?;
 
         Ok(())
     }
@@ -1081,6 +1082,64 @@ impl TuttiConfig {
                 return Err(TuttiError::ConfigValidation(format!(
                     "budget.agent_weekly_tokens references unknown agent '{}'",
                     agent
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_webhooks(&self) -> Result<()> {
+        let agent_names: std::collections::HashSet<&str> =
+            self.agents.iter().map(|a| a.name.as_str()).collect();
+        let workflow_names: std::collections::HashSet<&str> =
+            self.workflows.iter().map(|w| w.name.as_str()).collect();
+
+        for (i, wh) in self.webhooks.iter().enumerate() {
+            let label = format!("webhook[{}]", i);
+
+            // Source must be non-empty
+            if wh.source.trim().is_empty() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label}: source cannot be empty"
+                )));
+            }
+
+            // Must specify workflow or agent, but not both
+            let has_workflow = wh.workflow.is_some();
+            let has_agent = wh.agent.is_some();
+            if has_workflow && has_agent {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label}: cannot specify both 'workflow' and 'agent' — choose one"
+                )));
+            }
+            if !has_workflow && !has_agent {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label}: must specify either 'workflow' or 'agent'"
+                )));
+            }
+
+            // Validate referenced workflow exists
+            if let Some(ref wf) = wh.workflow {
+                if !workflow_names.contains(wf.as_str()) {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "{label}: references unknown workflow '{wf}'"
+                    )));
+                }
+                // Prompt is not allowed on workflow webhooks
+                if wh.prompt.is_some() {
+                    return Err(TuttiError::ConfigValidation(format!(
+                        "{label}: 'prompt' is not supported when dispatching to a workflow"
+                    )));
+                }
+            }
+
+            // Validate referenced agent exists
+            if let Some(ref agent) = wh.agent
+                && !agent_names.contains(agent.as_str())
+            {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "{label}: references unknown agent '{agent}'"
                 )));
             }
         }
