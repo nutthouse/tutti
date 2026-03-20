@@ -142,6 +142,20 @@ impl TmuxSession {
         Ok(())
     }
 
+    /// Send one or more Enter keypresses to an existing session.
+    pub fn send_enter_presses(session: &str, count: u32) -> Result<()> {
+        if !Self::session_exists(session) {
+            return Err(TuttiError::TmuxError(format!(
+                "session '{}' is not running",
+                session
+            )));
+        }
+        for _ in 0..count.max(1) {
+            send_enter(session)?;
+        }
+        Ok(())
+    }
+
     /// Set a sticky status bar on a session (bottom line).
     pub fn set_status_bar(session: &str, text: &str) -> Result<()> {
         // Enable status bar for this session

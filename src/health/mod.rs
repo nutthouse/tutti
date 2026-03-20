@@ -256,6 +256,18 @@ pub fn recovery_trigger(health: &AgentHealth) -> Option<RecoveryTrigger> {
 /// Prevents flicker between Working/Unknown from falsely setting `saw_activity`.
 const WORKING_STATUS_CONSECUTIVE_THRESHOLD: u32 = 2;
 
+fn completion_signal_can_finish_wait(
+    saw_activity: bool,
+    runtime_is_working: bool,
+    start_elapsed: Duration,
+    startup_grace: Duration,
+) -> bool {
+    if runtime_is_working {
+        return false;
+    }
+    saw_activity || start_elapsed >= startup_grace
+}
+
 pub fn wait_for_agent_idle(
     runtime_name: &str,
     session_name: &str,
@@ -289,6 +301,9 @@ pub fn wait_for_agent_idle(
         let pane_hash = hash_output(&output);
         let changed = last_hash.is_some_and(|h| h != pane_hash);
         let runtime_status = adapter.as_ref().map(|a| a.detect_status(&output));
+        let runtime_is_working = runtime_status
+            .as_ref()
+            .is_some_and(|s| matches!(s, AgentStatus::Working));
 
         if let Some(adapter) = &adapter
             && let Some(reason) = adapter.detect_auth_failure(&output)
@@ -304,14 +319,25 @@ pub fn wait_for_agent_idle(
         if let Some(adapter) = &adapter
             && adapter.detect_completion_signal(&output).is_some()
         {
-            if saw_activity {
+            if completion_signal_can_finish_wait(
+                saw_activity,
+                runtime_is_working,
+                start.elapsed(),
+                startup_grace,
+            ) && saw_activity
+            {
                 return Ok(WaitForIdleResult::completed(
                     WaitCompletionSource::RuntimeSignal,
                 ));
             }
             // Pre-activity completion: only accept if we're past the startup grace,
             // or treat as fast-path completion for genuine instant results.
-            if start.elapsed() >= startup_grace {
+            if completion_signal_can_finish_wait(
+                saw_activity,
+                runtime_is_working,
+                start.elapsed(),
+                startup_grace,
+            ) {
                 return Ok(WaitForIdleResult::completed_with_detail(
                     WaitCompletionSource::RuntimeSignal,
                     Some("completion_before_activity_after_grace".to_string()),
@@ -320,9 +346,6 @@ pub fn wait_for_agent_idle(
         }
 
         // Track whether the runtime reports Working status even without hash change.
-        let runtime_is_working = runtime_status
-            .as_ref()
-            .is_some_and(|s| matches!(s, AgentStatus::Working));
         if runtime_is_working && !changed {
             consecutive_working_polls += 1;
         } else if !runtime_is_working {
@@ -378,9 +401,24 @@ pub fn wait_for_agent_idle(
     ))
 }
 
+fn normalize_pane_for_hash(output: &str) -> String {
+    output
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("◦ ") || trimmed.starts_with("gpt-") {
+                "<volatile-status-line>".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn hash_output(output: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
-    output.hash(&mut hasher);
+    normalize_pane_for_hash(output).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -598,6 +636,48 @@ mod tests {
     }
 
     #[test]
+    fn completion_signal_is_ignored_while_runtime_is_still_working() {
+        assert!(!completion_signal_can_finish_wait(
+            true,
+            true,
+            Duration::from_secs(30),
+            Duration::from_secs(10)
+        ));
+        assert!(!completion_signal_can_finish_wait(
+            false,
+            true,
+            Duration::from_secs(30),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn completion_signal_can_finish_after_activity_when_runtime_is_idle() {
+        assert!(completion_signal_can_finish_wait(
+            true,
+            false,
+            Duration::from_secs(1),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn completion_signal_can_finish_after_startup_grace_when_runtime_is_idle() {
+        assert!(completion_signal_can_finish_wait(
+            false,
+            false,
+            Duration::from_secs(30),
+            Duration::from_secs(10)
+        ));
+        assert!(!completion_signal_can_finish_wait(
+            false,
+            false,
+            Duration::from_secs(5),
+            Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
     fn classify_working() {
         let h = sample_health(true, ActivityState::Working, AuthState::Ok, None);
         assert_eq!(classify_health_state(&h), HealthState::Working);
@@ -615,6 +695,13 @@ mod tests {
         let mut h = sample_health(true, ActivityState::Idle, AuthState::Ok, None);
         h.last_output_change_at = Some(Utc::now() - chrono::Duration::minutes(10));
         assert_eq!(classify_health_state(&h), HealthState::Stalled);
+    }
+
+    #[test]
+    fn hash_output_ignores_codex_status_and_footer_lines() {
+        let first = "• The suite is still running.\n◦ Waiting for background terminal (38s • esc to interrupt)\n  gpt-5.4 high · 96% left · ~/repo\n";
+        let second = "• The suite is still running.\n◦ Waiting for background terminal (52s • esc to interrupt)\n  gpt-5.4 high · 95% left · ~/repo\n";
+        assert_eq!(hash_output(first), hash_output(second));
     }
 
     #[test]

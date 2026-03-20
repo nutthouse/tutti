@@ -9,6 +9,10 @@ default_profile = "claude-max"
 worktree = true
 runtime = "codex"
 
+[observe]
+dashboard = true
+port = 4040
+
 # Optional environment variables when running workflows:
 #   ISSUE_LABEL=agent-ops
 #   ISSUE_MILESTONE=v0.4.0
@@ -86,7 +90,7 @@ id = "create_branch"
 type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
-run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/create_issue_branch.sh\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\"'"
+run = "bash -lc 'set -euo pipefail; top=$(git rev-parse --show-toplevel); case \"$top\" in */.tutti/worktrees/*) root=${top%/.tutti/worktrees/*} ;; *) root=$top ;; esac; \"$root/scripts/automation/create_issue_branch.sh\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\"'"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -94,7 +98,7 @@ id = "verify_clean_baseline"
 type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
-run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/verify_clean_baseline.sh\" \"$root/.tutti/state/auto/branch.json\"'"
+run = "bash -lc 'set -euo pipefail; top=$(git rev-parse --show-toplevel); case \"$top\" in */.tutti/worktrees/*) root=${top%/.tutti/worktrees/*} ;; *) root=$top ;; esac; \"$root/scripts/automation/verify_clean_baseline.sh\" \"$root/.tutti/state/auto/branch.json\"'"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -124,7 +128,7 @@ id = "create_branch"
 type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
-run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/create_issue_branch.sh\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\"'"
+run = "bash -lc 'set -euo pipefail; top=$(git rev-parse --show-toplevel); case \"$top\" in */.tutti/worktrees/*) root=${top%/.tutti/worktrees/*} ;; *) root=$top ;; esac; \"$root/scripts/automation/create_issue_branch.sh\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\"'"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -132,7 +136,7 @@ id = "verify_clean_baseline"
 type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
-run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); \"$root/scripts/automation/verify_clean_baseline.sh\" \"$root/.tutti/state/auto/branch.json\"'"
+run = "bash -lc 'set -euo pipefail; top=$(git rev-parse --show-toplevel); case \"$top\" in */.tutti/worktrees/*) root=${top%/.tutti/worktrees/*} ;; *) root=$top ;; esac; \"$root/scripts/automation/verify_clean_baseline.sh\" \"$root/.tutti/state/auto/branch.json\"'"
 fail_mode = "closed"
 
 [[workflow.step]]
@@ -212,7 +216,7 @@ Rules:
 - if your worktree is detached, push with git push origin HEAD:<target-branch>
 - if blocked, do not fabricate success; reply with the concrete blocker summary instead of claiming completion
 
-After the code is committed and pushed, respond briefly with changed files, verification commands, branch name, and pushed commit SHA.
+Before claiming the slice is ready, make sure command wiring, enum exhaustiveness, and any new struct fields/tests are updated so `cargo test --quiet` can pass in your worktree. After the code is committed and pushed, respond briefly with changed files, verification commands, branch name, and pushed commit SHA.
 """
 
 [[workflow.step]]
@@ -220,7 +224,7 @@ id = "record_implement_result"
 type = "command"
 agent = "implementer"
 cwd = "agent_worktree"
-run = "bash -lc 'set -euo pipefail; root=$(dirname \"$(git rev-parse --git-common-dir)\"); python3 \"$root/scripts/automation/write_implement_result.py\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\" .tutti/state/auto/implement_result.json'"
+run = "bash -lc 'set -euo pipefail; top=$(git rev-parse --show-toplevel); case \"$top\" in */.tutti/worktrees/*) root=${top%/.tutti/worktrees/*} ;; *) root=$top ;; esac; python3 \"$root/scripts/automation/write_implement_result.py\" \"$root/.tutti/state/auto/selected_issue.json\" \"$root/.tutti/state/auto/branch.json\" .tutti/state/auto/implement_result.json'"
 output_json = ".tutti/state/auto/implement_result.json"
 fail_mode = "closed"
 

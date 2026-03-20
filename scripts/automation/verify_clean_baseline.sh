@@ -10,12 +10,12 @@ case "$TOPLEVEL" in
   */.tutti/worktrees/*) ;;
   *) echo "FATAL: verify_clean_baseline.sh must run inside an agent worktree, not $TOPLEVEL" >&2; exit 1 ;;
 esac
+PROJECT_ROOT="${TOPLEVEL%/.tutti/worktrees/*}"
 
 # Resolve branch.json — try argument as-is, then relative to project root
 BRANCH_JSON="${1:-.tutti/state/auto/branch.json}"
 if [ ! -f "$BRANCH_JSON" ]; then
-  ROOT=$(dirname "$(git rev-parse --git-common-dir)")
-  BRANCH_JSON="$ROOT/$BRANCH_JSON"
+  BRANCH_JSON="$PROJECT_ROOT/$BRANCH_JSON"
 fi
 if [ ! -f "$BRANCH_JSON" ]; then
   echo "FATAL: branch.json not found at $BRANCH_JSON" >&2

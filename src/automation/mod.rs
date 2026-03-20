@@ -29,6 +29,7 @@ use wait_timeout::ChildExt;
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const PROMPT_CAPTURE_LINES: u32 = 200;
 const DEFAULT_STARTUP_GRACE_SECS: u64 = 30;
+const VALIDATION_REPAIR_MAX_ATTEMPTS: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 struct WorkflowBranchState {
@@ -1442,12 +1443,36 @@ impl<'a> WorkflowExecutor<'a> {
                             }
                         }
 
-                        let cmd_result = run_shell_command_with_retry(
+                        let mut cmd_result = run_shell_command_with_retry(
                             &rendered,
                             cwd,
                             *timeout_secs,
                             options.retry_policy.as_ref(),
                         );
+
+                        if let Ok(result) = &cmd_result {
+                            let failed =
+                                result.outcome.timed_out || result.outcome.exit_code.unwrap_or(1) != 0;
+                            if failed
+                                && matches!(fail_mode, WorkflowFailMode::Closed)
+                                && step_uses_validation_repair(step_id.as_deref())
+                                && prompt_step_has_branch_progress(self.project_root, "implementer")?
+                            {
+                                if let Some(repaired) = attempt_validation_repair(
+                                    self.config,
+                                    self.project_root,
+                                    &run_id,
+                                    step_id.as_deref().unwrap_or("validation"),
+                                    &rendered,
+                                    cwd,
+                                    *timeout_secs,
+                                    options.retry_policy.as_ref(),
+                                    &result.outcome,
+                                )? {
+                                    cmd_result = Ok(repaired);
+                                }
+                            }
+                        }
 
                         match cmd_result {
                             Ok(cmd_outcome) => {
@@ -2087,7 +2112,7 @@ fn generate_run_id() -> String {
     format!("{}-{}", Utc::now().timestamp_millis(), std::process::id())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CommandOutcome {
     exit_code: Option<i32>,
     stdout: String,
@@ -2131,6 +2156,244 @@ fn inject_prompt_files(files: &[PromptInjectedFile]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn prompt_agent_with_files(
+    project_root: &Path,
+    config: &TuttiConfig,
+    agent: &str,
+    text: &str,
+    inject_files: &[PromptInjectedFile],
+    output_path: Option<&Path>,
+    wait_timeout: Duration,
+) -> Result<bool> {
+    let session_name = TmuxSession::session_name(&config.workspace.name, agent);
+    let runtime = config
+        .agents
+        .iter()
+        .find(|a| a.name == agent)
+        .and_then(|a| a.resolved_runtime(&config.defaults))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    if !TmuxSession::session_exists(&session_name) {
+        start_and_wait_ready(project_root, config, agent, &session_name)?;
+    }
+
+    inject_prompt_files(inject_files)?;
+    if let Some(path) = output_path {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let baseline_pane_hash = TmuxSession::capture_pane(&session_name, PROMPT_CAPTURE_LINES)
+        .ok()
+        .map(|output| hash_output(&output));
+
+    TmuxSession::send_text(&session_name, text)?;
+    if runtime == "codex" || runtime == "claude-code" {
+        maybe_submit_buffered_prompt(&session_name, text)?;
+    }
+
+    if !wait_for_prompt_activity_or_output(
+        &runtime,
+        &session_name,
+        text,
+        baseline_pane_hash,
+        output_path,
+        Duration::from_secs(60),
+    )? {
+        return Ok(false);
+    }
+
+    if let Some(path) = output_path {
+        wait_for_prompt_output_file(
+            &session_name,
+            &runtime,
+            text,
+            path,
+            Duration::from_secs(120),
+        )?;
+        if !path.exists() {
+            return Ok(false);
+        }
+    }
+
+    let wait = health::wait_for_agent_idle(
+        &runtime,
+        &session_name,
+        wait_timeout,
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+    )?;
+    Ok(wait.is_completed() || output_path.is_some_and(Path::exists))
+}
+
+fn step_uses_validation_repair(step_id: Option<&str>) -> bool {
+    matches!(
+        step_id,
+        Some("test_update_and_validate" | "validate" | "revalidate")
+    )
+}
+
+fn validation_repair_paths(
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+    attempt: u32,
+) -> (PathBuf, PathBuf) {
+    let repair_dir = project_root
+        .join(".tutti")
+        .join("state")
+        .join("auto")
+        .join("validation-repair");
+    let base = format!("{run_id}-{}-attempt-{attempt}", sanitize_step_key(step_id));
+    (
+        repair_dir.join(format!("{base}-failure.md")),
+        repair_dir.join(format!("{base}-analysis.md")),
+    )
+}
+
+fn write_validation_failure_report(
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+    command: &str,
+    cwd: &Path,
+    outcome: &CommandOutcome,
+    attempt: u32,
+) -> Result<(PathBuf, PathBuf)> {
+    let (failure_path, analysis_path) = validation_repair_paths(project_root, run_id, step_id, attempt);
+    if let Some(parent) = failure_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = format!(
+        "# Validation Failure\n\n- Run ID: `{run_id}`\n- Step: `{step_id}`\n- Attempt: `{attempt}`\n- Command: `{command}`\n- CWD: `{}`\n- Exit code: `{}`\n- Timed out: `{}`\n\n## stdout\n\n```text\n{}\n```\n\n## stderr\n\n```text\n{}\n```\n",
+        cwd.display(),
+        outcome.exit_code.map_or_else(|| "none".to_string(), |code| code.to_string()),
+        outcome.timed_out,
+        outcome.stdout,
+        outcome.stderr,
+    );
+    std::fs::write(&failure_path, body)?;
+    let _ = std::fs::remove_file(&analysis_path);
+    Ok((failure_path, analysis_path))
+}
+
+fn validation_repair_injected_files(
+    project_root: &Path,
+    agent: &str,
+    files: &[&Path],
+) -> Vec<PromptInjectedFile> {
+    let destination_root = project_root.join(".tutti").join("worktrees").join(agent);
+    files
+        .iter()
+        .map(|source| {
+            let relative = source
+                .strip_prefix(project_root)
+                .unwrap_or(source);
+            PromptInjectedFile {
+                source: (*source).to_path_buf(),
+                destination: destination_root.join(relative),
+            }
+        })
+        .collect()
+}
+
+fn attempt_validation_repair(
+    config: &TuttiConfig,
+    project_root: &Path,
+    run_id: &str,
+    step_id: &str,
+    command: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+    retry_policy: Option<&RetryPolicy>,
+    initial_outcome: &CommandOutcome,
+) -> Result<Option<CommandRunOutcome>> {
+    let mut current_outcome = initial_outcome.clone();
+
+    for attempt in 1..=VALIDATION_REPAIR_MAX_ATTEMPTS {
+        let (failure_path, analysis_path) = write_validation_failure_report(
+            project_root,
+            run_id,
+            step_id,
+            command,
+            cwd,
+            &current_outcome,
+            attempt,
+        )?;
+
+        let tester_prompt = format!(
+            "Read .tutti/state/auto/validation-repair/{} in your worktree. Diagnose the single root cause of this validation failure and write a concise markdown repair plan to {}. Include: root cause, exact files to change, and the smallest viable fix. Do not modify code.",
+            failure_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("validation failure report"),
+            analysis_path.display()
+        );
+        let tester_files =
+            validation_repair_injected_files(project_root, "tester", &[failure_path.as_path()]);
+        if !prompt_agent_with_files(
+            project_root,
+            config,
+            "tester",
+            &tester_prompt,
+            &tester_files,
+            Some(&analysis_path),
+            Duration::from_secs(900),
+        )? {
+            return Ok(None);
+        }
+
+        let branch_path = project_root
+            .join(".tutti")
+            .join("state")
+            .join("auto")
+            .join("branch.json");
+        let implementer_prompt = format!(
+            "Read .tutti/state/auto/validation-repair/{} and .tutti/state/auto/validation-repair/{} in your worktree. Apply only the smallest fix needed for this validation failure on the branch from .tutti/state/auto/branch.json. Then run `{}` in your worktree. If code changed, commit and push it. If your worktree is detached, push with git push origin HEAD:<target-branch>. Do not do broad repo exploration.",
+            failure_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("validation failure report"),
+            analysis_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("validation analysis"),
+            command
+        );
+        let implementer_files = validation_repair_injected_files(
+            project_root,
+            "implementer",
+            &[failure_path.as_path(), analysis_path.as_path(), branch_path.as_path()],
+        );
+        if !prompt_agent_with_files(
+            project_root,
+            config,
+            "implementer",
+            &implementer_prompt,
+            &implementer_files,
+            None,
+            Duration::from_secs(1800),
+        )? {
+            return Ok(None);
+        }
+
+        if prompt_step_has_worktree_changes(project_root, "implementer")? {
+            let _ = finalize_implementer_worktree_changes(project_root, "implementer")?;
+        }
+
+        let rerun = run_shell_command_with_retry(command, cwd, timeout_secs, retry_policy)?;
+        let rerun_failed = rerun.outcome.timed_out || rerun.outcome.exit_code.unwrap_or(1) != 0;
+        if !rerun_failed {
+            return Ok(Some(rerun));
+        }
+        current_outcome = rerun.outcome;
+    }
+
+    Ok(None)
 }
 
 fn run_shell_command(command: &str, cwd: &Path, timeout_secs: u64) -> Result<CommandOutcome> {
@@ -2197,7 +2460,7 @@ fn maybe_submit_buffered_prompt(session_name: &str, rendered: &str) -> Result<()
         }
 
         if pane.contains(&snippet) {
-            TmuxSession::send_text(session_name, "")?;
+            TmuxSession::send_enter_presses(session_name, 2)?;
             continue;
         }
 

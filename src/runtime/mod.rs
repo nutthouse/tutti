@@ -228,6 +228,25 @@ fn contains_spinner_glyph(text: &str) -> bool {
     text.chars().any(|ch| SPINNER_GLYPHS.contains(&ch))
 }
 
+fn has_claude_working_ellipsis(text: &str) -> bool {
+    text.lines().rev().filter(|line| !line.trim().is_empty()).any(|line| {
+        let trimmed = line.trim();
+        let has_status_prefix = trimmed.starts_with(['✶', '✳', '•', '*']);
+        let normalized = trimmed
+            .trim_start_matches(['✶', '✳', '•', '*'])
+            .trim_start();
+        let phrase = normalized
+            .split_once(" (")
+            .map(|(head, _)| head)
+            .unwrap_or(normalized);
+        has_status_prefix
+            && phrase.ends_with('…')
+            && !phrase.starts_with("Tip:")
+            && !phrase.contains("don't ask on")
+            && !phrase.contains("shift+tab to cycle")
+    })
+}
+
 fn weighted_pattern_score(matches: usize) -> f32 {
     if matches == 0 {
         return 0.0;
@@ -271,10 +290,14 @@ fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> Detect
     let mut idle_score = weighted_pattern_score(idle_matches.len());
 
     let spinner_match = contains_spinner_glyph(&recent);
+    let claude_working_ellipsis = has_claude_working_ellipsis(&recent);
     if spinner_match {
         working_score = working_score.max(0.70);
     }
-    if completion_match.is_some() && !spinner_match {
+    if claude_working_ellipsis {
+        working_score = working_score.max(0.99);
+    }
+    if completion_match.is_some() && !spinner_match && !claude_working_ellipsis {
         // Structured completion markers in the trailing prompt bar outrank
         // stale "thinking"/"searching" text higher up in scrollback.
         idle_score = idle_score.max(0.85);
@@ -288,6 +311,9 @@ fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> Detect
     );
     if spinner_match {
         matched_patterns.push("working:spinner".to_string());
+    }
+    if claude_working_ellipsis {
+        matched_patterns.push("working:claude_status_ellipsis".to_string());
     }
     matched_patterns.extend(idle_matches.iter().map(|pattern| format!("idle:{pattern}")));
     if let Some(pattern) = completion_match.as_deref() {
@@ -819,6 +845,31 @@ mod tests {
         assert_eq!(
             a.detect_status("Unravelling... (thinking)"),
             AgentStatus::Working
+        );
+    }
+
+    #[test]
+    fn claude_detect_working_from_status_ellipsis_even_with_prompt_bar() {
+        let a = adapter("claude-code");
+        let output = r#"
+⏺ Searching for 1 pattern… (ctrl+o to expand)
+  ⎿  "budget: None,""
+
+✳ Scurrying… (4m 5s · ↑ 783 tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+"#;
+        let diagnostics = a.diagnose(output);
+        assert_eq!(diagnostics.status, AgentStatus::Working);
+        assert!(
+            diagnostics
+                .matched_patterns
+                .iter()
+                .any(|entry| entry == "working:claude_status_ellipsis")
         );
     }
 
