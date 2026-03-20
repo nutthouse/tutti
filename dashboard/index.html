@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tutti — factory floor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header id="top-bar">
+    <div class="bar-left">
+      <span class="logo">tutti</span>
+      <span id="workspace-name" class="dim">—</span>
+    </div>
+    <div class="bar-right">
+      <span class="hud-item" id="hud-active" title="active agents">0 active</span>
+      <span class="hud-item" id="hud-blocked" title="blocked agents">0 blocked</span>
+      <span class="hud-item" id="hud-events" title="events received">0 events</span>
+      <span class="conn-dot" id="conn-status" title="SSE connection"></span>
+    </div>
+  </header>
+
+  <main id="factory">
+    <div class="pipeline" id="pipeline">
+      <!-- stages injected by app.js -->
+    </div>
+  </main>
+
+  <footer id="timeline">
+    <h3>recent events</h3>
+    <ul id="event-list"></ul>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
