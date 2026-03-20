@@ -51,7 +51,11 @@ pub fn attach(host: &str, port: u16, name: Option<&str>) -> Result<()> {
 
     // Persist as a [[remote]] entry in global config if it doesn't already exist
     let entry_name = name.unwrap_or(host);
-    if let Ok(mut global) = GlobalConfig::load() {
+    let global_result = GlobalConfig::load();
+    if let Err(e) = &global_result {
+        eprintln!("warning: could not load global config to persist remote entry: {e}");
+    }
+    if let Ok(mut global) = global_result {
         let already = global
             .remotes
             .iter()
@@ -126,7 +130,7 @@ fn probe_remote(remote: &RemoteEntry) -> bool {
             "-o",
             "BatchMode=yes",
             &remote.host,
-            &format!("curl -sf http://127.0.0.1:{}/healthz", remote.port),
+            &format!("curl -sf http://127.0.0.1:{}/v1/health", remote.port),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
