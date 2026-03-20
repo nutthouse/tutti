@@ -28,6 +28,8 @@ pub struct TuttiConfig {
     pub observe: Option<ObserveConfig>,
     #[serde(default)]
     pub budget: Option<BudgetConfig>,
+    #[serde(default, rename = "webhook")]
+    pub webhooks: Vec<WebhookConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,6 +310,24 @@ pub struct BudgetConfig {
     pub workspace_weekly_tokens: Option<u64>,
     #[serde(default)]
     pub agent_weekly_tokens: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Source identifier (e.g. "github", "slack", "generic")
+    pub source: String,
+    /// Event types to match (e.g. ["issues.labeled", "push"]). Use ["*"] for all.
+    #[serde(default)]
+    pub events: Vec<String>,
+    /// Workflow name to trigger on match
+    #[serde(default)]
+    pub workflow: Option<String>,
+    /// Agent to send a prompt to on match (alternative to workflow)
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Prompt to send when using agent dispatch
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 // ── Global config (~/.config/tutti/config.toml) ──
@@ -2179,5 +2199,49 @@ workflow_source = "run"
             config.registered_workspaces[0].path,
             PathBuf::from("/tmp/test2")
         );
+    }
+
+    #[test]
+    fn webhook_config_serde_round_trip() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[webhook]]
+source = "github"
+events = ["issues.labeled", "push"]
+workflow = "sdlc-auto"
+
+[[webhook]]
+source = "generic"
+events = ["*"]
+agent = "implementer"
+prompt = "Handle incoming event"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.webhooks.len(), 2);
+
+        let wh0 = &config.webhooks[0];
+        assert_eq!(wh0.source, "github");
+        assert_eq!(wh0.events, vec!["issues.labeled", "push"]);
+        assert_eq!(wh0.workflow.as_deref(), Some("sdlc-auto"));
+        assert!(wh0.agent.is_none());
+
+        let wh1 = &config.webhooks[1];
+        assert_eq!(wh1.source, "generic");
+        assert_eq!(wh1.events, vec!["*"]);
+        assert!(wh1.workflow.is_none());
+        assert_eq!(wh1.agent.as_deref(), Some("implementer"));
+        assert_eq!(wh1.prompt.as_deref(), Some("Handle incoming event"));
+    }
+
+    #[test]
+    fn webhook_config_empty_is_default() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.webhooks.is_empty());
     }
 }
