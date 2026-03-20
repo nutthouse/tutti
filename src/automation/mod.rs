@@ -1451,12 +1451,15 @@ impl<'a> WorkflowExecutor<'a> {
                         );
 
                         if let Ok(result) = &cmd_result {
-                            let failed =
-                                result.outcome.timed_out || result.outcome.exit_code.unwrap_or(1) != 0;
+                            let failed = result.outcome.timed_out
+                                || result.outcome.exit_code.unwrap_or(1) != 0;
                             if failed
                                 && matches!(fail_mode, WorkflowFailMode::Closed)
                                 && step_uses_validation_repair(step_id.as_deref())
-                                && prompt_step_has_branch_progress(self.project_root, "implementer")?
+                                && prompt_step_has_branch_progress(
+                                    self.project_root,
+                                    "implementer",
+                                )?
                             {
                                 if let Some(repaired) = attempt_validation_repair(
                                     self.config,
@@ -2264,14 +2267,17 @@ fn write_validation_failure_report(
     outcome: &CommandOutcome,
     attempt: u32,
 ) -> Result<(PathBuf, PathBuf)> {
-    let (failure_path, analysis_path) = validation_repair_paths(project_root, run_id, step_id, attempt);
+    let (failure_path, analysis_path) =
+        validation_repair_paths(project_root, run_id, step_id, attempt);
     if let Some(parent) = failure_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let body = format!(
         "# Validation Failure\n\n- Run ID: `{run_id}`\n- Step: `{step_id}`\n- Attempt: `{attempt}`\n- Command: `{command}`\n- CWD: `{}`\n- Exit code: `{}`\n- Timed out: `{}`\n\n## stdout\n\n```text\n{}\n```\n\n## stderr\n\n```text\n{}\n```\n",
         cwd.display(),
-        outcome.exit_code.map_or_else(|| "none".to_string(), |code| code.to_string()),
+        outcome
+            .exit_code
+            .map_or_else(|| "none".to_string(), |code| code.to_string()),
         outcome.timed_out,
         outcome.stdout,
         outcome.stderr,
@@ -2290,9 +2296,7 @@ fn validation_repair_injected_files(
     files
         .iter()
         .map(|source| {
-            let relative = source
-                .strip_prefix(project_root)
-                .unwrap_or(source);
+            let relative = source.strip_prefix(project_root).unwrap_or(source);
             PromptInjectedFile {
                 source: (*source).to_path_buf(),
                 destination: destination_root.join(relative),
@@ -2301,6 +2305,7 @@ fn validation_repair_injected_files(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn attempt_validation_repair(
     config: &TuttiConfig,
     project_root: &Path,
@@ -2313,6 +2318,13 @@ fn attempt_validation_repair(
     initial_outcome: &CommandOutcome,
 ) -> Result<Option<CommandRunOutcome>> {
     let mut current_outcome = initial_outcome.clone();
+
+    // Validation repair requires "tester" and "implementer" agents to exist
+    let has_tester = config.agents.iter().any(|a| a.name == "tester");
+    let has_implementer = config.agents.iter().any(|a| a.name == "implementer");
+    if !has_tester || !has_implementer {
+        return Ok(None);
+    }
 
     for attempt in 1..=VALIDATION_REPAIR_MAX_ATTEMPTS {
         let (failure_path, analysis_path) = write_validation_failure_report(
@@ -2367,7 +2379,11 @@ fn attempt_validation_repair(
         let implementer_files = validation_repair_injected_files(
             project_root,
             "implementer",
-            &[failure_path.as_path(), analysis_path.as_path(), branch_path.as_path()],
+            &[
+                failure_path.as_path(),
+                analysis_path.as_path(),
+                branch_path.as_path(),
+            ],
         );
         if !prompt_agent_with_files(
             project_root,

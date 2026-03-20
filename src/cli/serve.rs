@@ -1744,8 +1744,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let temp = std::env::temp_dir()
-            .join(format!("tutti-test-token-{}-{nanos}", std::process::id()));
+        let temp =
+            std::env::temp_dir().join(format!("tutti-test-token-{}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(temp.join(".config").join("tutti")).unwrap();
 

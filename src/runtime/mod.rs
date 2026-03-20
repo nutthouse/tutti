@@ -229,22 +229,27 @@ fn contains_spinner_glyph(text: &str) -> bool {
 }
 
 fn has_claude_working_ellipsis(text: &str) -> bool {
-    text.lines().rev().filter(|line| !line.trim().is_empty()).any(|line| {
-        let trimmed = line.trim();
-        let has_status_prefix = trimmed.starts_with(['✶', '✳', '•', '*']);
-        let normalized = trimmed
-            .trim_start_matches(['✶', '✳', '•', '*'])
-            .trim_start();
-        let phrase = normalized
-            .split_once(" (")
-            .map(|(head, _)| head)
-            .unwrap_or(normalized);
-        has_status_prefix
-            && phrase.ends_with('…')
-            && !phrase.starts_with("Tip:")
-            && !phrase.contains("don't ask on")
-            && !phrase.contains("shift+tab to cycle")
-    })
+    // Only check the last few non-empty lines (trailing status area)
+    text.lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(6)
+        .any(|line| {
+            let trimmed = line.trim();
+            let has_status_prefix = trimmed.starts_with(['✶', '✳', '•', '*']);
+            let normalized = trimmed
+                .trim_start_matches(['✶', '✳', '•', '*'])
+                .trim_start();
+            let phrase = normalized
+                .split_once(" (")
+                .map(|(head, _)| head)
+                .unwrap_or(normalized);
+            has_status_prefix
+                && phrase.ends_with('…')
+                && !phrase.starts_with("Tip:")
+                && !phrase.contains("don't ask on")
+                && !phrase.contains("shift+tab to cycle")
+        })
 }
 
 fn weighted_pattern_score(matches: usize) -> f32 {

@@ -24,7 +24,7 @@ clean_worktree_except_target() {
 
 assert_clean_baseline_except_target() {
   local dirty
-  dirty=$(git status --porcelain --ignored | grep -vE '^(\\?\\?|!!) target(/|$)' || true)
+  dirty=$(git status --porcelain --ignored | grep -vE '^(\?\?|!!) target(/|$)' || true)
   if [ -n "$dirty" ]; then
     echo "FATAL: worktree is not clean after reset:" >&2
     echo "$dirty" >&2
