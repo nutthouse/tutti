@@ -121,7 +121,7 @@ pub fn status() -> Result<()> {
     Ok(())
 }
 
-/// Probe a remote host by attempting `ssh <host> curl -sf http://127.0.0.1:<port>/healthz`.
+/// Probe a remote host by attempting `ssh <host> curl -sf http://127.0.0.1:<port>/v1/health`.
 fn probe_remote(remote: &RemoteEntry) -> bool {
     let Ok(output) = Command::new("ssh")
         .args([
