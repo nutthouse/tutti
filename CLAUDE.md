@@ -47,3 +47,15 @@
 - When a tutti feature doesn't work during a dogfood run, **fix the framework** (the `tt` command / runtime / session code), don't work around it by doing the task manually
 - Always validate the fix by re-running the original orchestration flow through `tt`
 - The purpose of dogfood runs is to surface real bugs in tutti's agent orchestration, not to ship the target feature by any means necessary
+
+## Design System
+Always read DESIGN.md before making any visual or UI decisions.
+All font choices, colors, spacing, and aesthetic direction are defined there.
+Do not deviate without explicit user approval.
+In QA mode, flag any code that doesn't match DESIGN.md.
+
+## gstack
+
+Use the /browse skill from gstack for all web browsing. Never use mcp__claude-in-chrome__* tools.
+
+Available skills: /office-hours, /plan-ceo-review, /plan-eng-review, /plan-design-review, /design-consultation, /review, /ship, /browse, /qa, /qa-only, /design-review, /setup-browser-cookies, /retro, /investigate, /document-release, /codex, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade

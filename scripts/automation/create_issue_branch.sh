@@ -11,12 +11,26 @@ case "$TOPLEVEL" in
   *) echo "FATAL: create_issue_branch.sh must run inside an agent worktree, not $TOPLEVEL" >&2; exit 1 ;;
 esac
 
-PROJECT_ROOT=$(cd "$TOPLEVEL/../.." && pwd)
+PROJECT_ROOT="${TOPLEVEL%/.tutti/worktrees/*}"
 ISSUE_JSON="${1:-$PROJECT_ROOT/.tutti/state/auto/selected_issue.json}"
 OUT_FILE="${2:-$PROJECT_ROOT/.tutti/state/auto/branch.json}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
 mkdir -p "$(dirname "$OUT_FILE")"
+
+clean_worktree_except_target() {
+  git clean -ffdx -e target/
+}
+
+assert_clean_baseline_except_target() {
+  local dirty
+  dirty=$(git status --porcelain --ignored | grep -vE '^(\?\?|!!) target(/|$)' || true)
+  if [ -n "$dirty" ]; then
+    echo "FATAL: worktree is not clean after reset:" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+}
 
 ISSUE_NUM=$(python3 - <<'PY' "$ISSUE_JSON"
 import json,sys
@@ -33,24 +47,19 @@ git fetch origin "$BASE_BRANCH"
 
 # Pre-clean: discard any carried state from the current branch
 git reset --hard HEAD
-git clean -ffdx
+clean_worktree_except_target
 
 # Switch to the automation branch from a clean baseline
 git checkout -B "$BRANCH" "origin/$BASE_BRANCH"
 
-# Post-clean: guarantee working tree matches origin exactly (including ignored files)
+# Post-clean: guarantee working tree matches origin exactly, ignoring busy build output.
 git reset --hard "origin/$BASE_BRANCH"
-git clean -ffdx
+clean_worktree_except_target
 
 BASE_SHA=$(git rev-parse HEAD)
 
-# Assert clean baseline, including ignored files
-DIRTY=$(git status --porcelain --ignored)
-if [ -n "$DIRTY" ]; then
-  echo "FATAL: worktree is not clean after reset:" >&2
-  echo "$DIRTY" >&2
-  exit 1
-fi
+# Assert clean baseline, allowing concurrent build output in target/.
+assert_clean_baseline_except_target
 
 python3 - <<'PY' "$OUT_FILE" "$BRANCH" "$ISSUE_NUM" "$BASE_BRANCH" "$BASE_SHA"
 import json,sys
