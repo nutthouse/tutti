@@ -15,7 +15,9 @@ mod webhook;
 mod worktree;
 
 use clap::Parser;
-use cli::{Cli, Commands, IssueClaimSubcommand, RemoteSubcommand, WorkspacesSubcommand};
+use cli::{
+    Cli, Commands, IssueClaimSubcommand, RemoteSubcommand, RunsSubcommand, WorkspacesSubcommand,
+};
 use std::process;
 
 fn main() {
@@ -139,6 +141,10 @@ fn main() {
             strict,
             dry_run,
         ),
+        Commands::Runs { command } => match command {
+            RunsSubcommand::List => cli::runs::list(),
+            RunsSubcommand::Show { ref run_id } => cli::runs::show(run_id),
+        },
         Commands::Verify {
             last,
             json,
