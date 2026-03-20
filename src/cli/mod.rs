@@ -326,6 +326,12 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Inspect SDLC run history
+    Runs {
+        #[command(subcommand)]
+        command: RunsSubcommand,
+    },
+
     /// Run verification workflow and persist latest summary
     Verify {
         /// Show the latest verification summary and exit
@@ -389,6 +395,17 @@ pub enum Commands {
 pub enum WorkspacesSubcommand {
     /// Show status overview of all workspaces
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum RunsSubcommand {
+    /// List all tracked SDLC runs
+    List,
+    /// Show detailed view of a single run
+    Show {
+        /// Run ID to inspect
+        run_id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
