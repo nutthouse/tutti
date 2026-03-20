@@ -1460,8 +1460,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     self.project_root,
                                     "implementer",
                                 )?
-                            {
-                                if let Some(repaired) = attempt_validation_repair(
+                                && let Some(repaired) = attempt_validation_repair(
                                     self.config,
                                     self.project_root,
                                     &run_id,
@@ -1471,9 +1470,9 @@ impl<'a> WorkflowExecutor<'a> {
                                     *timeout_secs,
                                     options.retry_policy.as_ref(),
                                     &result.outcome,
-                                )? {
-                                    cmd_result = Ok(repaired);
-                                }
+                                )?
+                            {
+                                cmd_result = Ok(repaired);
                             }
                         }
 
