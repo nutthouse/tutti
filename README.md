@@ -94,6 +94,37 @@ Runtime detector patterns are versioned in `src/runtime/*.rs` and validated agai
 - Not a framework that requires buy-in. Start with `tt up` and one agent. Add complexity when you need it.
 - Not a replacement for your agent's capabilities. Tutti orchestrates. Your agents execute.
 
+## When Tutti Helps Most
+
+Tutti should not claim that five agents always beat one excellent agent. They do not.
+
+Tutti is strongest when the bottleneck is **coordination overhead**, not raw model quality:
+
+- You already run multiple agent sessions and the human is doing the routing, tracking, and merge management by hand.
+- Work splits cleanly into separable lanes such as implementation, testing, docs/release, review, or long-running verification.
+- You want persistent specialists working through a backlog or workflow, not five agents crowding into one tightly-coupled code change.
+- The work contains waiting states that parallel agents can hide well: test runs, review loops, CI, PR prep, retries, and handoffs.
+
+A single strong agent is often the better choice when:
+
+- the repo is small and the task is tightly coupled
+- one operator can comfortably keep the whole task in working memory
+- the coordination tax would outweigh any throughput gain
+
+The product claim is not "multi-agent is always better." The claim is: **when coordination becomes the bottleneck, Tutti is the missing layer.**
+
+## Zero-Config, Then Org Code
+
+"Zero-config" should mean fast time-to-first-run, not magical fully-automatic coordination for every repo.
+
+The intended model is progressive:
+
+- First run: discover installed runtimes, launch one or two agents, and provide useful defaults.
+- Real teamwork: declare ownership, workflows, tool packs, permissions, and guardrails in `tutti.toml`.
+- Complex repos: lean more on explicit topology and less on inference.
+
+In other words: **zero-config for getting started, explicit config for durable coordination**.
+
 ## Quick Start
 
 ```bash
@@ -440,7 +471,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 **Observe everything, control nothing.** Tutti watches what your agents do but doesn't intercept or modify their behavior. It's a coordination and visibility layer, not a proxy.
 
-**Start simple, scale up.** One agent in a tutti.toml is fine. You don't need five agents and a complex topology on day one. Tutti should make even a single agent session better through observability and handoff support.
+**Start simple, scale up.** One agent in a `tutti.toml` is fine. You don't need five agents and a complex topology on day one. Tutti should make even a single agent session better through observability and handoff support, then earn the right to add more agents when the work naturally separates.
 
 ## Contributing
 
