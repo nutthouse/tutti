@@ -1376,6 +1376,24 @@ fn _assert_path(_: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct HomeGuard(Option<String>);
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.take() {
+                unsafe {
+                    std::env::set_var("HOME", value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("HOME");
+                }
+            }
+        }
+    }
 
     #[test]
     fn strategy_requests_rotation_matches_supported_values() {
@@ -1487,13 +1505,19 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn token_generation_produces_valid_hex_and_reloads() {
-        let temp = std::env::temp_dir().join(format!("tutti-test-token-{}", std::process::id()));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let temp = std::env::temp_dir()
+            .join(format!("tutti-test-token-{}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(temp.join(".config").join("tutti")).unwrap();
 
-        // Temporarily override HOME so token writes to temp
-        let original_home = std::env::var("HOME").ok();
+        // Temporarily override HOME so token writes to temp.
+        let _home_guard = HomeGuard(std::env::var("HOME").ok());
         unsafe { std::env::set_var("HOME", &temp) };
 
         let token1 = load_or_generate_serve_token().expect("first generation should succeed");
@@ -1507,10 +1531,6 @@ mod tests {
         let token2 = load_or_generate_serve_token().expect("reload should succeed");
         assert_eq!(token1, token2, "reloaded token should match original");
 
-        // Restore HOME
-        if let Some(h) = original_home {
-            unsafe { std::env::set_var("HOME", h) };
-        }
         let _ = std::fs::remove_dir_all(&temp);
     }
 
