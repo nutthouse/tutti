@@ -907,12 +907,14 @@ fn webhook_dedup_key(request: &Request, body: &Value) -> String {
     if let Some(key) = read_idempotency_key(request, body) {
         return format!("webhook:{key}");
     }
-    // Fall back to payload content hash
-    use std::hash::{DefaultHasher, Hash, Hasher};
+    // Fall back to a stable content hash (FNV-1a, deterministic across restarts)
     let serialized = body.to_string();
-    let mut hasher = DefaultHasher::new();
-    serialized.hash(&mut hasher);
-    format!("webhook:hash:{:x}", hasher.finish())
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in serialized.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("webhook:hash:{hash:016x}")
 }
 
 /// Resolve the target workspace for an action, defaulting to the only one if singular

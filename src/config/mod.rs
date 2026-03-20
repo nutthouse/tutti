@@ -691,6 +691,12 @@ impl TuttiConfig {
                     wh.source
                 )));
             }
+            if wh.workflow.is_some() && wh.agent.is_some() {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] (source '{}') must specify 'workflow' or 'agent', not both",
+                    wh.source
+                )));
+            }
             if let Some(ref workflow) = wh.workflow
                 && !workflow_names.contains(workflow.as_str())
             {
