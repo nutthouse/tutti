@@ -32,6 +32,7 @@ struct IdempotencyEntry {
     created_at: DateTime<Utc>,
 }
 
+/// Start the serve loop, binding an HTTP control API and polling workspace health
 pub fn run(
     workspace: Option<&str>,
     all: bool,
@@ -126,6 +127,7 @@ pub fn run(
     Ok(())
 }
 
+/// Attempt automatic recovery for unhealthy agents in a workspace
 fn attempt_resilience_recovery_for_workspace(
     target: &WorkspaceTarget,
     records: &[state::AgentHealth],
@@ -229,6 +231,7 @@ fn attempt_resilience_recovery_for_workspace(
     Ok(out)
 }
 
+/// Kill and restart an agent's tmux session
 fn restart_agent_session(target: &WorkspaceTarget, agent_name: &str) -> Result<()> {
     let session = TmuxSession::session_name(&target.config.workspace.name, agent_name);
     if TmuxSession::session_exists(&session) {
@@ -238,6 +241,7 @@ fn restart_agent_session(target: &WorkspaceTarget, agent_name: &str) -> Result<(
     Ok(())
 }
 
+/// Return the configured rotation strategy for a given recovery trigger, if any
 fn rotation_strategy_for_trigger(
     resilience: Option<&ResilienceConfig>,
     trigger: health::RecoveryTrigger,
@@ -265,6 +269,7 @@ fn rotation_strategy_for_trigger(
     }
 }
 
+/// Check whether a strategy string indicates provider rotation
 fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
     strategy.is_some_and(|s| {
         matches!(
@@ -274,10 +279,12 @@ fn strategy_requests_rotation(strategy: Option<&str>) -> bool {
     })
 }
 
+/// Return true if enough time has passed since the last recovery attempt
 fn recovery_cooldown_elapsed(last_attempt: Option<&Instant>, recovery_cooldown: Duration) -> bool {
     last_attempt.is_none_or(|last| last.elapsed() >= recovery_cooldown)
 }
 
+/// Spawn an HTTP server thread for the control API
 fn start_control_http_server(
     targets: Arc<Vec<WorkspaceTarget>>,
     host: &str,
@@ -297,6 +304,7 @@ fn start_control_http_server(
     Ok(())
 }
 
+/// Dispatch an incoming HTTP request to the appropriate handler
 fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
     let is_stream = request.method() == &Method::Get
         && request.url().split('?').next() == Some("/v1/events/stream");
@@ -314,6 +322,7 @@ fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
     let _ = request.respond(response);
 }
 
+/// Route an HTTP request to the matching read or action endpoint
 fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusCode, String) {
     let raw_url = request.url().to_string();
     let (path, query) = match raw_url.split_once('?') {
@@ -355,6 +364,7 @@ fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusC
     }
 }
 
+/// Handle GET requests by matching the path to a read endpoint
 fn route_read(
     path: &str,
     query: &HashMap<String, String>,
@@ -413,6 +423,7 @@ fn route_read(
     }
 }
 
+/// Parse a URL query string into a key-value map
 fn parse_query(query: Option<&str>) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Some(query) = query else {
@@ -430,6 +441,7 @@ fn parse_query(query: Option<&str>) -> HashMap<String, String> {
     out
 }
 
+/// Handle POST requests to /v1/actions/* with idempotency support
 fn route_action(
     request: &mut Request,
     path: &str,
@@ -476,6 +488,7 @@ fn route_action(
     Ok((StatusCode(200), response))
 }
 
+/// Execute a named action (up, down, send, run, verify, review, land) against a workspace
 fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Result<Value> {
     match action {
         "up" => {
@@ -585,6 +598,7 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
     }
 }
 
+/// Resolve the target workspace for an action, defaulting to the only one if singular
 fn resolve_action_workspace<'a>(
     targets: &'a [WorkspaceTarget],
     workspace: Option<&str>,
@@ -604,6 +618,7 @@ fn resolve_action_workspace<'a>(
     ))
 }
 
+/// Read and parse the request body as JSON, defaulting to an empty object
 fn read_json_body(request: &mut Request) -> Result<Value> {
     let mut body = String::new();
     request.as_reader().read_to_string(&mut body)?;
@@ -614,6 +629,7 @@ fn read_json_body(request: &mut Request) -> Result<Value> {
     Ok(parsed)
 }
 
+/// Extract a required non-empty string field from the JSON body
 fn required_body_str<'a>(body: &'a Value, key: &str) -> Result<&'a str> {
     body.get(key)
         .and_then(Value::as_str)
@@ -621,6 +637,7 @@ fn required_body_str<'a>(body: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| TuttiError::ConfigValidation(format!("missing required field '{}'", key)))
 }
 
+/// Extract the idempotency key from the request header or body
 fn read_idempotency_key(request: &Request, body: &Value) -> Option<String> {
     if let Some(header_value) = request
         .headers()
@@ -637,6 +654,7 @@ fn read_idempotency_key(request: &Request, body: &Value) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Return the path to the idempotency store file for a project
 fn idempotency_file(project_root: &Path) -> PathBuf {
     project_root
         .join(".tutti")
@@ -644,6 +662,7 @@ fn idempotency_file(project_root: &Path) -> PathBuf {
         .join("api-idempotency.json")
 }
 
+/// Look up a previously cached response by idempotency key
 fn idempotency_lookup(target: &WorkspaceTarget, key: &str) -> Result<Option<IdempotencyEntry>> {
     let file = idempotency_file(&target.project_root);
     if !file.exists() {
@@ -654,6 +673,7 @@ fn idempotency_lookup(target: &WorkspaceTarget, key: &str) -> Result<Option<Idem
     Ok(map.get(key).cloned())
 }
 
+/// Persist a response under the given idempotency key
 fn idempotency_save(
     target: &WorkspaceTarget,
     key: &str,
@@ -682,6 +702,7 @@ fn idempotency_save(
     Ok(())
 }
 
+/// Gather agent status snapshots across all served workspaces
 fn status_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     let mut rows = Vec::new();
     for target in targets {
@@ -701,6 +722,7 @@ fn status_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     Ok(Value::Array(rows))
 }
 
+/// Collect workflow definitions from all served workspaces
 fn workflows_data(targets: &[WorkspaceTarget]) -> Value {
     let mut rows = Vec::new();
     for target in targets {
@@ -717,6 +739,7 @@ fn workflows_data(targets: &[WorkspaceTarget]) -> Value {
     Value::Array(rows)
 }
 
+/// Load automation run records from all served workspaces
 fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     let mut rows = Vec::new();
     for target in targets {
@@ -741,6 +764,7 @@ fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     Ok(Value::Array(rows))
 }
 
+/// List log files with metadata from all served workspaces
 fn logs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     let mut rows = Vec::new();
     for target in targets {
@@ -766,6 +790,7 @@ fn logs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     Ok(Value::Array(rows))
 }
 
+/// List handoff files with metadata from all served workspaces
 fn handoffs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     let mut rows = Vec::new();
     for target in targets {
@@ -798,6 +823,7 @@ fn handoffs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     Ok(Value::Array(rows))
 }
 
+/// Load policy decision records, optionally filtered by workspace
 fn policy_decisions_data(targets: &[WorkspaceTarget], workspace: Option<&str>) -> Result<Value> {
     let selected: Vec<&WorkspaceTarget> = if let Some(ws) = workspace {
         vec![
@@ -819,6 +845,7 @@ fn policy_decisions_data(targets: &[WorkspaceTarget], workspace: Option<&str>) -
     Ok(json!(rows))
 }
 
+/// Load control events with cursor-based pagination
 fn events_data(
     targets: &[WorkspaceTarget],
     cursor: Option<&str>,
@@ -827,19 +854,24 @@ fn events_data(
     let parsed = parse_cursor(cursor)?;
     let cursor_ts = parsed.as_ref().map(|c| c.timestamp);
     let skip_count = parsed.as_ref().map(|c| c.skip_count).unwrap_or(0);
-    let mut events = load_events_for_targets(targets, workspace, cursor_ts, false)?;
+    let include_boundary = skip_count > 0;
+    let mut events = load_events_for_targets(targets, workspace, cursor_ts, include_boundary)?;
     // Skip events at the cursor boundary that were already seen
     if skip_count > 0
         && let Some(ts) = cursor_ts
     {
         let boundary_count = events.iter().take_while(|e| e.timestamp == ts).count();
-        if boundary_count > 0 && skip_count <= boundary_count {
-            events = events.into_iter().skip(skip_count).collect();
+        if boundary_count > 0 {
+            events = events
+                .into_iter()
+                .skip(skip_count.min(boundary_count))
+                .collect();
         }
     }
     Ok(json!(events))
 }
 
+/// Handle a Server-Sent Events stream request for real-time event delivery
 fn handle_sse_request(request: Request, targets: &[WorkspaceTarget]) {
     let raw_url = request.url().to_string();
     let (_, query) = match raw_url.split_once('?') {
@@ -963,6 +995,7 @@ struct ParsedCursor {
     skip_count: usize,
 }
 
+/// Parse an optional cursor string into a timestamp and skip count
 fn parse_cursor(cursor: Option<&str>) -> Result<Option<ParsedCursor>> {
     let Some(raw) = cursor else {
         return Ok(None);
@@ -1007,6 +1040,7 @@ fn parse_cursor(cursor: Option<&str>) -> Result<Option<ParsedCursor>> {
     }
 }
 
+/// Load and merge control events from selected workspaces, filtered by cursor
 fn load_events_for_targets(
     targets: &[WorkspaceTarget],
     workspace: Option<&str>,
@@ -1045,6 +1079,7 @@ fn load_events_for_targets(
     Ok(rows)
 }
 
+/// Build a deduplication key for a control event
 fn event_key(event: &state::ControlEvent) -> String {
     format!(
         "{}|{}|{}|{}|{}",
@@ -1056,6 +1091,7 @@ fn event_key(event: &state::ControlEvent) -> String {
     )
 }
 
+/// Create an HTTP header, returning None if the bytes are invalid
 fn header(name: &str, value: &str) -> Option<Header> {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).ok()
 }
@@ -1067,6 +1103,7 @@ struct ChannelReader {
 }
 
 impl ChannelReader {
+    /// Create a new reader that pulls chunks from the given channel
     fn new(rx: mpsc::Receiver<Vec<u8>>) -> Self {
         Self {
             rx,
@@ -1106,6 +1143,7 @@ impl Read for ChannelReader {
     }
 }
 
+/// Run an operation with the working directory temporarily set to project_root
 fn with_project_root<T, F>(project_root: &Path, operation: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,
@@ -1122,6 +1160,7 @@ where
     }
 }
 
+/// Build a success API response envelope
 fn api_ok(action: &str, data: Value) -> Value {
     json!({
         "ok": true,
@@ -1131,6 +1170,7 @@ fn api_ok(action: &str, data: Value) -> Value {
     })
 }
 
+/// Build an error API response envelope
 fn api_err(action: &str, code: &str, message: String) -> Value {
     json!({
         "ok": false,
@@ -1143,6 +1183,7 @@ fn api_err(action: &str, code: &str, message: String) -> Value {
     })
 }
 
+/// Resolve the default port from global config, falling back to 4040
 fn resolve_default_port() -> u16 {
     match GlobalConfig::load() {
         Ok(global) => global.dashboard.map(|d| d.port).unwrap_or(4040),
@@ -1150,6 +1191,7 @@ fn resolve_default_port() -> u16 {
     }
 }
 
+/// Resolve workspace targets from CLI flags, global config, or current directory
 fn resolve_targets(workspace: Option<&str>, all: bool) -> Result<Vec<WorkspaceTarget>> {
     if all {
         let global = GlobalConfig::load()?;
@@ -1195,6 +1237,7 @@ fn resolve_targets(workspace: Option<&str>, all: bool) -> Result<Vec<WorkspaceTa
     }])
 }
 
+/// Compile-time assertion that a value is a Path reference
 #[allow(dead_code)]
 fn _assert_path(_: &Path) {}
 
