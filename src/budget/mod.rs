@@ -270,6 +270,7 @@ mod tests {
                 workspace_weekly_tokens: Some(200),
                 agent_weekly_tokens: caps,
             }),
+            webhooks: vec![],
         }
     }
 

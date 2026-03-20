@@ -447,6 +447,14 @@ fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusC
                 api_err("action", "action_failed", e.to_string()).to_string(),
             ),
         }
+    } else if method == Method::Post && path == "/v1/webhooks/generic" {
+        match route_webhook(request, targets) {
+            Ok(value) => (StatusCode(200), value.to_string()),
+            Err(e) => (
+                StatusCode(400),
+                api_err("webhook", "webhook_failed", e.to_string()).to_string(),
+            ),
+        }
     } else {
         (
             StatusCode(404),
@@ -692,6 +700,121 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
             action
         ))),
     }
+}
+
+/// Maximum webhook payload size (1 MB)
+const WEBHOOK_MAX_BODY_BYTES: usize = 1_048_576;
+
+/// Handle POST /v1/webhooks/generic
+fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<Value> {
+    // Payload size guard
+    let content_length = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Content-Length"))
+        .and_then(|h| h.value.as_str().parse::<usize>().ok())
+        .unwrap_or(0);
+    if content_length > WEBHOOK_MAX_BODY_BYTES {
+        return Err(TuttiError::ConfigValidation(format!(
+            "webhook payload too large ({content_length} bytes, max {WEBHOOK_MAX_BODY_BYTES})"
+        )));
+    }
+
+    let body = read_json_body(request)?;
+
+    let source = body
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("generic");
+    let event_type = body
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let workspace_hint = body.get("workspace").and_then(Value::as_str);
+
+    let target = resolve_action_workspace(targets, workspace_hint)?;
+    let webhooks = &target.config.webhooks;
+
+    // Find matching webhook triggers
+    let matched: Vec<_> = webhooks
+        .iter()
+        .filter(|wh| {
+            // Match source
+            if wh.source != source && wh.source != "*" {
+                return false;
+            }
+            // Match event type
+            if wh.events.is_empty() {
+                return true; // no events filter means match all
+            }
+            wh.events.iter().any(|e| e == "*" || e == event_type)
+        })
+        .collect();
+
+    if matched.is_empty() {
+        return Ok(api_ok(
+            "webhook.received",
+            json!({
+                "source": source,
+                "event": event_type,
+                "matched": false,
+                "triggers_fired": 0
+            }),
+        ));
+    }
+
+    let mut dispatched = Vec::new();
+    for wh in &matched {
+        if let Some(workflow) = &wh.workflow {
+            with_project_root(&target.project_root, || {
+                super::run::run(
+                    Some(workflow),
+                    None,
+                    false,
+                    wh.agent.as_deref(),
+                    false,
+                    false,
+                    false,
+                )
+            })?;
+            dispatched.push(json!({
+                "type": "workflow",
+                "workflow": workflow,
+                "agent": wh.agent,
+            }));
+        } else if let Some(agent) = &wh.agent {
+            let prompt = wh
+                .prompt
+                .as_deref()
+                .unwrap_or("Webhook event received — check recent events for details.");
+            let options = super::send::SendOptions {
+                auto_up: false,
+                wait: false,
+                timeout_secs: 900,
+                idle_stable_secs: 5,
+                output: false,
+                output_lines: 200,
+            };
+            with_project_root(&target.project_root, || {
+                super::send::run(agent, &[prompt.to_string()], options).map(|_| ())
+            })?;
+            dispatched.push(json!({
+                "type": "send",
+                "agent": agent,
+            }));
+        }
+    }
+
+    Ok(api_ok(
+        "webhook.received",
+        json!({
+            "source": source,
+            "event": event_type,
+            "matched": true,
+            "triggers_fired": dispatched.len(),
+            "dispatched": dispatched
+        }),
+    ))
 }
 
 /// Resolve the target workspace for an action, defaulting to the only one if singular
@@ -1511,8 +1634,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let temp = std::env::temp_dir()
-            .join(format!("tutti-test-token-{}-{nanos}", std::process::id()));
+        let temp =
+            std::env::temp_dir().join(format!("tutti-test-token-{}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(temp.join(".config").join("tutti")).unwrap();
 
