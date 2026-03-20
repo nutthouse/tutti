@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>tutti dashboard — unit tests</title>
+  <style>
+    body { font-family: monospace; background: #0a0f1e; color: #f9fafb; padding: 24px; }
+    .pass { color: #22c55e; }
+    .fail { color: #ef4444; }
+    .suite { margin-bottom: 16px; }
+    .suite-name { font-weight: bold; margin-bottom: 4px; }
+    .result { padding-left: 16px; font-size: 13px; }
+    #summary { margin-top: 24px; font-size: 16px; font-weight: bold; }
+  </style>
+</head>
+<body>
+<h1>tutti dashboard tests</h1>
+<div id="output"></div>
+<div id="summary"></div>
+
+<script>
+// ── Test harness ──
+var passed = 0, failed = 0;
+var $output = document.getElementById("output");
+var currentSuite = null;
+var suiteEl = null;
+
+function suite(name) {
+  currentSuite = name;
+  suiteEl = document.createElement("div");
+  suiteEl.className = "suite";
+  var title = document.createElement("div");
+  title.className = "suite-name";
+  title.textContent = name;
+  suiteEl.appendChild(title);
+  $output.appendChild(suiteEl);
+}
+
+function assert(description, actual, expected) {
+  var ok = actual === expected;
+  var line = document.createElement("div");
+  line.className = "result " + (ok ? "pass" : "fail");
+  if (ok) {
+    line.textContent = "\u2713 " + description;
+    passed++;
+  } else {
+    line.textContent = "\u2717 " + description + " — expected " + JSON.stringify(expected) + ", got " + JSON.stringify(actual);
+    failed++;
+  }
+  suiteEl.appendChild(line);
+}
+
+function assertTruthy(description, actual) {
+  var ok = !!actual;
+  var line = document.createElement("div");
+  line.className = "result " + (ok ? "pass" : "fail");
+  if (ok) {
+    line.textContent = "\u2713 " + description;
+    passed++;
+  } else {
+    line.textContent = "\u2717 " + description + " — got " + JSON.stringify(actual);
+    failed++;
+  }
+  suiteEl.appendChild(line);
+}
+
+function assertNull(description, actual) {
+  var ok = actual === null || actual === undefined;
+  var line = document.createElement("div");
+  line.className = "result " + (ok ? "pass" : "fail");
+  if (ok) {
+    line.textContent = "\u2713 " + description;
+    passed++;
+  } else {
+    line.textContent = "\u2717 " + description + " — expected null, got " + JSON.stringify(actual);
+    failed++;
+  }
+  suiteEl.appendChild(line);
+}
+
+// ── Functions under test (copied from app.js to keep tests self-contained) ──
+
+var STAGE_ORDER = ["planner", "implementer", "tester", "reviewer", "docs-release"];
+
+function stageFor(agent) {
+  var a = agent.toLowerCase();
+  for (var i = 0; i < STAGE_ORDER.length; i++) {
+    var s = STAGE_ORDER[i];
+    if (a.indexOf(s.replace("-", "")) !== -1 || a.indexOf(s) !== -1) return s;
+  }
+  return null;
+}
+
+function stateClass(agent) {
+  if (!agent.running) return "stopped";
+  if (agent.auth_state === "expired" || agent.auth_state === "failed")
+    return "auth-fail";
+  if (agent.activity_state === "blocked" || agent.activity_state === "rate_limited")
+    return "blocked";
+  if (agent.activity_state === "working" || agent.activity_state === "active")
+    return "working";
+  return "idle";
+}
+
+function timeAgo(ts) {
+  if (!ts) return "\u2014";
+  var diff = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (diff < 0) return "just now";
+  if (diff < 60) return Math.floor(diff) + "s ago";
+  if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+  return Math.floor(diff / 3600) + "h ago";
+}
+
+function agentKey(workspace, agent) {
+  return (workspace || "_") + ":" + agent;
+}
+
+function findBottleneck(agents) {
+  var longest = null;
+  var longestDuration = 0;
+  var now = Date.now();
+  var names = Object.keys(agents);
+  for (var i = 0; i < names.length; i++) {
+    var agent = agents[names[i]];
+    if (stateClass(agent) !== "working") continue;
+    var ts = agent.last_output_change_at;
+    if (!ts) continue;
+    var duration = now - new Date(ts).getTime();
+    if (duration > longestDuration) {
+      longestDuration = duration;
+      longest = agent;
+    }
+  }
+  return longest;
+}
+
+// ── Tests ──
+
+suite("stageFor");
+assert("planner maps to planner", stageFor("planner"), "planner");
+assert("implementer maps to implementer", stageFor("implementer"), "implementer");
+assert("tester maps to tester", stageFor("tester"), "tester");
+assert("reviewer maps to reviewer", stageFor("reviewer"), "reviewer");
+assert("docs-release maps to docs-release", stageFor("docs-release"), "docs-release");
+assert("docsrelease (no hyphen) maps to docs-release", stageFor("docsrelease"), "docs-release");
+assert("unknown agent returns null", stageFor("conductor"), null);
+assert("case insensitive", stageFor("PLANNER"), "planner");
+assert("prefix match works", stageFor("my-planner-agent"), "planner");
+
+suite("stateClass");
+assert("not running = stopped", stateClass({ running: false }), "stopped");
+assert("auth expired = auth-fail", stateClass({ running: true, auth_state: "expired" }), "auth-fail");
+assert("auth failed = auth-fail", stateClass({ running: true, auth_state: "failed" }), "auth-fail");
+assert("blocked activity = blocked", stateClass({ running: true, auth_state: "ok", activity_state: "blocked" }), "blocked");
+assert("rate limited = blocked", stateClass({ running: true, auth_state: "ok", activity_state: "rate_limited" }), "blocked");
+assert("working = working", stateClass({ running: true, auth_state: "ok", activity_state: "working" }), "working");
+assert("active = working", stateClass({ running: true, auth_state: "ok", activity_state: "active" }), "working");
+assert("idle default", stateClass({ running: true, auth_state: "ok", activity_state: "idle" }), "idle");
+assert("unknown activity = idle", stateClass({ running: true, auth_state: "ok", activity_state: "something_else" }), "idle");
+
+suite("stateClass priority");
+assert("auth-fail takes precedence over blocked", stateClass({ running: true, auth_state: "failed", activity_state: "blocked" }), "auth-fail");
+assert("stopped takes precedence over everything", stateClass({ running: false, auth_state: "failed", activity_state: "working" }), "stopped");
+
+suite("timeAgo");
+assert("null returns dash", timeAgo(null), "\u2014");
+assert("undefined returns dash", timeAgo(undefined), "\u2014");
+var now = new Date().toISOString();
+assert("just now returns seconds", timeAgo(now).indexOf("s ago") !== -1 || timeAgo(now) === "0s ago", true);
+var fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+assert("5 min ago", timeAgo(fiveMinAgo), "5m ago");
+var twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+assert("2 hours ago", timeAgo(twoHoursAgo), "2h ago");
+var futureTs = new Date(Date.now() + 60000).toISOString();
+assert("future timestamp = just now", timeAgo(futureTs), "just now");
+
+suite("agentKey");
+assert("normal key", agentKey("myws", "planner"), "myws:planner");
+assert("null workspace uses underscore", agentKey(null, "planner"), "_:planner");
+assert("undefined workspace uses underscore", agentKey(undefined, "planner"), "_:planner");
+
+suite("findBottleneck");
+assertNull("empty agents = null", findBottleneck({}));
+assertNull("no working agents = null", findBottleneck({
+  "a:planner": { running: true, auth_state: "ok", activity_state: "idle", agent: "planner" }
+}));
+assertNull("working but null timestamp = null", findBottleneck({
+  "a:planner": { running: true, auth_state: "ok", activity_state: "working", agent: "planner", last_output_change_at: null }
+}));
+
+var oldTs = new Date(Date.now() - 600000).toISOString();
+var recentTs = new Date(Date.now() - 60000).toISOString();
+var bottleneckResult = findBottleneck({
+  "a:planner": { running: true, auth_state: "ok", activity_state: "working", agent: "planner", last_output_change_at: oldTs },
+  "a:implementer": { running: true, auth_state: "ok", activity_state: "working", agent: "implementer", last_output_change_at: recentTs }
+});
+assert("longest working agent is bottleneck", bottleneckResult.agent, "planner");
+
+var tieResult = findBottleneck({
+  "a:planner": { running: true, auth_state: "ok", activity_state: "working", agent: "planner", last_output_change_at: oldTs },
+  "a:implementer": { running: true, auth_state: "ok", activity_state: "idle", agent: "implementer", last_output_change_at: oldTs }
+});
+assert("idle agents ignored even with old timestamp", tieResult.agent, "planner");
+
+var singleResult = findBottleneck({
+  "a:reviewer": { running: true, auth_state: "ok", activity_state: "working", agent: "reviewer", last_output_change_at: recentTs }
+});
+assert("single working agent is bottleneck", singleResult.agent, "reviewer");
+
+// ── Summary ──
+var $summary = document.getElementById("summary");
+$summary.className = failed > 0 ? "fail" : "pass";
+$summary.textContent = passed + " passed, " + failed + " failed";
+</script>
+</body>
+</html>

@@ -13,9 +13,9 @@
       <span id="workspace-name" class="dim">—</span>
     </div>
     <div class="bar-right">
-      <span class="hud-item" id="hud-active" title="active agents">0 active</span>
-      <span class="hud-item" id="hud-blocked" title="blocked agents">0 blocked</span>
-      <span class="hud-item" id="hud-events" title="events received">0 events</span>
+      <span class="hud-item" id="hud-active" title="working agents">0 active</span>
+      <span class="hud-item" id="hud-blocked" title="blocked or auth-failed agents">0 blocked</span>
+      <span class="hud-item" id="hud-bottleneck" title="longest-working agent"></span>
       <span class="conn-dot" id="conn-status" title="SSE connection"></span>
     </div>
   </header>
@@ -25,6 +25,15 @@
       <!-- stages injected by app.js -->
     </div>
   </main>
+
+  <div id="detail-drawer">
+    <div class="detail-header">
+      <span class="detail-agent-name" id="detail-name">—</span>
+      <button class="detail-close" id="detail-close">close</button>
+    </div>
+    <div class="detail-meta" id="detail-meta"></div>
+    <ul class="detail-events" id="detail-events"></ul>
+  </div>
 
   <footer id="timeline">
     <h3>recent events</h3>
