@@ -326,6 +326,31 @@ pub struct GlobalConfig {
     pub resilience: Option<ResilienceConfig>,
     #[serde(default)]
     pub permissions: Option<PermissionsConfig>,
+    #[serde(default)]
+    pub serve: Option<ServeConfig>,
+}
+
+/// Configuration for `tt serve` remote access
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServeConfig {
+    /// Bind address (default: 127.0.0.1)
+    #[serde(default = "default_serve_bind")]
+    pub bind: String,
+    /// Authentication mode: "none" or "bearer"
+    #[serde(default)]
+    pub auth: ServeAuthMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServeAuthMode {
+    #[default]
+    None,
+    Bearer,
+}
+
+fn default_serve_bind() -> String {
+    "127.0.0.1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

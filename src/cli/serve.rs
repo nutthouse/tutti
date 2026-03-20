@@ -38,6 +38,8 @@ pub fn run(
     all: bool,
     port: Option<u16>,
     probe_interval_secs: u64,
+    remote: bool,
+    bind_override: Option<&str>,
 ) -> Result<()> {
     let targets = resolve_targets(workspace, all)?;
     if targets.is_empty() {
@@ -50,10 +52,53 @@ pub fn run(
     }
 
     let selected_port = port.unwrap_or_else(resolve_default_port);
-    let host = "127.0.0.1";
-    let http_targets = Arc::new(targets.clone());
-    start_control_http_server(http_targets, host, selected_port)?;
+
+    // Resolve bind address: --bind flag > --remote (0.0.0.0) > global config > 127.0.0.1
     let global = GlobalConfig::load().ok();
+    let host = if let Some(b) = bind_override {
+        b.to_string()
+    } else if remote {
+        "0.0.0.0".to_string()
+    } else {
+        global
+            .as_ref()
+            .and_then(|g| g.serve.as_ref())
+            .map(|s| s.bind.clone())
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    };
+
+    // Determine if auth is required
+    let auth_mode = if remote {
+        crate::config::ServeAuthMode::Bearer
+    } else {
+        global
+            .as_ref()
+            .and_then(|g| g.serve.as_ref())
+            .map(|s| s.auth.clone())
+            .unwrap_or_default()
+    };
+
+    // Block non-localhost bind without auth to prevent accidental unauthenticated exposure
+    let is_localhost = host == "127.0.0.1" || host == "localhost" || host == "::1";
+    if !is_localhost && auth_mode == crate::config::ServeAuthMode::None {
+        return Err(TuttiError::ConfigValidation(
+            "refusing to bind to non-localhost address without authentication; \
+             use --remote to enable bearer-token auth, or set [serve] auth = \"bearer\" in config"
+                .to_string(),
+        ));
+    }
+
+    // Generate/load bearer token when auth is enabled
+    let auth_token: Option<Arc<String>> = if auth_mode == crate::config::ServeAuthMode::Bearer {
+        let token = load_or_generate_serve_token()?;
+        println!("serve: bearer token: {token}");
+        Some(Arc::new(token))
+    } else {
+        None
+    };
+
+    let http_targets = Arc::new(targets.clone());
+    start_control_http_server(http_targets, &host, selected_port, auth_token)?;
     let resilience = global.as_ref().and_then(|g| g.resilience.as_ref());
     let recovery_cooldown = Duration::from_secs(90);
     let mut last_recovery_attempt = HashMap::<String, Instant>::new();
@@ -289,6 +334,7 @@ fn start_control_http_server(
     targets: Arc<Vec<WorkspaceTarget>>,
     host: &str,
     port: u16,
+    auth_token: Option<Arc<String>>,
 ) -> Result<()> {
     let server = Server::http((host, port)).map_err(|e| {
         TuttiError::ConfigValidation(format!("failed to bind health HTTP server: {e}"))
@@ -296,8 +342,13 @@ fn start_control_http_server(
     thread::spawn(move || {
         for request in server.incoming_requests() {
             let request_targets = targets.clone();
+            let token = auth_token.clone();
             thread::spawn(move || {
-                handle_http_request(request, &request_targets);
+                handle_http_request(
+                    request,
+                    &request_targets,
+                    token.as_deref().map(|s| s.as_str()),
+                );
             });
         }
     });
@@ -305,7 +356,39 @@ fn start_control_http_server(
 }
 
 /// Dispatch an incoming HTTP request to the appropriate handler
-fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
+fn handle_http_request(
+    request: Request,
+    targets: &[WorkspaceTarget],
+    expected_token: Option<&str>,
+) {
+    // Auth middleware: reject if bearer token is required but missing/invalid
+    if let Some(token) = expected_token {
+        let auth_header = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.as_str().to_string());
+        let valid = auth_header
+            .as_deref()
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(|t| t == token)
+            .unwrap_or(false);
+        if !valid {
+            let body = api_err(
+                "auth",
+                "unauthorized",
+                "invalid or missing bearer token".to_string(),
+            )
+            .to_string();
+            let mut response = Response::from_string(body).with_status_code(StatusCode(401));
+            if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
+                response = response.with_header(h);
+            }
+            let _ = request.respond(response);
+            return;
+        }
+    }
+
     let is_stream = request.method() == &Method::Get
         && request.url().split('?').next() == Some("/v1/events/stream");
     if is_stream {
@@ -1184,6 +1267,43 @@ fn api_err(action: &str, code: &str, message: String) -> Value {
 }
 
 /// Resolve the default port from global config, falling back to 4040
+/// Load an existing serve token or generate and persist a new one.
+/// Token is stored at ~/.config/tutti/serve-token.
+fn load_or_generate_serve_token() -> Result<String> {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let config_dir = home.join(".config").join("tutti");
+    let token_path = config_dir.join("serve-token");
+
+    // Try loading an existing token
+    if token_path.exists() {
+        let contents = std::fs::read_to_string(&token_path)?;
+        let token = contents.trim().to_string();
+        if token.len() >= 32 {
+            return Ok(token);
+        }
+    }
+
+    // Generate a 256-bit (32-byte) random hex token
+    let mut bytes = [0u8; 32];
+    let f = std::fs::File::open("/dev/urandom")?;
+    let mut reader = io::BufReader::new(f);
+    io::Read::read_exact(&mut reader, &mut bytes)?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+    std::fs::create_dir_all(&config_dir)?;
+    std::fs::write(&token_path, &token)?;
+    // Restrict permissions to owner only
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(token)
+}
+
 fn resolve_default_port() -> u16 {
     match GlobalConfig::load() {
         Ok(global) => global.dashboard.map(|d| d.port).unwrap_or(4040),
