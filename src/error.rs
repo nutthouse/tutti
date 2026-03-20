@@ -52,6 +52,12 @@ pub enum TuttiError {
 
     #[error("issue claim error: {0}")]
     IssueClaim(String),
+
+    #[error("ssh error: {0}")]
+    Ssh(String),
+
+    #[error("remote connectivity error: {0}")]
+    RemoteConnection(String),
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;

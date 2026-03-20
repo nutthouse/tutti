@@ -621,6 +621,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         }
     }
 
