@@ -1,5 +1,6 @@
 use crate::cli::snapshot;
 use crate::config::{GlobalConfig, ResilienceConfig, TuttiConfig};
+use crate::dashboard::{DashboardAssets, content_type_for};
 use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::scheduler;
@@ -96,8 +97,19 @@ pub fn run(
         None
     };
 
+    // Check if any workspace has observe.dashboard enabled
+    let dashboard_enabled = targets
+        .iter()
+        .any(|t| t.config.observe.as_ref().is_some_and(|o| o.dashboard));
+
     let http_targets = Arc::new(targets.clone());
-    start_control_http_server(http_targets, &host, selected_port, auth_token)?;
+    start_control_http_server(
+        http_targets,
+        &host,
+        selected_port,
+        auth_token,
+        dashboard_enabled,
+    )?;
     let resilience = global.as_ref().and_then(|g| g.resilience.as_ref());
     let recovery_cooldown = Duration::from_secs(90);
     let mut last_recovery_attempt = HashMap::<String, Instant>::new();
@@ -334,6 +346,7 @@ fn start_control_http_server(
     host: &str,
     port: u16,
     auth_token: Option<Arc<String>>,
+    dashboard_enabled: bool,
 ) -> Result<()> {
     let server = Server::http((host, port)).map_err(|e| {
         TuttiError::ConfigValidation(format!("failed to bind health HTTP server: {e}"))
@@ -347,6 +360,7 @@ fn start_control_http_server(
                     request,
                     &request_targets,
                     token.as_deref().map(|s| s.as_str()),
+                    dashboard_enabled,
                 );
             });
         }
@@ -377,6 +391,7 @@ fn handle_http_request(
     request: Request,
     targets: &[WorkspaceTarget],
     expected_token: Option<&str>,
+    dashboard_enabled: bool,
 ) {
     // Auth middleware: reject if bearer token is required but missing/invalid
     if expected_token.is_some() {
@@ -409,12 +424,56 @@ fn handle_http_request(
         return;
     }
 
+    let url = request.url().to_string();
+    let is_api = url.starts_with("/v1/");
+
+    // Non-API GET requests: serve embedded dashboard assets when enabled
+    if !is_api && dashboard_enabled && request.method() == &Method::Get {
+        serve_dashboard_asset(request, &url);
+        return;
+    }
+
     let mut request = request;
     let (status, body) = route_request(&mut request, targets);
     let mut response = Response::from_string(body).with_status_code(status);
     if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
         response = response.with_header(h);
     }
+    let _ = request.respond(response);
+}
+
+/// Serve an embedded dashboard asset, falling back to index.html for SPA routing
+fn serve_dashboard_asset(request: Request, url: &str) {
+    // Strip leading slash; map "/" to "index.html"
+    let asset_path = match url.trim_start_matches('/') {
+        "" => "index.html",
+        other => other,
+    };
+
+    // Try the exact path first, then fall back to index.html (SPA routing)
+    let (file_path, data) = if let Some(file) = DashboardAssets::get(asset_path) {
+        (asset_path, file.data)
+    } else if let Some(file) = DashboardAssets::get("index.html") {
+        ("index.html", file.data)
+    } else {
+        let body = api_err(
+            "dashboard",
+            "not_found",
+            "dashboard assets not embedded".to_string(),
+        )
+        .to_string();
+        let response = Response::from_string(body).with_status_code(StatusCode(404));
+        let _ = request.respond(response);
+        return;
+    };
+
+    let ct = content_type_for(file_path);
+    let response = Response::from_data(data.to_vec()).with_status_code(StatusCode(200));
+    let response = if let Ok(h) = Header::from_bytes("Content-Type", ct) {
+        response.with_header(h)
+    } else {
+        response
+    };
     let _ = request.respond(response);
 }
 

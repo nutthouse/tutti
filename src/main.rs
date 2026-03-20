@@ -2,6 +2,7 @@ mod automation;
 mod budget;
 mod cli;
 mod config;
+mod dashboard;
 mod error;
 mod health;
 mod permissions;
