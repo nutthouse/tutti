@@ -1321,7 +1321,7 @@ fn count_active_for_profile(
         {
             let project_root = config_path.parent().unwrap();
             seen_roots.insert(project_root.to_path_buf());
-            count += count_running_agents(&config);
+            count += count_running_agents_for_profile(&config, global, profile_name);
         }
     }
 
@@ -1330,20 +1330,45 @@ fn count_active_for_profile(
         if !seen_roots.contains(&root_buf)
             && workspace_default_profile(config) == Some(profile_name)
         {
-            count += count_running_agents(config);
+            count += count_running_agents_for_profile(config, global, profile_name);
         }
     }
 
     count
 }
 
-fn count_running_agents(config: &TuttiConfig) -> u32 {
+fn agent_uses_profile(
+    config: &TuttiConfig,
+    global: &GlobalConfig,
+    agent: &crate::config::AgentConfig,
+    profile_name: &str,
+) -> bool {
+    let Some(profile) = global.get_profile(profile_name) else {
+        return false;
+    };
+    let Some(runtime_name) = agent.resolved_runtime(&config.defaults) else {
+        return false;
+    };
+    runtime::compatible_command_override(
+        &runtime_name,
+        Some(profile.provider.as_str()),
+        Some(profile.command.as_str()),
+    )
+    .is_some()
+}
+
+fn count_running_agents_for_profile(
+    config: &TuttiConfig,
+    global: &GlobalConfig,
+    profile_name: &str,
+) -> u32 {
     config
         .agents
         .iter()
         .filter(|agent| {
             let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
             TmuxSession::session_exists(&session)
+                && agent_uses_profile(config, global, agent, profile_name)
         })
         .count() as u32
 }
@@ -1454,7 +1479,7 @@ fn run_all(
         if let Ok((config, _)) = TuttiConfig::load(&ws.path)
             && let Some(profile_name) = workspace_default_profile(&config)
         {
-            let running = count_running_agents(&config);
+            let running = count_running_agents_for_profile(&config, &global, profile_name);
             *active_by_profile
                 .entry(profile_name.to_string())
                 .or_insert(0) += running;
@@ -1693,7 +1718,9 @@ fn run_all(
                     );
                     println!("  launched {}", agent.name);
 
-                    if let Some(limit) = &profile_limit {
+                    if let Some(limit) = &profile_limit
+                        && agent_uses_profile(&config, &global, agent, &limit.profile_name)
+                    {
                         *active_by_profile
                             .entry(limit.profile_name.clone())
                             .or_insert(0) += 1;
@@ -1731,6 +1758,92 @@ mod tests {
             memory: None,
             env: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn agent_uses_profile_only_for_compatible_runtime() {
+        let config = TuttiConfig {
+            workspace: WorkspaceConfig {
+                name: "test".to_string(),
+                description: None,
+                env: None,
+                auth: Some(WorkspaceAuth {
+                    default_profile: Some("claude-max".to_string()),
+                }),
+            },
+            defaults: DefaultsConfig {
+                worktree: true,
+                runtime: Some("claude-code".to_string()),
+            },
+            launch: None,
+            agents: vec![
+                AgentConfig {
+                    name: "claude-agent".to_string(),
+                    runtime: Some("claude-code".to_string()),
+                    scope: None,
+                    prompt: None,
+                    depends_on: vec![],
+                    worktree: None,
+                    fresh_worktree: None,
+                    branch: None,
+                    persistent: false,
+                    memory: None,
+                    env: HashMap::new(),
+                },
+                AgentConfig {
+                    name: "codex-agent".to_string(),
+                    runtime: Some("codex".to_string()),
+                    scope: None,
+                    prompt: None,
+                    depends_on: vec![],
+                    worktree: None,
+                    fresh_worktree: None,
+                    branch: None,
+                    persistent: false,
+                    memory: None,
+                    env: HashMap::new(),
+                },
+            ],
+            tool_packs: vec![],
+            workflows: vec![],
+            hooks: vec![],
+            handoff: None,
+            observe: None,
+            budget: None,
+        };
+        let global = GlobalConfig {
+            user: None,
+            profiles: vec![ProfileConfig {
+                name: "claude-max".to_string(),
+                provider: "anthropic".to_string(),
+                command: "claude".to_string(),
+                max_concurrent: Some(5),
+                monthly_budget: None,
+                priority: None,
+                plan: None,
+                reset_day: None,
+                weekly_hours: None,
+            }],
+            registered_workspaces: vec![],
+            dashboard: None,
+            resilience: None,
+            permissions: None,
+            serve: None,
+            remotes: vec![],
+        };
+
+        assert!(agent_uses_profile(
+            &config,
+            &global,
+            &config.agents[0],
+            "claude-max"
+        ));
+        assert!(!agent_uses_profile(
+            &config,
+            &global,
+            &config.agents[1],
+            "claude-max"
+        ));
     }
 
     #[test]
