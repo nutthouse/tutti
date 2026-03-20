@@ -680,6 +680,11 @@ impl TuttiConfig {
                     "webhook[{i}] source cannot be empty"
                 )));
             }
+            if wh.workflow.is_some() && wh.prompt.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                return Err(TuttiError::ConfigValidation(format!(
+                    "webhook[{i}] prompt is only supported for direct agent dispatch; remove 'prompt' or switch to agent-only dispatch"
+                )));
+            }
             if wh.workflow.is_none() && wh.agent.is_none() {
                 return Err(TuttiError::ConfigValidation(format!(
                     "webhook[{i}] (source '{}') must specify either 'workflow' or 'agent'",
