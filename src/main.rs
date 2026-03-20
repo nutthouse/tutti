@@ -14,7 +14,7 @@ mod usage;
 mod worktree;
 
 use clap::Parser;
-use cli::{Cli, Commands, IssueClaimSubcommand, WorkspacesSubcommand};
+use cli::{Cli, Commands, IssueClaimSubcommand, RemoteSubcommand, WorkspacesSubcommand};
 use std::process;
 
 fn main() {
@@ -153,6 +153,14 @@ fn main() {
         Commands::Workspaces { ref command } => match command {
             Some(WorkspacesSubcommand::Status) => cli::workspaces::status(),
             None => cli::workspaces::list(),
+        },
+        Commands::Remote { command } => match command {
+            RemoteSubcommand::Attach {
+                ref host,
+                port,
+                ref name,
+            } => cli::remote::attach(host, port, name.as_deref()),
+            RemoteSubcommand::Status => cli::remote::status(),
         },
         Commands::IssueClaim { command } => match command {
             IssueClaimSubcommand::Acquire {

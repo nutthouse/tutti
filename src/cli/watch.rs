@@ -863,6 +863,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
         assert_eq!(resolve_workspace_plan_label(&config, &global), "API");
     }
@@ -899,6 +900,7 @@ mod tests {
             resilience: None,
             permissions: None,
             serve: None,
+            remotes: vec![],
         };
 
         let cache = build_plan_cache_with_global(&config, Some(&global));

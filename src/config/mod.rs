@@ -328,6 +328,23 @@ pub struct GlobalConfig {
     pub permissions: Option<PermissionsConfig>,
     #[serde(default)]
     pub serve: Option<ServeConfig>,
+    #[serde(default, rename = "remote")]
+    pub remotes: Vec<RemoteEntry>,
+}
+
+/// A registered remote tutti host persisted in `[[remote]]` config blocks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteEntry {
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+fn default_remote_port() -> u16 {
+    4040
 }
 
 /// Configuration for `tt serve` remote access
