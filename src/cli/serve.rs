@@ -1,19 +1,21 @@
 use crate::cli::snapshot;
 use crate::config::{GlobalConfig, ResilienceConfig, TuttiConfig};
+use crate::dashboard;
 use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::scheduler;
 use crate::session::TmuxSession;
 use crate::state;
 use crate::state::ControlEvent;
+use crate::webhook;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -96,8 +98,19 @@ pub fn run(
         None
     };
 
+    // Check if any workspace has observe.dashboard enabled
+    let dashboard_enabled = targets
+        .iter()
+        .any(|t| t.config.observe.as_ref().is_some_and(|o| o.dashboard));
+
     let http_targets = Arc::new(targets.clone());
-    start_control_http_server(http_targets, &host, selected_port, auth_token)?;
+    start_control_http_server(
+        http_targets,
+        &host,
+        selected_port,
+        auth_token,
+        dashboard_enabled,
+    )?;
     let resilience = global.as_ref().and_then(|g| g.resilience.as_ref());
     let recovery_cooldown = Duration::from_secs(90);
     let mut last_recovery_attempt = HashMap::<String, Instant>::new();
@@ -334,6 +347,7 @@ fn start_control_http_server(
     host: &str,
     port: u16,
     auth_token: Option<Arc<String>>,
+    dashboard_enabled: bool,
 ) -> Result<()> {
     let server = Server::http((host, port)).map_err(|e| {
         TuttiError::ConfigValidation(format!("failed to bind health HTTP server: {e}"))
@@ -347,6 +361,7 @@ fn start_control_http_server(
                     request,
                     &request_targets,
                     token.as_deref().map(|s| s.as_str()),
+                    dashboard_enabled,
                 );
             });
         }
@@ -377,6 +392,7 @@ fn handle_http_request(
     request: Request,
     targets: &[WorkspaceTarget],
     expected_token: Option<&str>,
+    dashboard_enabled: bool,
 ) {
     // Auth middleware: reject if bearer token is required but missing/invalid
     if expected_token.is_some() {
@@ -409,12 +425,56 @@ fn handle_http_request(
         return;
     }
 
+    let url = request.url().to_string();
+    let is_api = url.starts_with("/v1/");
+
+    // Non-API GET requests: serve embedded dashboard assets when enabled
+    if !is_api && dashboard_enabled && request.method() == &Method::Get {
+        serve_dashboard_asset(request, &url);
+        return;
+    }
+
     let mut request = request;
     let (status, body) = route_request(&mut request, targets);
     let mut response = Response::from_string(body).with_status_code(status);
     if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
         response = response.with_header(h);
     }
+    let _ = request.respond(response);
+}
+
+/// Serve an embedded dashboard asset, falling back to index.html for SPA routing
+fn serve_dashboard_asset(request: Request, url: &str) {
+    // Strip leading slash; map "/" to "index.html"
+    let asset_path = match url.trim_start_matches('/') {
+        "" => "index.html",
+        other => other,
+    };
+
+    // Try the exact path first, then fall back to index.html (SPA routing)
+    let (file_path, data) = if let Some(file) = dashboard::Assets::get(asset_path) {
+        (asset_path, file.data)
+    } else if let Some(file) = dashboard::Assets::get("index.html") {
+        ("index.html", file.data)
+    } else {
+        let body = api_err(
+            "dashboard",
+            "not_found",
+            "dashboard assets not embedded".to_string(),
+        )
+        .to_string();
+        let response = Response::from_string(body).with_status_code(StatusCode(404));
+        let _ = request.respond(response);
+        return;
+    };
+
+    let ct = dashboard::content_type_for(file_path);
+    let response = Response::from_data(data.to_vec()).with_status_code(StatusCode(200));
+    let response = if let Ok(h) = Header::from_bytes("Content-Type", ct) {
+        response.with_header(h)
+    } else {
+        response
+    };
     let _ = request.respond(response);
 }
 
@@ -445,6 +505,14 @@ fn route_request(request: &mut Request, targets: &[WorkspaceTarget]) -> (StatusC
             Err(e) => (
                 StatusCode(400),
                 api_err("action", "action_failed", e.to_string()).to_string(),
+            ),
+        }
+    } else if method == Method::Post && path == "/v1/webhooks/generic" {
+        match route_webhook(request, targets) {
+            Ok(value) => (StatusCode(200), value.to_string()),
+            Err(e) => (
+                StatusCode(400),
+                api_err("webhook", "webhook_failed", e.to_string()).to_string(),
             ),
         }
     } else {
@@ -694,6 +762,161 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
     }
 }
 
+/// Maximum webhook payload size (1 MB)
+const WEBHOOK_MAX_BODY_BYTES: usize = 1_048_576;
+
+/// Mutex to serialize webhook dispatches so that `with_project_root` cwd changes
+/// do not race across concurrent request threads.
+static WEBHOOK_DISPATCH_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
+/// Handle POST /v1/webhooks/generic
+fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<Value> {
+    // Body size is enforced inside read_json_body via take()
+    let body = read_json_body(request)?;
+
+    let source = body
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("generic");
+    let event_type = body
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let payload = body.get("payload").cloned().unwrap_or_else(|| body.clone());
+    let workspace_hint = body.get("workspace").and_then(Value::as_str);
+
+    let target = resolve_action_workspace(targets, workspace_hint)?;
+
+    // Deduplication: derive an idempotency key from the delivery ID header,
+    // Idempotency-Key header, or a hash of the payload to prevent duplicate
+    // workflow runs from GitHub retries or concurrent identical deliveries.
+    let dedup_key = webhook_dedup_key(request, &body);
+    if let Some(cached) = idempotency_lookup(target, &dedup_key)? {
+        return Ok(cached.response);
+    }
+
+    let matched = webhook::match_triggers(&target.config.webhooks, source, event_type);
+
+    if matched.is_empty() {
+        webhook::log_event(&target.project_root, source, event_type, None, "no_match");
+        let response = api_ok(
+            "webhook.received",
+            json!({
+                "source": source,
+                "event": event_type,
+                "matched": false,
+                "triggers_fired": 0
+            }),
+        );
+        idempotency_save(target, &dedup_key, "webhook.received", response.clone())?;
+        return Ok(response);
+    }
+
+    // Serialize webhook dispatches behind a mutex so that concurrent requests
+    // cannot race on the process-wide cwd changed by `with_project_root`.
+    let _guard = WEBHOOK_DISPATCH_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    let mut dispatched = Vec::new();
+    for wh in &matched {
+        if let Some(workflow) = &wh.workflow {
+            with_project_root(&target.project_root, || {
+                super::run::run(
+                    Some(workflow),
+                    None,
+                    false,
+                    wh.agent.as_deref(),
+                    false,
+                    false,
+                    false,
+                )
+            })?;
+            webhook::log_event(
+                &target.project_root,
+                source,
+                event_type,
+                Some(workflow),
+                "dispatched_workflow",
+            );
+            dispatched.push(json!({
+                "type": "workflow",
+                "workflow": workflow,
+                "agent": wh.agent,
+            }));
+        } else if let Some(agent) = &wh.agent {
+            let raw_prompt = wh
+                .prompt
+                .as_deref()
+                .unwrap_or("Webhook event received — check recent events for details.");
+            let prompt = webhook::expand_template(raw_prompt, &payload);
+            let options = super::send::SendOptions {
+                auto_up: false,
+                wait: false,
+                timeout_secs: 900,
+                idle_stable_secs: 5,
+                output: false,
+                output_lines: 200,
+            };
+            with_project_root(&target.project_root, || {
+                super::send::run(agent, std::slice::from_ref(&prompt), options).map(|_| ())
+            })?;
+            webhook::log_event(
+                &target.project_root,
+                source,
+                event_type,
+                Some(agent),
+                "dispatched_send",
+            );
+            dispatched.push(json!({
+                "type": "send",
+                "agent": agent,
+            }));
+        }
+    }
+
+    let response = api_ok(
+        "webhook.received",
+        json!({
+            "source": source,
+            "event": event_type,
+            "matched": true,
+            "triggers_fired": dispatched.len(),
+            "dispatched": dispatched
+        }),
+    );
+    idempotency_save(target, &dedup_key, "webhook.received", response.clone())?;
+    Ok(response)
+}
+
+/// Derive a deduplication key for a webhook request.
+/// Prefers X-GitHub-Delivery or Idempotency-Key headers; falls back to a
+/// hash of the payload body for generic webhook sources.
+fn webhook_dedup_key(request: &Request, body: &Value) -> String {
+    // Check X-GitHub-Delivery header (unique per GitHub webhook delivery)
+    for header in request.headers() {
+        if header.field.equiv("X-GitHub-Delivery") {
+            let val = header.value.as_str().trim();
+            if !val.is_empty() {
+                return format!("webhook:{val}");
+            }
+        }
+    }
+    // Check Idempotency-Key header or body field
+    if let Some(key) = read_idempotency_key(request, body) {
+        return format!("webhook:{key}");
+    }
+    // Fall back to a stable content hash (FNV-1a, deterministic across restarts)
+    let serialized = body.to_string();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in serialized.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("webhook:hash:{hash:016x}")
+}
+
 /// Resolve the target workspace for an action, defaulting to the only one if singular
 fn resolve_action_workspace<'a>(
     targets: &'a [WorkspaceTarget],
@@ -714,10 +937,20 @@ fn resolve_action_workspace<'a>(
     ))
 }
 
-/// Read and parse the request body as JSON, defaulting to an empty object
+/// Read and parse the request body as JSON, defaulting to an empty object.
+/// Enforces the body size cap while reading via `take()` to prevent memory exhaustion
+/// from oversized payloads (a malicious client could send more bytes than Content-Length).
 fn read_json_body(request: &mut Request) -> Result<Value> {
     let mut body = String::new();
-    request.as_reader().read_to_string(&mut body)?;
+    request
+        .as_reader()
+        .take((WEBHOOK_MAX_BODY_BYTES + 1) as u64)
+        .read_to_string(&mut body)?;
+    if body.len() > WEBHOOK_MAX_BODY_BYTES {
+        return Err(TuttiError::ConfigValidation(format!(
+            "webhook payload too large (>{WEBHOOK_MAX_BODY_BYTES} bytes)"
+        )));
+    }
     if body.trim().is_empty() {
         return Ok(json!({}));
     }
@@ -1376,6 +1609,24 @@ fn _assert_path(_: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct HomeGuard(Option<String>);
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.take() {
+                unsafe {
+                    std::env::set_var("HOME", value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("HOME");
+                }
+            }
+        }
+    }
 
     #[test]
     fn strategy_requests_rotation_matches_supported_values() {
@@ -1487,13 +1738,19 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn token_generation_produces_valid_hex_and_reloads() {
-        let temp = std::env::temp_dir().join(format!("tutti-test-token-{}", std::process::id()));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let temp =
+            std::env::temp_dir().join(format!("tutti-test-token-{}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(temp.join(".config").join("tutti")).unwrap();
 
-        // Temporarily override HOME so token writes to temp
-        let original_home = std::env::var("HOME").ok();
+        // Temporarily override HOME so token writes to temp.
+        let _home_guard = HomeGuard(std::env::var("HOME").ok());
         unsafe { std::env::set_var("HOME", &temp) };
 
         let token1 = load_or_generate_serve_token().expect("first generation should succeed");
@@ -1507,10 +1764,6 @@ mod tests {
         let token2 = load_or_generate_serve_token().expect("reload should succeed");
         assert_eq!(token1, token2, "reloaded token should match original");
 
-        // Restore HOME
-        if let Some(h) = original_home {
-            unsafe { std::env::set_var("HOME", h) };
-        }
         let _ = std::fs::remove_dir_all(&temp);
     }
 

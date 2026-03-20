@@ -2,6 +2,7 @@ mod automation;
 mod budget;
 mod cli;
 mod config;
+mod dashboard;
 mod error;
 mod health;
 mod permissions;
@@ -10,6 +11,7 @@ mod scheduler;
 mod session;
 mod state;
 mod usage;
+mod webhook;
 mod worktree;
 
 use clap::Parser;

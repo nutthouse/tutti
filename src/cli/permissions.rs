@@ -369,6 +369,7 @@ mod tests {
     use super::*;
     use crate::state::load_policy_decisions;
     use serial_test::serial;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn matching_rule_supports_exact_and_prefix() {
@@ -537,8 +538,12 @@ workflow = "child"
             }
         }
 
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
         let temp = std::env::temp_dir().join(format!(
-            "tutti-test-permissions-suggest-apply-{}",
+            "tutti-test-permissions-suggest-apply-{}-{nanos}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp);

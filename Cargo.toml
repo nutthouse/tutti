@@ -1,6 +1,6 @@
 [package]
 name = "tutti"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024" # intentional: codebase uses Rust 2024 let-chain syntax
 description = "Multi-agent orchestration CLI — your agents, all together"
 license = "MIT"
@@ -32,6 +32,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "signal", 
 cron = "0.12"
 tiny_http = "0.12"
 getrandom = "0.4.2"
+rust-embed = "8"
 
 [dev-dependencies]
 serial_test = "3"

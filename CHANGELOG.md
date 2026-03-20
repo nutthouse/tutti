@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0 - 2026-03-20
+
+Remote access, factory-floor dashboard, and operational diagnostics release.
+Operators can now monitor agents through a real-time web dashboard, expose
+`tt serve` to remote networks, manage SSH tunnels with `tt remote`, and
+triage run failures via stable, categorised root causes.
+
+### Added
+- **Factory-floor dashboard**: embedded SPA served at the control API root
+  when `observe.dashboard` is enabled. Renders agents as pipeline stages
+  with flow connectors, state-driven visual treatments
+  (working/idle/stopped/blocked/auth-fail), pulse animations for active
+  stages, and a throughput HUD. Connects via `/v1/health` snapshot and
+  `/v1/events/stream` SSE for live updates. Mobile-responsive (#84).
+- **`tt remote attach <host>`**: open an SSH port-forward tunnel to a remote
+  tutti host, persist the entry in global config, and print connection
+  instructions (#85).
+- **`tt remote status`**: list registered remotes with live reachability probes.
+- **`tt serve --remote`**: bind to all interfaces (`0.0.0.0`) with
+  auto-generated bearer-token authentication for remote agent access (#82, #88).
+- **`tt serve --bind <addr>`**: custom bind address override for the control
+  API.
+- **Stable failure taxonomy** (`FailureCategory`): operator-facing enum
+  (`Routing`, `Runtime`, `Permission`, `Review`, `Provider`, `Timeout`,
+  `Orchestration`, `Unknown`) for actionable run summaries (#76, #87).
+- **Step timeline persistence** (`StepTimeline`): records `started_at`,
+  `finished_at`, `duration_secs`, and `retry_count` per workflow step with
+  cursor-based pagination hardening (#75, #81).
+- `GlobalConfig` gains optional `[serve]` table and `[[remote]]` array.
+
+### Fixed
+- Config load failures now emit a warning instead of hard-erroring, preventing
+  crashes when `~/.config/tutti/config.toml` is absent or malformed.
+- Health endpoint path corrected (was returning 404).
+
 ## 0.4.0 - 2026-03-20
 
 First fully unattended dogfood milestone. `tt run sdlc-auto --strict` completes
