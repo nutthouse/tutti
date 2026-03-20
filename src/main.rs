@@ -108,7 +108,16 @@ fn main() {
             all,
             port,
             probe_interval,
-        } => cli::serve::run(workspace.as_deref(), all, port, probe_interval),
+            remote,
+            ref bind,
+        } => cli::serve::run(
+            workspace.as_deref(),
+            all,
+            port,
+            probe_interval,
+            remote,
+            bind.as_deref(),
+        ),
         Commands::Switch => cli::switch::run(),
         Commands::Handoff { command } => cli::handoff::run(command),
         Commands::Run {

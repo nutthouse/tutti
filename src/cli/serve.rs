@@ -38,6 +38,8 @@ pub fn run(
     all: bool,
     port: Option<u16>,
     probe_interval_secs: u64,
+    remote: bool,
+    bind_override: Option<&str>,
 ) -> Result<()> {
     let targets = resolve_targets(workspace, all)?;
     if targets.is_empty() {
@@ -50,10 +52,52 @@ pub fn run(
     }
 
     let selected_port = port.unwrap_or_else(resolve_default_port);
-    let host = "127.0.0.1";
-    let http_targets = Arc::new(targets.clone());
-    start_control_http_server(http_targets, host, selected_port)?;
+
+    // Resolve bind address: --bind flag > --remote (0.0.0.0) > global config > 127.0.0.1
     let global = GlobalConfig::load().ok();
+    let host = if let Some(b) = bind_override {
+        b.to_string()
+    } else if remote {
+        "0.0.0.0".to_string()
+    } else {
+        global
+            .as_ref()
+            .and_then(|g| g.serve.as_ref())
+            .map(|s| s.bind.clone())
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    };
+
+    // Determine if auth is required
+    let auth_mode = if remote {
+        crate::config::ServeAuthMode::Bearer
+    } else {
+        global
+            .as_ref()
+            .and_then(|g| g.serve.as_ref())
+            .map(|s| s.auth.clone())
+            .unwrap_or_default()
+    };
+
+    // Block non-localhost bind without auth to prevent accidental unauthenticated exposure
+    if !is_localhost_addr(&host) && auth_mode == crate::config::ServeAuthMode::None {
+        return Err(TuttiError::ConfigValidation(
+            "refusing to bind to non-localhost address without authentication; \
+             use --remote to enable bearer-token auth, or set [serve] auth = \"bearer\" in config"
+                .to_string(),
+        ));
+    }
+
+    // Generate/load bearer token when auth is enabled
+    let auth_token: Option<Arc<String>> = if auth_mode == crate::config::ServeAuthMode::Bearer {
+        let token = load_or_generate_serve_token()?;
+        println!("serve: bearer token: {token}");
+        Some(Arc::new(token))
+    } else {
+        None
+    };
+
+    let http_targets = Arc::new(targets.clone());
+    start_control_http_server(http_targets, &host, selected_port, auth_token)?;
     let resilience = global.as_ref().and_then(|g| g.resilience.as_ref());
     let recovery_cooldown = Duration::from_secs(90);
     let mut last_recovery_attempt = HashMap::<String, Instant>::new();
@@ -289,6 +333,7 @@ fn start_control_http_server(
     targets: Arc<Vec<WorkspaceTarget>>,
     host: &str,
     port: u16,
+    auth_token: Option<Arc<String>>,
 ) -> Result<()> {
     let server = Server::http((host, port)).map_err(|e| {
         TuttiError::ConfigValidation(format!("failed to bind health HTTP server: {e}"))
@@ -296,16 +341,67 @@ fn start_control_http_server(
     thread::spawn(move || {
         for request in server.incoming_requests() {
             let request_targets = targets.clone();
+            let token = auth_token.clone();
             thread::spawn(move || {
-                handle_http_request(request, &request_targets);
+                handle_http_request(
+                    request,
+                    &request_targets,
+                    token.as_deref().map(|s| s.as_str()),
+                );
             });
         }
     });
     Ok(())
 }
 
+/// Validate a bearer token from an Authorization header value.
+/// Returns `true` if auth is not required (`expected` is `None`) or if the
+/// header contains a valid `Bearer <token>` matching `expected`.
+fn validate_bearer_auth(auth_header: Option<&str>, expected: Option<&str>) -> bool {
+    let Some(token) = expected else {
+        return true;
+    };
+    auth_header
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t == token)
+        .unwrap_or(false)
+}
+
+/// Check whether a bind address refers to the local machine.
+fn is_localhost_addr(addr: &str) -> bool {
+    addr == "127.0.0.1" || addr == "localhost" || addr == "::1"
+}
+
 /// Dispatch an incoming HTTP request to the appropriate handler
-fn handle_http_request(request: Request, targets: &[WorkspaceTarget]) {
+fn handle_http_request(
+    request: Request,
+    targets: &[WorkspaceTarget],
+    expected_token: Option<&str>,
+) {
+    // Auth middleware: reject if bearer token is required but missing/invalid
+    if expected_token.is_some() {
+        let auth_header = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.as_str().to_string());
+        let valid = validate_bearer_auth(auth_header.as_deref(), expected_token);
+        if !valid {
+            let body = api_err(
+                "auth",
+                "unauthorized",
+                "invalid or missing bearer token".to_string(),
+            )
+            .to_string();
+            let mut response = Response::from_string(body).with_status_code(StatusCode(401));
+            if let Ok(h) = Header::from_bytes("Content-Type", "application/json") {
+                response = response.with_header(h);
+            }
+            let _ = request.respond(response);
+            return;
+        }
+    }
+
     let is_stream = request.method() == &Method::Get
         && request.url().split('?').next() == Some("/v1/events/stream");
     if is_stream {
@@ -1183,7 +1279,43 @@ fn api_err(action: &str, code: &str, message: String) -> Value {
     })
 }
 
-/// Resolve the default port from global config, falling back to 4040
+/// Load an existing serve token or generate and persist a new one.
+/// Token is stored at ~/.config/tutti/serve-token.
+fn load_or_generate_serve_token() -> Result<String> {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let config_dir = home.join(".config").join("tutti");
+    let token_path = config_dir.join("serve-token");
+
+    // Try loading an existing token
+    if token_path.exists() {
+        let contents = std::fs::read_to_string(&token_path)?;
+        let token = contents.trim().to_string();
+        if token.len() >= 32 {
+            return Ok(token);
+        }
+    }
+
+    // Generate a 256-bit (32-byte) random hex token
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| {
+        TuttiError::ConfigValidation(format!("failed to generate random token: {e}"))
+    })?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+    std::fs::create_dir_all(&config_dir)?;
+    std::fs::write(&token_path, &token)?;
+    // Restrict permissions to owner only
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(token)
+}
+
 fn resolve_default_port() -> u16 {
     match GlobalConfig::load() {
         Ok(global) => global.dashboard.map(|d| d.port).unwrap_or(4040),
@@ -1308,5 +1440,102 @@ mod tests {
             Duration::from_secs(30)
         ));
         assert!(recovery_cooldown_elapsed(Some(&now), Duration::ZERO));
+    }
+
+    // ── Remote-serve auth tests ──
+
+    #[test]
+    fn validate_bearer_auth_accepts_valid_token() {
+        assert!(validate_bearer_auth(Some("Bearer abc123"), Some("abc123")));
+    }
+
+    #[test]
+    fn validate_bearer_auth_rejects_missing_header() {
+        assert!(!validate_bearer_auth(None, Some("abc123")));
+    }
+
+    #[test]
+    fn validate_bearer_auth_rejects_wrong_token() {
+        assert!(!validate_bearer_auth(Some("Bearer wrong"), Some("abc123")));
+    }
+
+    #[test]
+    fn validate_bearer_auth_rejects_malformed_header() {
+        // Missing "Bearer " prefix
+        assert!(!validate_bearer_auth(Some("abc123"), Some("abc123")));
+        // Basic auth instead of bearer
+        assert!(!validate_bearer_auth(
+            Some("Basic dXNlcjpwYXNz"),
+            Some("abc123")
+        ));
+    }
+
+    #[test]
+    fn validate_bearer_auth_skips_when_not_required() {
+        assert!(validate_bearer_auth(None, None));
+        assert!(validate_bearer_auth(Some("Bearer anything"), None));
+    }
+
+    #[test]
+    fn is_localhost_addr_identifies_local_addresses() {
+        assert!(is_localhost_addr("127.0.0.1"));
+        assert!(is_localhost_addr("localhost"));
+        assert!(is_localhost_addr("::1"));
+        assert!(!is_localhost_addr("0.0.0.0"));
+        assert!(!is_localhost_addr("192.168.1.1"));
+        assert!(!is_localhost_addr("10.0.0.1"));
+    }
+
+    #[test]
+    fn token_generation_produces_valid_hex_and_reloads() {
+        let temp = std::env::temp_dir().join(format!("tutti-test-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".config").join("tutti")).unwrap();
+
+        // Temporarily override HOME so token writes to temp
+        let original_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &temp) };
+
+        let token1 = load_or_generate_serve_token().expect("first generation should succeed");
+        assert_eq!(token1.len(), 64, "256-bit token should be 64 hex chars");
+        assert!(
+            token1.chars().all(|c| c.is_ascii_hexdigit()),
+            "token should be valid hex"
+        );
+
+        // Second call should reload the same token
+        let token2 = load_or_generate_serve_token().expect("reload should succeed");
+        assert_eq!(token1, token2, "reloaded token should match original");
+
+        // Restore HOME
+        if let Some(h) = original_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn serve_config_toml_round_trip() {
+        let toml_str = r#"
+[serve]
+bind = "0.0.0.0"
+auth = "bearer"
+"#;
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            serve: crate::config::ServeConfig,
+        }
+        let parsed: Wrapper = toml::from_str(toml_str).expect("should parse");
+        assert_eq!(parsed.serve.bind, "0.0.0.0");
+        assert_eq!(parsed.serve.auth, crate::config::ServeAuthMode::Bearer);
+
+        // Default values
+        let toml_default = "[serve]\n";
+        let parsed_default: Wrapper = toml::from_str(toml_default).expect("should parse defaults");
+        assert_eq!(parsed_default.serve.bind, "127.0.0.1");
+        assert_eq!(
+            parsed_default.serve.auth,
+            crate::config::ServeAuthMode::None
+        );
     }
 }

@@ -620,6 +620,7 @@ mod tests {
             dashboard: None,
             resilience: None,
             permissions: None,
+            serve: None,
         }
     }
 

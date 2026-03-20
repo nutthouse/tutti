@@ -274,6 +274,14 @@ pub enum Commands {
         /// Probe/scheduler tick interval in seconds
         #[arg(long, default_value = "15")]
         probe_interval: u64,
+
+        /// Bind to all interfaces (0.0.0.0) with bearer-token auth for remote access
+        #[arg(long)]
+        remote: bool,
+
+        /// Custom bind address (default: 127.0.0.1, or 0.0.0.0 with --remote)
+        #[arg(long)]
+        bind: Option<String>,
     },
 
     /// Fuzzy picker for running agents; attach with Enter
