@@ -79,8 +79,7 @@ pub fn run(
     };
 
     // Block non-localhost bind without auth to prevent accidental unauthenticated exposure
-    let is_localhost = host == "127.0.0.1" || host == "localhost" || host == "::1";
-    if !is_localhost && auth_mode == crate::config::ServeAuthMode::None {
+    if !is_localhost_addr(&host) && auth_mode == crate::config::ServeAuthMode::None {
         return Err(TuttiError::ConfigValidation(
             "refusing to bind to non-localhost address without authentication; \
              use --remote to enable bearer-token auth, or set [serve] auth = \"bearer\" in config"
@@ -355,6 +354,24 @@ fn start_control_http_server(
     Ok(())
 }
 
+/// Validate a bearer token from an Authorization header value.
+/// Returns `true` if auth is not required (`expected` is `None`) or if the
+/// header contains a valid `Bearer <token>` matching `expected`.
+fn validate_bearer_auth(auth_header: Option<&str>, expected: Option<&str>) -> bool {
+    let Some(token) = expected else {
+        return true;
+    };
+    auth_header
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| t == token)
+        .unwrap_or(false)
+}
+
+/// Check whether a bind address refers to the local machine.
+fn is_localhost_addr(addr: &str) -> bool {
+    addr == "127.0.0.1" || addr == "localhost" || addr == "::1"
+}
+
 /// Dispatch an incoming HTTP request to the appropriate handler
 fn handle_http_request(
     request: Request,
@@ -362,17 +379,13 @@ fn handle_http_request(
     expected_token: Option<&str>,
 ) {
     // Auth middleware: reject if bearer token is required but missing/invalid
-    if let Some(token) = expected_token {
+    if expected_token.is_some() {
         let auth_header = request
             .headers()
             .iter()
             .find(|h| h.field.equiv("Authorization"))
             .map(|h| h.value.as_str().to_string());
-        let valid = auth_header
-            .as_deref()
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|t| t == token)
-            .unwrap_or(false);
+        let valid = validate_bearer_auth(auth_header.as_deref(), expected_token);
         if !valid {
             let body = api_err(
                 "auth",
@@ -1428,5 +1441,102 @@ mod tests {
             Duration::from_secs(30)
         ));
         assert!(recovery_cooldown_elapsed(Some(&now), Duration::ZERO));
+    }
+
+    // ── Remote-serve auth tests ──
+
+    #[test]
+    fn validate_bearer_auth_accepts_valid_token() {
+        assert!(validate_bearer_auth(Some("Bearer abc123"), Some("abc123")));
+    }
+
+    #[test]
+    fn validate_bearer_auth_rejects_missing_header() {
+        assert!(!validate_bearer_auth(None, Some("abc123")));
+    }
+
+    #[test]
+    fn validate_bearer_auth_rejects_wrong_token() {
+        assert!(!validate_bearer_auth(Some("Bearer wrong"), Some("abc123")));
+    }
+
+    #[test]
+    fn validate_bearer_auth_rejects_malformed_header() {
+        // Missing "Bearer " prefix
+        assert!(!validate_bearer_auth(Some("abc123"), Some("abc123")));
+        // Basic auth instead of bearer
+        assert!(!validate_bearer_auth(
+            Some("Basic dXNlcjpwYXNz"),
+            Some("abc123")
+        ));
+    }
+
+    #[test]
+    fn validate_bearer_auth_skips_when_not_required() {
+        assert!(validate_bearer_auth(None, None));
+        assert!(validate_bearer_auth(Some("Bearer anything"), None));
+    }
+
+    #[test]
+    fn is_localhost_addr_identifies_local_addresses() {
+        assert!(is_localhost_addr("127.0.0.1"));
+        assert!(is_localhost_addr("localhost"));
+        assert!(is_localhost_addr("::1"));
+        assert!(!is_localhost_addr("0.0.0.0"));
+        assert!(!is_localhost_addr("192.168.1.1"));
+        assert!(!is_localhost_addr("10.0.0.1"));
+    }
+
+    #[test]
+    fn token_generation_produces_valid_hex_and_reloads() {
+        let temp = std::env::temp_dir().join(format!("tutti-test-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".config").join("tutti")).unwrap();
+
+        // Temporarily override HOME so token writes to temp
+        let original_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &temp) };
+
+        let token1 = load_or_generate_serve_token().expect("first generation should succeed");
+        assert_eq!(token1.len(), 64, "256-bit token should be 64 hex chars");
+        assert!(
+            token1.chars().all(|c| c.is_ascii_hexdigit()),
+            "token should be valid hex"
+        );
+
+        // Second call should reload the same token
+        let token2 = load_or_generate_serve_token().expect("reload should succeed");
+        assert_eq!(token1, token2, "reloaded token should match original");
+
+        // Restore HOME
+        if let Some(h) = original_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn serve_config_toml_round_trip() {
+        let toml_str = r#"
+[serve]
+bind = "0.0.0.0"
+auth = "bearer"
+"#;
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            serve: crate::config::ServeConfig,
+        }
+        let parsed: Wrapper = toml::from_str(toml_str).expect("should parse");
+        assert_eq!(parsed.serve.bind, "0.0.0.0");
+        assert_eq!(parsed.serve.auth, crate::config::ServeAuthMode::Bearer);
+
+        // Default values
+        let toml_default = "[serve]\n";
+        let parsed_default: Wrapper = toml::from_str(toml_default).expect("should parse defaults");
+        assert_eq!(parsed_default.serve.bind, "127.0.0.1");
+        assert_eq!(
+            parsed_default.serve.auth,
+            crate::config::ServeAuthMode::None
+        );
     }
 }
