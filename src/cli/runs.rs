@@ -1,6 +1,6 @@
 use crate::error::{Result, TuttiError};
 use crate::state::{load_active_runs, load_run_steps, load_sdlc_run_ledger};
-use comfy_table::{presets::UTF8_BORDERS_ONLY, Table};
+use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 
 pub fn list() -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -55,10 +55,7 @@ pub fn show(run_id: &str) -> Result<()> {
     println!("Workflow: {}", ledger.workflow_name);
     println!("State: {:?}", ledger.state);
     println!("Updated: {}", ledger.updated_at.to_rfc3339());
-    println!(
-        "Branch: {}",
-        ledger.branch.as_deref().unwrap_or("--")
-    );
+    println!("Branch: {}", ledger.branch.as_deref().unwrap_or("--"));
     println!(
         "Current step: {}",
         ledger.current_step_id.as_deref().unwrap_or("--")

@@ -870,10 +870,7 @@ pub fn load_workflow_intent(
 }
 
 /// Load all workflow step intent records for a run, sorted by step_index.
-pub fn load_run_steps(
-    project_root: &Path,
-    run_id: &str,
-) -> Result<Vec<WorkflowStepIntentRecord>> {
+pub fn load_run_steps(project_root: &Path, run_id: &str) -> Result<Vec<WorkflowStepIntentRecord>> {
     validate_run_id(run_id)?;
     let dir = project_root
         .join(".tutti")
