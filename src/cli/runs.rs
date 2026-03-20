@@ -1,5 +1,5 @@
 use crate::error::{Result, TuttiError};
-use crate::state::{load_active_runs, load_sdlc_run_ledger};
+use crate::state::{load_active_runs, load_run_steps, load_sdlc_run_ledger};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 
 pub fn list() -> Result<()> {
@@ -45,19 +45,17 @@ pub fn show(run_id: &str) -> Result<()> {
     let ledger = load_sdlc_run_ledger(project_root, run_id)?
         .ok_or_else(|| TuttiError::ConfigValidation(format!("run '{}' not found", run_id)))?;
 
+    // Header block
     println!("Run: {}", ledger.run_id);
     println!(
         "Issue: #{} {}",
         ledger.issue_number,
-        ledger.issue_title.unwrap_or_default()
+        ledger.issue_title.as_deref().unwrap_or("")
     );
     println!("Workflow: {}", ledger.workflow_name);
     println!("State: {:?}", ledger.state);
     println!("Updated: {}", ledger.updated_at.to_rfc3339());
-    println!(
-        "Branch: {}",
-        ledger.branch.unwrap_or_else(|| "--".to_string())
-    );
+    println!("Branch: {}", ledger.branch.as_deref().unwrap_or("--"));
     println!(
         "Current step: {}",
         ledger.current_step_id.as_deref().unwrap_or("--")
@@ -86,9 +84,69 @@ pub fn show(run_id: &str) -> Result<()> {
         }
     );
 
+    // Step table
+    let steps = load_run_steps(project_root, run_id)?;
+    if !steps.is_empty() {
+        println!("\nSteps:");
+        let mut step_table = Table::new();
+        step_table.load_preset(UTF8_BORDERS_ONLY);
+        step_table.set_header(vec![
+            "#", "Step", "Type", "Status", "Duration", "Agent", "Failure",
+        ]);
+
+        for step in &steps {
+            let (status, duration, failure_msg) = match &step.outcome {
+                Some(outcome) => {
+                    let status = if outcome.timed_out {
+                        "timed_out".to_string()
+                    } else if outcome.success {
+                        "success".to_string()
+                    } else {
+                        "failed".to_string()
+                    };
+                    let dur = outcome
+                        .completed_at
+                        .signed_duration_since(step.planned_at)
+                        .num_milliseconds();
+                    let duration = format_duration_ms(dur);
+                    let failure = if outcome.success {
+                        "--".to_string()
+                    } else {
+                        outcome.message.as_deref().unwrap_or("--").to_string()
+                    };
+                    (status, duration, failure)
+                }
+                None => ("pending".to_string(), "--".to_string(), "--".to_string()),
+            };
+
+            let agent = step
+                .intent
+                .get("agent_scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("--");
+
+            step_table.add_row(vec![
+                step.step_index.to_string(),
+                step.step_id.clone(),
+                step.step_type.clone(),
+                status,
+                duration,
+                agent.to_string(),
+                failure_msg,
+            ]);
+        }
+
+        println!("{step_table}");
+    }
+
+    // Next action guidance
+    let next_action = derive_next_action(&ledger, &steps);
+    println!("\nNext action: {next_action}");
+
+    // Transitions
     if !ledger.transitions.is_empty() {
         println!("\nTransitions:");
-        for transition in ledger.transitions {
+        for transition in &ledger.transitions {
             println!(
                 "- {:?} -> {:?} @ {} by {}{}",
                 transition.from,
@@ -105,6 +163,50 @@ pub fn show(run_id: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn derive_next_action(
+    ledger: &crate::state::SdlcRunLedgerRecord,
+    steps: &[crate::state::WorkflowStepIntentRecord],
+) -> String {
+    let failing_step = steps
+        .iter()
+        .find(|s| s.outcome.as_ref().is_some_and(|o| !o.success));
+
+    if let Some(step) = failing_step {
+        let agent = step.intent.get("agent_scope").and_then(|v| v.as_str());
+        if let Some(agent_name) = agent {
+            return format!(
+                "Inspect agent '{}' transcript for step '{}'",
+                agent_name, step.step_id
+            );
+        }
+        return format!("Inspect step '{}' output", step.step_id);
+    }
+
+    if ledger.resume_eligible {
+        return format!("Run: tt run --resume {}", ledger.run_id);
+    }
+
+    let has_pending = steps.iter().any(|s| s.outcome.is_none());
+    if has_pending {
+        return "Run is still in progress — wait for pending steps to complete".to_string();
+    }
+
+    "All steps completed successfully".to_string()
+}
+
+fn format_duration_ms(ms: i64) -> String {
+    if ms < 0 {
+        return "--".to_string();
+    }
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{:.1}m", ms as f64 / 60_000.0)
+    }
 }
 
 fn truncate_run_id(run_id: &str) -> String {
@@ -136,11 +238,16 @@ mod tests {
             issue_title: issue_title.map(|s| s.to_string()),
             repository: "test/repo".to_string(),
             workflow_name: "sdlc-auto".to_string(),
-            state: SdlcRunState::InProgress,
+            state: SdlcRunState::Selected,
             updated_at: Utc::now(),
             actor: "test".to_string(),
             branch: None,
             failure_message: None,
+            failure_class: None,
+            current_step_id: None,
+            last_successful_step_id: None,
+            resume_eligible: false,
+            active_agents: Vec::new(),
             transitions: Vec::new(),
         }
     }
@@ -172,5 +279,29 @@ mod tests {
     fn format_issue_with_blank_title() {
         let run = stub_record(Some("   "));
         assert_eq!(format_issue(&run), "#42");
+    }
+
+    #[test]
+    fn format_duration_ms_values() {
+        assert_eq!(format_duration_ms(500), "500ms");
+        assert_eq!(format_duration_ms(1500), "1.5s");
+        assert_eq!(format_duration_ms(90000), "1.5m");
+        assert_eq!(format_duration_ms(-1), "--");
+    }
+
+    #[test]
+    fn derive_next_action_all_success() {
+        let ledger = stub_record(None);
+        assert_eq!(
+            derive_next_action(&ledger, &[]),
+            "All steps completed successfully"
+        );
+    }
+
+    #[test]
+    fn derive_next_action_resume_eligible() {
+        let mut ledger = stub_record(None);
+        ledger.resume_eligible = true;
+        assert!(derive_next_action(&ledger, &[]).contains("tt run --resume"));
     }
 }
