@@ -84,13 +84,14 @@ function timeAgo(ts) {
 
 // ── Bottleneck detection ──
 // Returns the agent that has been working longest, or null if none working
-function findBottleneck() {
+function findBottleneck(agents) {
+  if (!agents) agents = appState.agents;
   var longest = null;
   var longestDuration = 0;
   var now = Date.now();
-  var names = Object.keys(appState.agents);
+  var names = Object.keys(agents);
   for (var i = 0; i < names.length; i++) {
-    var agent = appState.agents[names[i]];
+    var agent = agents[names[i]];
     if (stateClass(agent) !== "working") continue;
     var ts = agent.last_output_change_at;
     if (!ts) continue;
@@ -210,7 +211,9 @@ function selectAgent(key) {
   if (agent.reason) meta.push(["reason", agent.reason]);
   for (var i = 0; i < meta.length; i++) {
     var s = el("span", null, null);
-    s.innerHTML = "<span>" + meta[i][0] + ":</span> " + meta[i][1];
+    var label = el("span", null, meta[i][0] + ":");
+    s.appendChild(label);
+    s.appendChild(document.createTextNode(" " + meta[i][1]));
     $detailMeta.appendChild(s);
   }
 

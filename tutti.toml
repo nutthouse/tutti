@@ -11,6 +11,8 @@ runtime = "codex"
 
 [observe]
 dashboard = true
+# NOTE: port is parsed but currently unused at runtime. The serve command
+# reads from GlobalConfig.dashboard.port or defaults to 4040.
 port = 4040
 
 # Optional environment variables when running workflows:
