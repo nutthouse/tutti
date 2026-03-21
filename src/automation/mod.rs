@@ -567,7 +567,7 @@ fn step_agent_name(step: &ResolvedStep) -> Option<&str> {
         ResolvedStep::EnsureRunning { agent, .. } => Some(agent),
         ResolvedStep::Workflow { .. } => None,
         ResolvedStep::Land { agent, .. } => Some(agent),
-        ResolvedStep::Review { agent, .. } => Some(agent),
+        ResolvedStep::Review { reviewer, .. } => Some(reviewer),
     }
 }
 
@@ -2092,10 +2092,10 @@ impl<'a> WorkflowExecutor<'a> {
                 .steps
                 .get(sr.index.saturating_sub(1))
                 .and_then(|s| step_agent_name(s).map(|a| a.to_string()));
-            let event_name = if sr.status == StepStatus::Success {
-                "workflow.step.completed"
-            } else {
-                "workflow.step.failed"
+            let event_name = match sr.status {
+                StepStatus::Success => "workflow.step.completed",
+                StepStatus::Warning => "workflow.step.warning",
+                StepStatus::Failed => "workflow.step.failed",
             };
             let _ = append_control_event(
                 self.project_root,
@@ -3442,6 +3442,27 @@ fn execute_control_dag(
             return Err(TuttiError::ConfigValidation(
                 "workflow depends_on graph is blocked (unmet dependencies)".to_string(),
             ));
+        }
+
+        // Emit step.started for each step in this DAG wave
+        for idx in &ready {
+            let step = &steps[*idx - 1];
+            let _ = append_control_event(
+                project_root,
+                &ControlEvent {
+                    event: "workflow.step.started".to_string(),
+                    workspace: config.workspace.name.clone(),
+                    agent: step_agent_name(step).map(|s| s.to_string()),
+                    timestamp: Utc::now(),
+                    correlation_id: run_id.to_string(),
+                    data: Some(json!({
+                        "workflow_name": workflow_name,
+                        "step_index": idx,
+                        "step_type": step_type_name(step),
+                        "total_steps": steps.len()
+                    })),
+                },
+            );
         }
 
         let wave_outcomes: Vec<ControlStepOutcome> = if ready.len() == 1 {

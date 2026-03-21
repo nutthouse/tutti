@@ -940,8 +940,10 @@ fn maybe_rotate_events(state_dir: &Path) -> Result<()> {
     let archive_path = state_dir.join(archive_name);
     std::fs::write(&archive_path, lines[..split].join("\n") + "\n")?;
 
-    // Rewrite the active file with only the recent events
-    std::fs::write(&path, lines[split..].join("\n") + "\n")?;
+    // Atomically rewrite the active file with only the recent events
+    let tmp_path = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp_path, lines[split..].join("\n") + "\n")?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 

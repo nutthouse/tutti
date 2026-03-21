@@ -75,13 +75,13 @@ function processWorkflowEvent(evt) {
   }
 }
 
-// Get active runs at a given stage
+// Get active (non-terminal) runs at a given stage
 function runsAtStage(stage) {
   var result = [];
   var ids = Object.keys(appState.runs);
   for (var i = 0; i < ids.length; i++) {
     var run = appState.runs[ids[i]];
-    if (run.stage === stage) result.push(run);
+    if (run.stage === stage && run.status !== "completed" && run.status !== "failed") result.push(run);
   }
   return result;
 }
