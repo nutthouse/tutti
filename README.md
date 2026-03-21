@@ -77,7 +77,7 @@ That doesn't scale. Tutti does.
 
 **Org code.** Your agent team topology — who does what, how they communicate, what context they share — is defined in a `tutti.toml` file. Version it. Share it. Fork someone else's.
 
-**Observable by default (today: terminal UI, planned: web UI).** Today Tutti ships a live terminal watch mode plus status and usage commands. A web dashboard is planned.
+**Observable by default.** Live terminal watch mode, status/usage commands, and a factory-floor web dashboard at `:4040` with real-time SSE updates. Click any agent to zoom into a full-screen focus view with live terminal output, token usage, git diff, and a prompt bar — the "bigger IDE" Karpathy asked for.
 
 **Automated handoffs (planned).** Context packet generation and one-command session replacement are on the roadmap.
 
@@ -377,12 +377,20 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Configurable packet templates and richer handoff content (planned)
 - One-command session replacement polish/hardening (planned)
 
-### Dashboard (Planned)
-- Web-based dashboard at localhost (optional)
-- Click into any agent to see live output
-- Cost breakdown by agent, by provider, by time period
+### Dashboard (Built)
+- Factory-floor web dashboard at `:4040` with real-time SSE updates
+- Pipeline stages with state-driven visuals (working/idle/stopped/blocked)
+- Work-item dots flowing through stages during workflow runs
+- **Agent Focus Mode**: click any stage card → full-screen drill-down with:
+  - Live terminal output (polled every 2s)
+  - Token usage stats (input, output, cache read/write)
+  - Git diff of agent's worktree changes
+  - Context health % with color-coded fill bar
+  - Prompt input bar to send instructions to the agent
+- Dispatch panel: trigger workflow runs from the browser
+- Mobile-responsive layout with swipeable tabs on phone
+- Cost breakdown by agent (planned: by provider, by time period)
 - Provider health panel (auth status, rate limit state)
-- Team topology visualization
 
 ### Resilience (Partially Built)
 - Auth failure detection (OAuth expiry, provider outages)
@@ -490,7 +498,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [x] `tt usage` profile/workspace capacity reporting
 - [ ] Context health monitoring
 - [x] Automatic handoff packet generation
-- [ ] Web dashboard
+- [x] Web dashboard (factory floor + Agent Focus Mode)
 - [ ] Cost tracking and attribution (provider-accurate)
 - [x] OpenClaw skill for Tutti orchestration workflows
 - [x] Issue claim leases for autonomous SDLC loops
@@ -500,7 +508,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [ ] Agent-to-agent message bus
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
-- [ ] Web dashboard
+- [x] Web dashboard (factory floor + Agent Focus Mode)
 
 ## License
 

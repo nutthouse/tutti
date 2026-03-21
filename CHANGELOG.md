@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Agent Focus Mode**: click any stage card on the factory floor to zoom
+  into a full-screen agent view with live terminal output, token usage
+  stats, git diff of changes, context health %, and a prompt input bar.
+  The Factorio zoom-in — see the gears turning inside each machine.
+- **`GET /v1/agents/{ws}/{agent}/focus`**: combined endpoint returning
+  terminal capture, usage stats, diff, and context % in a single fast
+  response (~35ms). Usage scan separated to a slower cadence to keep
+  terminal updates instant.
+- **Workflow step events**: `workflow.step.started`, `.completed`, and
+  `.failed` SSE events with step index, agent, type, and duration.
+- **Event file rotation**: `events.jsonl` auto-rotates at 5,000 events,
+  archiving old entries to prevent unbounded growth.
+- **Run tracking on factory floor**: animated work-item dots flow through
+  pipeline stages during workflow runs, with marching-dash connectors.
+- **Step timeline in detail drawer**: click a run dot to see per-step
+  progress with status badges, durations, and failure messages.
+- **Dispatch panel**: trigger workflow runs directly from the dashboard
+  with workflow selector and optional issue number input.
+- **Historical run reconstruction**: page load replays `/v1/events` to
+  rebuild in-progress runs. Orphan runs pruned after 30 minutes.
+
+### Fixed
+- Dispatch panel checked `json.status` instead of `json.ok` (response
+  shape mismatch).
+- `implement_code` startup grace increased to 120s to prevent premature
+  idle detection during agent exploration phase.
+
 ## 0.5.0 - 2026-03-20
 
 Remote access, factory-floor dashboard, and operational diagnostics release.
