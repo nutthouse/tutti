@@ -624,6 +624,7 @@ var $focusProgress = document.getElementById("focus-progress");
 var $focusInput    = document.getElementById("focus-prompt-input");
 var $focusSend     = document.getElementById("focus-send");
 var focusPollId    = null;
+var focusUsagePollId = null;
 var focusPolling   = false;
 
 function enterFocusMode(workspace, agent) {
@@ -654,15 +655,19 @@ function enterFocusMode(workspace, agent) {
   $focusDiff.innerHTML = '<div class="focus-diff-empty">Loading\u2026</div>';
   $focusProgress.innerHTML = "";
 
-  // Start polling — first call fires immediately
+  // Start polling — first call fires immediately (fast: terminal + diff)
   pollFocus();
   focusPollId = setInterval(pollFocus, 2000);
+  // Usage poll on slower cadence (expensive filesystem scan)
+  pollFocusUsage();
+  focusUsagePollId = setInterval(pollFocusUsage, 30000);
 }
 
 function exitFocusMode() {
   appState.view = "factory";
   appState.focusAgent = null;
   if (focusPollId) { clearInterval(focusPollId); focusPollId = null; }
+  if (focusUsagePollId) { clearInterval(focusUsagePollId); focusUsagePollId = null; }
 
   $focusView.style.display = "none";
   document.getElementById("factory").style.display = "";
@@ -683,22 +688,39 @@ document.addEventListener("keydown", function(e) {
 function pollFocus() {
   var fa = appState.focusAgent;
   if (!fa) return;
-  if (focusPolling) return; // prevent overlapping polls
+  if (focusPolling) return;
   focusPolling = true;
   var url = "/v1/agents/" + encodeURIComponent(fa.workspace) + "/" + encodeURIComponent(fa.agent) + "/focus?lines=200";
   fetch(url).then(function(res) { return res.json(); }).then(function(json) {
     focusPolling = false;
-    // Stale guard: if agent changed mid-flight, discard
     if (!appState.focusAgent || appState.focusAgent.workspace !== fa.workspace || appState.focusAgent.agent !== fa.agent) return;
     if (!json.data) return;
     renderFocusView(json.data);
   }).catch(function() {
     focusPolling = false;
-    // Network error — show reconnecting state
     if (appState.focusAgent && appState.focusAgent.agent === fa.agent) {
       $focusTerminal.textContent = "Connection lost. Reconnecting\u2026";
     }
   });
+}
+
+// Separate slow usage poll (filesystem scan takes ~10s)
+function pollFocusUsage() {
+  var fa = appState.focusAgent;
+  if (!fa) return;
+  var url = "/v1/agents/" + encodeURIComponent(fa.workspace) + "/" + encodeURIComponent(fa.agent) + "/focus?lines=1&usage=1";
+  fetch(url).then(function(res) { return res.json(); }).then(function(json) {
+    if (!appState.focusAgent || appState.focusAgent.agent !== fa.agent) return;
+    if (!json.data || !json.data.usage) return;
+    // Update just the usage stats section
+    var u = json.data.usage;
+    var statsHtml = "";
+    statsHtml += statRow("input tokens", formatTokens(u.input_tokens || 0));
+    statsHtml += statRow("output tokens", formatTokens(u.output_tokens || 0));
+    statsHtml += statRow("cache read", formatTokens(u.cache_read || 0), "green");
+    statsHtml += statRow("cache write", formatTokens(u.cache_write || 0));
+    $focusStats.innerHTML = statsHtml;
+  }).catch(function() { /* silently ignore usage poll errors */ });
 }
 
 function renderFocusView(data) {
