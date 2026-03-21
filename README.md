@@ -1,73 +1,39 @@
 # tutti
 
-Your agents, all together.
+**Your agents, all together.**
 
-Tutti is an open-source orchestration layer for multi-agent development. It sits above whatever agent CLIs you already use — Claude Code, Codex, Aider, Gemini CLI, or anything else — and turns independently-running agents into a coordinated team.
+5 AI agents running in tmux. A factory floor that shows you every machine at a glance. Click one — zoom in, watch it read files, write code, run tests in real time.
+
+![Factory floor — 5 agents working through an SDLC pipeline](docs/images/factory-floor.png)
+
+*Factory floor: planner idle, implementer and tester working, work-item dots flowing through the pipeline, live event stream below.*
+
+![Agent Focus Mode — live terminal, usage stats, git diff](docs/images/agent-focus.png)
+
+*Click a machine to zoom in: live terminal output, token usage (985K input, 41.6M cache read), git diff, prompt bar to send instructions.*
+
+## Install
+
+```bash
+cargo install tutti
+```
+
+## What is this?
+
+Tutti is an open-source orchestration layer for multi-agent development. It wraps around whatever agent CLIs you already use — Claude Code, Codex, Aider — and turns them into a coordinated team.
 
 No new subscriptions. No API keys. No vendor lock-in. Bring your own agents.
 
-```
-tt up                    # launch your agent team from a tutti.toml
-tt up --fresh-worktree   # recreate agent worktrees from current HEAD before launch
-tt up --mode safe        # keep interactive permission prompts
-tt up --mode unattended --policy bypass
-                         # max autonomy (highest risk)
-tt status                # see what every agent is doing right now
-tt diff frontend         # inspect agent branch + worktree changes
-tt land frontend         # cherry-pick agent commits into current branch
-tt land frontend --force # ignore local tracked-dirty check
-tt land frontend --pr    # push agent branch + open PR via gh
-tt review frontend       # send review packet to reviewer agent
-tt usage --by-workspace  # inspect API-profile token usage + plan % (Claude/Codex logs)
-tt watch                 # interactive terminal status dashboard
-tt switch                # fuzzy-pick a running agent and attach
-tt send frontend "Analyze the review page UX issues"
-                         # send ad-hoc prompt to a running session
-tt send frontend --wait --timeout-secs 900 "Analyze the review page UX issues"
-                         # wait for activity->idle completion
-tt send frontend --auto_up --wait --output "Analyze the review page UX issues"
-                         # auto-start if needed and print captured pane delta
-tt health --json         # probe + print machine-readable health
-tt detect frontend       # explain runtime detection matches + confidence
-tt detect frontend --json
-                         # machine-readable detector diagnostics
-tt serve --port 4040     # scheduler + probes + local /v1 control API
-tt handoff generate backend
-                         # write a handoff packet to .tutti/handoffs
-tt handoff apply backend # send latest packet into running backend session
-tt run verify-app        # run reusable workflow steps (prompt + commands)
-tt run --list            # show configured workflows
-tt run --list --json     # machine-readable workflow discovery
-tt run verify-app --dry-run --json
-                         # machine-readable resolved execution plan
-tt run verify-app --json # machine-readable workflow execution result
-tt run --resume <run_id> # resume a failed run from checkpoint state
-tt verify                # run verification workflow + persist summary
-tt verify --json         # machine-readable verify execution result
-tt verify --last         # show latest persisted verification summary
-tt verify --last --json  # machine-readable verify status
-tt doctor                # preflight runtime/profile/tool-pack prerequisites
-tt doctor --strict       # CI gate (warnings become failures)
-tt doctor --json         # machine-readable preflight report
-tt permissions check git status
-                         # evaluate team command policy
-tt permissions check git status --json
-                         # machine-readable policy decision
-tt logs backend -f       # follow captured output for an agent
-tt issue-claim acquire --label agent-ops
-                         # get exclusive lease on an unclaimed issue
-tt issue-claim heartbeat --state .tutti/state/auto/selected_issue.json
-                         # renew lease during long workflows
-tt issue-claim release --state .tutti/state/auto/selected_issue.json
-                         # release lease when workflow completes
-tt issue-claim sweep     # release all stale leases
-tt permissions suggest sdlc-auto
-                         # list all commands a workflow needs pre-approved
+```bash
+tt up                  # launch your agent team from a tutti.toml
+tt status              # see what every agent is doing
+tt serve --port 4040   # start the web dashboard
+tt run sdlc-auto       # run a full plan→implement→test→review→ship pipeline
 ```
 
 ## The Problem
 
-You're running 5+ agent sessions across terminals and monitors. Each one is powerful on its own. But *you* are the orchestration layer — manually tracking what each agent is working on, writing handoff packets when context runs thin, eyeballing token spend, and copy-pasting state between sessions.
+You're running 5+ agent sessions across terminals. Each one is powerful on its own. But *you* are the orchestration layer — manually tracking what each agent is working on, eyeballing token spend, and copy-pasting state between sessions.
 
 That doesn't scale. Tutti does.
 
@@ -154,7 +120,7 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.3.0 — March 2026)
+## Project Status (v0.6.0 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
@@ -176,7 +142,7 @@ source ~/.zshrc
 
 ### Planned / in progress
 - Session replacement flow (`tt handoff apply`) hardening and richer packet templates
-- Web dashboard and API/WebSocket UI
+- Image upload to remote agents (bridging files to agent context from the browser)
 - Provider-level failover/rate-limit rotation
 - Richer cost attribution and context-health telemetry
 - OpenClaw integration hardening (packaging templates + external registry examples)
