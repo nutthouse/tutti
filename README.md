@@ -488,6 +488,7 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - **Issues**: Bug reports, feature requests, questions
 - **Discussions**: Share your arrangements, talk about workflows
 - **PRs**: See CONTRIBUTING.md for guidelines
+- **Debugging**: See [docs/OPERATOR_DEBUGGING.md](docs/OPERATOR_DEBUGGING.md) for the operator failure-debugging loop
 
 ## Roadmap
 
