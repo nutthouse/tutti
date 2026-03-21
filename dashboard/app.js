@@ -459,6 +459,74 @@ function connectSSE() {
   es.onmessage = handler;
 }
 
+// ── Dispatch panel ──
+var $dispatchToggle = document.getElementById("dispatch-toggle");
+var $dispatchForm   = document.getElementById("dispatch-form");
+var $dispatchWf     = document.getElementById("dispatch-workflow");
+var $dispatchIssue  = document.getElementById("dispatch-issue");
+var $dispatchGo     = document.getElementById("dispatch-go");
+var $dispatchStatus = document.getElementById("dispatch-status");
+
+if ($dispatchToggle) {
+  $dispatchToggle.addEventListener("click", function() {
+    $dispatchForm.classList.toggle("open");
+    if ($dispatchForm.classList.contains("open") && $dispatchWf.options.length <= 1) {
+      loadWorkflows();
+    }
+  });
+}
+
+function loadWorkflows() {
+  fetch("/v1/workflows").then(function(res) { return res.json(); }).then(function(json) {
+    var wfs = (json.data && json.data.workflows) || json.data || [];
+    $dispatchWf.innerHTML = "";
+    if (wfs.length === 0) {
+      $dispatchWf.appendChild(new Option("no workflows", ""));
+      return;
+    }
+    for (var i = 0; i < wfs.length; i++) {
+      var name = typeof wfs[i] === "string" ? wfs[i] : (wfs[i].name || "");
+      if (name) $dispatchWf.appendChild(new Option(name, name));
+    }
+  }).catch(function() {
+    $dispatchWf.innerHTML = "";
+    $dispatchWf.appendChild(new Option("error loading", ""));
+  });
+}
+
+if ($dispatchGo) {
+  $dispatchGo.addEventListener("click", function() {
+    var wf = $dispatchWf.value;
+    if (!wf) return;
+    $dispatchGo.disabled = true;
+    $dispatchStatus.textContent = "dispatching…";
+    $dispatchStatus.className = "dispatch-status";
+
+    var body = { workflow: wf };
+    var issue = ($dispatchIssue.value || "").trim();
+    if (issue) body.issue = issue;
+
+    fetch("/v1/actions/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function(res) { return res.json(); }).then(function(json) {
+      $dispatchGo.disabled = false;
+      if (json.status === "ok") {
+        $dispatchStatus.textContent = "dispatched";
+        $dispatchStatus.className = "dispatch-status ok";
+      } else {
+        $dispatchStatus.textContent = (json.error && json.error.message) || "failed";
+        $dispatchStatus.className = "dispatch-status err";
+      }
+    }).catch(function(e) {
+      $dispatchGo.disabled = false;
+      $dispatchStatus.textContent = "error: " + e.message;
+      $dispatchStatus.className = "dispatch-status err";
+    });
+  });
+}
+
 // ── Boot ──
 fetchHealth().then(function() {
   connectSSE();
