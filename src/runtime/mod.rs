@@ -295,7 +295,8 @@ fn diagnose_with_config(config: &RuntimeConfig, terminal_output: &str) -> Detect
     let mut idle_score = weighted_pattern_score(idle_matches.len());
 
     let spinner_match = contains_spinner_glyph(&recent);
-    let claude_working_ellipsis = has_claude_working_ellipsis(&recent);
+    let is_claude = config.idle_patterns.contains(&"Claude Code");
+    let claude_working_ellipsis = is_claude && has_claude_working_ellipsis(&recent);
     if spinner_match {
         working_score = working_score.max(0.70);
     }
