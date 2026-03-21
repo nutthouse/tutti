@@ -20,6 +20,7 @@ var appState = {
   events: [],      // recent events (newest first), capped at 50
   eventCount: 0,
   selectedAgent: null, // composite key of currently selected agent
+  selectedRun: null,   // correlation_id of currently selected run
   runs: {},        // correlation_id -> run state { stage, status, steps, workflow_name }
 };
 
@@ -30,6 +31,17 @@ function runStageFromEvent(evt) {
   var agent = evt.agent || (evt.data && evt.data.agent);
   if (agent) return stageFor(agent);
   return null;
+}
+
+// Format milliseconds as human-readable duration
+function formatDuration(ms) {
+  if (!ms && ms !== 0) return "—";
+  if (ms < 1000) return ms + "ms";
+  var s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60);
+  s = s % 60;
+  return m + "m " + s + "s";
 }
 
 // Process a workflow event and update run tracking state
@@ -45,7 +57,8 @@ function processWorkflowEvent(evt) {
       stepIndex: 0,
       totalSteps: (evt.data && evt.data.total_steps) || 0,
       workflowName: (evt.data && evt.data.workflow_name) || "",
-      startedAt: evt.timestamp
+      startedAt: evt.timestamp,
+      steps: []  // step timeline entries
     };
     return;
   }
@@ -58,13 +71,39 @@ function processWorkflowEvent(evt) {
     run.stepIndex = (evt.data && evt.data.step_index) || run.stepIndex;
     run.totalSteps = (evt.data && evt.data.total_steps) || run.totalSteps;
     run.status = "running";
+    // Record step start in timeline
+    var idx = evt.data && evt.data.step_index;
+    if (idx) {
+      run.steps[idx] = {
+        index: idx,
+        type: (evt.data && evt.data.step_type) || "unknown",
+        agent: evt.agent || null,
+        stage: run.stage,
+        status: "running",
+        startedAt: evt.timestamp,
+        durationMs: null,
+        message: null
+      };
+    }
   } else if (evt.event === "workflow.step.completed") {
-    // step done — stage will update when next step starts
+    var cidx = evt.data && evt.data.step_index;
+    if (cidx && run.steps[cidx]) {
+      run.steps[cidx].status = "completed";
+      run.steps[cidx].durationMs = (evt.data && evt.data.duration_ms) || null;
+      run.steps[cidx].message = (evt.data && evt.data.message) || null;
+    }
   } else if (evt.event === "workflow.step.failed") {
     run.stage = runStageFromEvent(evt);
     run.status = "failed";
+    var fidx = evt.data && evt.data.step_index;
+    if (fidx && run.steps[fidx]) {
+      run.steps[fidx].status = "failed";
+      run.steps[fidx].durationMs = (evt.data && evt.data.duration_ms) || null;
+      run.steps[fidx].message = (evt.data && evt.data.message) || null;
+    }
   } else if (evt.event === "workflow.completed") {
     run.status = "completed";
+    run.finishedAt = evt.timestamp;
     // Auto-remove completed runs after 8 seconds so the dot exits
     setTimeout(function() {
       delete appState.runs[id];
@@ -72,6 +111,7 @@ function processWorkflowEvent(evt) {
     }, 8000);
   } else if (evt.event === "workflow.failed") {
     run.status = "failed";
+    run.finishedAt = evt.timestamp;
   }
 }
 
@@ -236,7 +276,11 @@ function renderPipeline() {
         var dot = el("span", "run-dot");
         if (stageRuns[r].status === "failed") dot.classList.add("run-dot-failed");
         else dot.classList.add("run-dot-active");
+        if (appState.selectedRun === stageRuns[r].id) dot.classList.add("run-dot-selected");
         dot.title = stageRuns[r].workflowName + " (step " + stageRuns[r].stepIndex + "/" + stageRuns[r].totalSteps + ")";
+        dot.addEventListener("click", (function(rid) {
+          return function(e) { e.stopPropagation(); selectRun(rid); };
+        })(stageRuns[r].id));
         dotsRow.appendChild(dot);
       }
       card.appendChild(dotsRow);
@@ -265,8 +309,22 @@ function renderPipeline() {
   }
   var $hudRuns = document.getElementById("hud-runs");
   if ($hudRuns) {
-    $hudRuns.textContent = runningCount > 0 ? runningCount + " run" + (runningCount > 1 ? "s" : "") : "";
-    $hudRuns.className = "hud-item" + (runningCount > 0 ? " active-run" : "");
+    if (runningCount > 0) {
+      // Show run count + current stage of first running run
+      var runStageLabel = "";
+      for (i = 0; i < runIds.length; i++) {
+        var r = appState.runs[runIds[i]];
+        if (r.status === "running" && r.stage) {
+          runStageLabel = " \u2192 " + r.stage + " " + r.stepIndex + "/" + r.totalSteps;
+          break;
+        }
+      }
+      $hudRuns.textContent = runningCount + " run" + (runningCount > 1 ? "s" : "") + runStageLabel;
+      $hudRuns.className = "hud-item active-run";
+    } else {
+      $hudRuns.textContent = "";
+      $hudRuns.className = "hud-item";
+    }
   }
 
   // Bottleneck indicator
@@ -336,11 +394,88 @@ function selectAgent(key) {
 
 function closeDrawer() {
   appState.selectedAgent = null;
+  appState.selectedRun = null;
   $drawer.classList.remove("open");
   renderPipeline();
 }
 
 $detailClose.addEventListener("click", closeDrawer);
+
+// ── Run detail drawer (step timeline) ──
+function selectRun(runId) {
+  if (appState.selectedRun === runId) {
+    closeDrawer();
+    return;
+  }
+  appState.selectedRun = runId;
+  appState.selectedAgent = null;
+  var run = appState.runs[runId];
+  if (!run) { closeDrawer(); return; }
+
+  $detailName.textContent = run.workflowName + " — " + run.status;
+
+  // Meta info
+  $detailMeta.innerHTML = "";
+  var meta = [
+    ["run", runId.substring(0, 12)],
+    ["status", run.status],
+    ["step", run.stepIndex + "/" + run.totalSteps],
+    ["started", timeAgo(run.startedAt)],
+  ];
+  if (run.finishedAt) meta.push(["finished", timeAgo(run.finishedAt)]);
+  if (run.stage) meta.push(["stage", run.stage]);
+  for (var i = 0; i < meta.length; i++) {
+    var s = el("span", null, null);
+    var label = el("span", null, meta[i][0] + ":");
+    s.appendChild(label);
+    s.appendChild(document.createTextNode(" " + meta[i][1]));
+    $detailMeta.appendChild(s);
+  }
+
+  // Step timeline
+  while ($detailEvts.firstChild) $detailEvts.removeChild($detailEvts.firstChild);
+  var hasSteps = false;
+  for (var j = 1; j <= run.totalSteps; j++) {
+    var step = run.steps[j];
+    if (!step) continue;
+    hasSteps = true;
+    var li = document.createElement("li");
+    li.className = "step-row";
+
+    // Step index badge
+    var badge = el("span", "step-badge", String(step.index));
+    if (step.status === "completed") badge.classList.add("step-ok");
+    else if (step.status === "failed") badge.classList.add("step-fail");
+    else badge.classList.add("step-running");
+    li.appendChild(badge);
+
+    // Step type + agent
+    var desc = step.type;
+    if (step.agent) desc += " \u2192 " + step.agent;
+    li.appendChild(el("span", "step-desc", desc));
+
+    // Duration
+    if (step.durationMs !== null) {
+      li.appendChild(el("span", "step-dur", formatDuration(step.durationMs)));
+    } else if (step.status === "running") {
+      li.appendChild(el("span", "step-dur running-text", "running\u2026"));
+    }
+
+    // Failure message
+    if (step.status === "failed" && step.message) {
+      var msg = el("div", "step-msg", step.message);
+      li.appendChild(msg);
+    }
+
+    $detailEvts.appendChild(li);
+  }
+  if (!hasSteps) {
+    $detailEvts.appendChild(el("li", null, "no steps recorded yet"));
+  }
+
+  $drawer.classList.add("open");
+  renderPipeline();
+}
 
 // ── Render the event timeline ──
 function renderTimeline() {
@@ -403,8 +538,16 @@ function fetchHealth() {
 function connectSSE() {
   var es = new EventSource("/v1/events/stream");
 
+  var wasConnected = false;
+
   es.onopen = function() {
     $connDot.className = "conn-dot connected";
+    // On reconnect, refetch health + events to recover missed state
+    if (wasConnected) {
+      fetchHealth();
+      reconstructRuns();
+    }
+    wasConnected = true;
   };
 
   es.onerror = function() {
@@ -527,8 +670,33 @@ if ($dispatchGo) {
   });
 }
 
+// ── Historical run reconstruction ──
+// Fetch past events from /v1/events and replay workflow events to rebuild run state
+function reconstructRuns() {
+  return fetch("/v1/events").then(function(res) {
+    return res.json();
+  }).then(function(json) {
+    var events = json.data || [];
+    // Events come oldest-first from the API; replay in order
+    for (var i = 0; i < events.length; i++) {
+      var evt = events[i];
+      if (evt.event && evt.event.indexOf("workflow.") === 0) {
+        processWorkflowEvent(evt);
+      }
+      // Also populate the event timeline (newest first)
+      appState.events.unshift(evt);
+      if (appState.events.length > 50) appState.events.length = 50;
+    }
+    scheduleRender();
+  }).catch(function(e) {
+    console.warn("event reconstruction failed:", e);
+  });
+}
+
 // ── Boot ──
 fetchHealth().then(function() {
+  return reconstructRuns();
+}).then(function() {
   connectSSE();
   // Re-fetch health periodically to stay in sync
   setInterval(fetchHealth, 15000);

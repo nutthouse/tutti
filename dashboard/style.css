@@ -326,6 +326,46 @@ main#factory {
 #detail-drawer .detail-events .evt-type { color: var(--text-secondary); font-weight: 500; }
 #detail-drawer .detail-events .evt-time { float: right; font-size: 0.625rem; }
 
+/* step timeline rows */
+.step-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.step-badge.step-ok { border-color: var(--working); color: var(--working); }
+.step-badge.step-fail { border-color: var(--blocked); color: var(--blocked); background: rgba(239,68,68,0.1); }
+.step-badge.step-running { border-color: var(--working); color: var(--working); animation: dot-pulse 1.2s ease-in-out infinite; }
+.step-desc { color: var(--text-secondary); flex: 1; min-width: 0; }
+.step-dur { color: var(--dim); font-size: 0.625rem; flex-shrink: 0; }
+.step-dur.running-text { color: var(--working); }
+.step-msg {
+  width: 100%;
+  color: var(--blocked);
+  font-size: 0.625rem;
+  padding: 2px 0 2px 28px;
+  word-break: break-word;
+}
+
+/* selected run dot */
+.run-dot-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ── dispatch panel ── */
 #dispatch-panel {
   border-top: 1px solid var(--border);

@@ -215,6 +215,16 @@ function runStageFromEvent(evt) {
   return null;
 }
 
+function formatDuration(ms) {
+  if (!ms && ms !== 0) return "\u2014";
+  if (ms < 1000) return ms + "ms";
+  var s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60);
+  s = s % 60;
+  return m + "m " + s + "s";
+}
+
 function processWorkflowEvent(evt) {
   var id = evt.correlation_id;
   if (!id) return;
@@ -223,7 +233,8 @@ function processWorkflowEvent(evt) {
       id: id, status: "running", stage: null, stepIndex: 0,
       totalSteps: (evt.data && evt.data.total_steps) || 0,
       workflowName: (evt.data && evt.data.workflow_name) || "",
-      startedAt: evt.timestamp
+      startedAt: evt.timestamp,
+      steps: []
     };
     return;
   }
@@ -234,13 +245,36 @@ function processWorkflowEvent(evt) {
     run.stepIndex = (evt.data && evt.data.step_index) || run.stepIndex;
     run.totalSteps = (evt.data && evt.data.total_steps) || run.totalSteps;
     run.status = "running";
+    var idx = evt.data && evt.data.step_index;
+    if (idx) {
+      run.steps[idx] = {
+        index: idx, type: (evt.data && evt.data.step_type) || "unknown",
+        agent: evt.agent || null, stage: run.stage,
+        status: "running", startedAt: evt.timestamp,
+        durationMs: null, message: null
+      };
+    }
+  } else if (evt.event === "workflow.step.completed") {
+    var cidx = evt.data && evt.data.step_index;
+    if (cidx && run.steps[cidx]) {
+      run.steps[cidx].status = "completed";
+      run.steps[cidx].durationMs = (evt.data && evt.data.duration_ms) || null;
+    }
   } else if (evt.event === "workflow.step.failed") {
     run.stage = runStageFromEvent(evt);
     run.status = "failed";
+    var fidx = evt.data && evt.data.step_index;
+    if (fidx && run.steps[fidx]) {
+      run.steps[fidx].status = "failed";
+      run.steps[fidx].durationMs = (evt.data && evt.data.duration_ms) || null;
+      run.steps[fidx].message = (evt.data && evt.data.message) || null;
+    }
   } else if (evt.event === "workflow.completed") {
     run.status = "completed";
+    run.finishedAt = evt.timestamp;
   } else if (evt.event === "workflow.failed") {
     run.status = "failed";
+    run.finishedAt = evt.timestamp;
   }
 }
 
@@ -249,7 +283,7 @@ function runsAtStage(stage) {
   var ids = Object.keys(testRuns);
   for (var i = 0; i < ids.length; i++) {
     var run = testRuns[ids[i]];
-    if (run.stage === stage) result.push(run);
+    if (run.stage === stage && run.status !== "completed" && run.status !== "failed") result.push(run);
   }
   return result;
 }
@@ -360,6 +394,92 @@ testRuns = {};
 var prevKeys = Object.keys(testRuns).length;
 processWorkflowEvent({ event: "workflow.started", data: {} });
 assert("no run created without correlation_id", Object.keys(testRuns).length, prevKeys);
+
+suite("formatDuration");
+assert("null returns dash", formatDuration(null), "\u2014");
+assert("undefined returns dash", formatDuration(undefined), "\u2014");
+assert("0ms", formatDuration(0), "0ms");
+assert("500ms", formatDuration(500), "500ms");
+assert("999ms", formatDuration(999), "999ms");
+assert("1000ms = 1s", formatDuration(1000), "1s");
+assert("5500ms = 5s", formatDuration(5500), "5s");
+assert("61000ms = 1m 1s", formatDuration(61000), "1m 1s");
+assert("120000ms = 2m 0s", formatDuration(120000), "2m 0s");
+
+suite("step timeline tracking");
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "st-1",
+  data: { workflow_name: "sdlc", total_steps: 3 },
+  timestamp: "2026-03-21T05:00:00Z"
+});
+assertTruthy("run has steps array", Array.isArray(testRuns["st-1"].steps));
+assert("steps array starts empty", testRuns["st-1"].steps.length, 0);
+
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "st-1",
+  agent: "planner", data: { step_index: 1, step_type: "prompt", total_steps: 3 },
+  timestamp: "2026-03-21T05:00:01Z"
+});
+assertTruthy("step 1 recorded", testRuns["st-1"].steps[1]);
+assert("step 1 type is prompt", testRuns["st-1"].steps[1].type, "prompt");
+assert("step 1 agent is planner", testRuns["st-1"].steps[1].agent, "planner");
+assert("step 1 status is running", testRuns["st-1"].steps[1].status, "running");
+assertNull("step 1 duration is null while running", testRuns["st-1"].steps[1].durationMs);
+
+processWorkflowEvent({
+  event: "workflow.step.completed", correlation_id: "st-1",
+  agent: "planner", data: { step_index: 1, duration_ms: 82000 }
+});
+assert("step 1 status is completed", testRuns["st-1"].steps[1].status, "completed");
+assert("step 1 duration is 82000", testRuns["st-1"].steps[1].durationMs, 82000);
+
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "st-1",
+  agent: "implementer", data: { step_index: 2, step_type: "prompt", total_steps: 3 },
+  timestamp: "2026-03-21T05:01:23Z"
+});
+processWorkflowEvent({
+  event: "workflow.step.failed", correlation_id: "st-1",
+  agent: "implementer", data: { step_index: 2, duration_ms: 43000, message: "no commit produced" }
+});
+assert("step 2 status is failed", testRuns["st-1"].steps[2].status, "failed");
+assert("step 2 duration recorded", testRuns["st-1"].steps[2].durationMs, 43000);
+assert("step 2 failure message", testRuns["st-1"].steps[2].message, "no commit produced");
+
+suite("runsAtStage — excludes terminal runs");
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "term-1",
+  data: { workflow_name: "a", total_steps: 2 },
+  timestamp: new Date().toISOString()
+});
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "term-1",
+  agent: "planner", data: { step_index: 1 }
+});
+assert("running run shows at planner", runsAtStage("planner").length, 1);
+processWorkflowEvent({
+  event: "workflow.completed", correlation_id: "term-1",
+  data: { success: true }
+});
+assert("completed run excluded from stage", runsAtStage("planner").length, 0);
+
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "term-2",
+  data: { workflow_name: "b", total_steps: 2 },
+  timestamp: new Date().toISOString()
+});
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "term-2",
+  agent: "tester", data: { step_index: 1 }
+});
+processWorkflowEvent({
+  event: "workflow.failed", correlation_id: "term-2",
+  data: { success: false }
+});
+assert("failed run excluded from stage", runsAtStage("tester").length, 0);
 
 // ── Summary ──
 var $summary = document.getElementById("summary");
