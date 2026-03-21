@@ -639,12 +639,22 @@ function enterFocusMode(workspace, agent) {
   $focusView.style.display = "flex";
 
   $focusAgentName.textContent = agent;
-  $focusTerminal.textContent = "Connecting\u2026";
+
+  // Pre-populate from cached health data for instant render
+  var key = agentKey(workspace, agent);
+  var cached = appState.agents[key];
+  if (cached) {
+    var sc = stateClass(cached);
+    $focusStatus.textContent = "\u25CF " + stateLabel(cached);
+    $focusStatus.className = "focus-status " + sc;
+    $focusMeta.textContent = cached.session_name || "";
+  }
+  $focusTerminal.textContent = (cached && cached.running) ? "Loading terminal\u2026" : "";
   $focusStats.innerHTML = "";
-  $focusDiff.innerHTML = '<div class="focus-diff-empty">Loading diff\u2026</div>';
+  $focusDiff.innerHTML = '<div class="focus-diff-empty">Loading\u2026</div>';
   $focusProgress.innerHTML = "";
 
-  // Start polling
+  // Start polling — first call fires immediately
   pollFocus();
   focusPollId = setInterval(pollFocus, 2000);
 }
