@@ -89,6 +89,21 @@ Dashboard metrics should surface operational state, not vanity counters:
 4. Event timeline (supporting detail)
 5. Selected-run/selected-stage detail (on interaction)
 
+### Agent Focus Mode (The Bigger IDE)
+Click a stage card → factory floor fades, full-screen agent view appears. The Factorio zoom-in.
+
+**Layout**: terminal pane (70% width) + sidebar (30%) + fixed prompt bar at bottom.
+- Terminal: `--bg` background, `--font-mono` 12px, 1.6 line-height. Tool calls in `--working` green, prompts in `--accent` indigo.
+- Sidebar sections (top to bottom, most→least dynamic): Usage → Changes → Progress.
+- Prompt bar: 48px height, matches dispatch panel styling.
+- Context % fill bar: `--working` green (≤70%), `--auth-fail` amber (70-90%), `--blocked` red (>90%).
+
+**Mobile (<768px)**: terminal full-width, sidebar sections in horizontally swipeable tabs (44px touch targets), prompt bar fixed at bottom with 16px font (prevents iOS zoom).
+
+**Transitions**: enter with `ease-out` 250ms opacity, exit with `ease-in` 200ms. Smart auto-scroll: terminal stays at bottom unless user scrolled up.
+
+**Empty states**: "Agent is not running." with green "Start Agent" CTA button. "No changes yet." for empty diff. "—" for missing usage data.
+
 ### Anti-Slop Rules
 - No generic observability cards as the whole product
 - No agent avatars or chatbot framing

@@ -595,7 +595,7 @@ fn route_read(
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(200)
                     .clamp(1, 10_000);
-                agent_focus_data(workspace, agent_name, lines, targets)
+                agent_focus_data(workspace, agent_name, lines, query, targets)
             } else {
                 Err(TuttiError::ConfigValidation(
                     "invalid agent focus path".to_string(),
@@ -1056,6 +1056,7 @@ fn agent_focus_data(
     workspace: &str,
     agent_name: &str,
     lines: u32,
+    query: &HashMap<String, String>,
     targets: &[WorkspaceTarget],
 ) -> Result<Value> {
     let target = targets
@@ -1087,16 +1088,22 @@ fn agent_focus_data(
     // Context % — extract from the terminal output we just captured
     let context_pct = snapshot::extract_context_pct_for_runtime(runtime, &terminal_output);
 
-    // Usage stats — scan workspace usage and extract per-agent data
-    let since = chrono::Utc::now() - chrono::Duration::days(7);
-    let usage_data = crate::usage::scan_workspace_usage(
-        &target.project_root,
-        &target.config.workspace.name,
-        since,
-    )
-    .ok()
-    .and_then(|wu| wu.by_agent.get(agent_name).cloned())
-    .unwrap_or_default();
+    // Usage stats — expensive filesystem scan (~10s on large projects).
+    // Only compute when ?usage=1 is passed. The dashboard requests this
+    // on a slower 30s cadence, not on every 2s terminal poll.
+    let usage_data = if query.get("usage").map(|v| v == "1").unwrap_or(false) {
+        let since = chrono::Utc::now() - chrono::Duration::days(7);
+        crate::usage::scan_workspace_usage(
+            &target.project_root,
+            &target.config.workspace.name,
+            since,
+        )
+        .ok()
+        .and_then(|wu| wu.by_agent.get(agent_name).cloned())
+        .unwrap_or_default()
+    } else {
+        crate::usage::AggregatedUsage::default()
+    };
 
     // Git diff — resolve worktree and run git diff
     let worktree_path = target
