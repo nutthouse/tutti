@@ -58,6 +58,18 @@ pub enum TuttiError {
 
     #[error("remote connectivity error: {0}")]
     RemoteConnection(String),
+
+    #[error("invalid or unknown API key")]
+    AuthKeyInvalid,
+
+    #[error("API key has expired")]
+    AuthKeyExpired,
+
+    #[error("permission denied: {0}")]
+    AuthPermissionDenied(String),
+
+    #[error("failed to write audit log: {0}")]
+    AuthAuditWrite(String),
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;

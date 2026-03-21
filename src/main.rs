@@ -1,3 +1,4 @@
+mod auth;
 mod automation;
 mod budget;
 mod cli;

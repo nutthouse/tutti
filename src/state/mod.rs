@@ -408,6 +408,10 @@ impl From<&TuttiError> for FailureCategory {
             TuttiError::IssueClaim(_) => FailureCategory::Policy,
             TuttiError::AgentNotFound(_) => FailureCategory::Config,
             TuttiError::Ssh(_) | TuttiError::RemoteConnection(_) => FailureCategory::Runtime,
+            TuttiError::AuthKeyInvalid
+            | TuttiError::AuthKeyExpired
+            | TuttiError::AuthPermissionDenied(_) => FailureCategory::Policy,
+            TuttiError::AuthAuditWrite(_) => FailureCategory::Tool,
             TuttiError::Io(_) => FailureCategory::Unknown,
         }
     }
@@ -465,6 +469,18 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
         }
         TuttiError::RemoteConnection(_) => {
             "Verify the remote tutti instance is running with `tt remote status`".to_string()
+        }
+        TuttiError::AuthKeyInvalid => {
+            "Regenerate a key with `tt auth key-gen` or check the key value".to_string()
+        }
+        TuttiError::AuthKeyExpired => {
+            "Generate a new key with `tt auth key-gen`".to_string()
+        }
+        TuttiError::AuthPermissionDenied(_) => {
+            "Ask a workspace Owner to grant a higher role".to_string()
+        }
+        TuttiError::AuthAuditWrite(_) => {
+            "Check .tutti/auth/audit.log permissions and disk space".to_string()
         }
         TuttiError::Io(_) => "Check file permissions and disk space".to_string(),
         TuttiError::Json(_) => {
