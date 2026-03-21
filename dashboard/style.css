@@ -357,7 +357,7 @@ main#factory {
   color: var(--blocked);
   font-size: 0.625rem;
   padding: 2px 0 2px 28px;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 /* selected run dot */

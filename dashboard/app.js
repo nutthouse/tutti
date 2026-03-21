@@ -89,7 +89,7 @@ function processWorkflowEvent(evt) {
     var cidx = evt.data && evt.data.step_index;
     if (cidx && run.steps[cidx]) {
       run.steps[cidx].status = "completed";
-      run.steps[cidx].durationMs = (evt.data && evt.data.duration_ms) || null;
+      run.steps[cidx].durationMs = (evt.data && evt.data.duration_ms != null) ? evt.data.duration_ms : null;
       run.steps[cidx].message = (evt.data && evt.data.message) || null;
     }
   } else if (evt.event === "workflow.step.failed") {
@@ -273,7 +273,7 @@ function renderPipeline() {
     if (stageRuns.length > 0) {
       var dotsRow = el("div", "run-dots");
       for (var r = 0; r < stageRuns.length; r++) {
-        var dot = el("span", "run-dot");
+        var dot = el("button", "run-dot");
         if (stageRuns[r].status === "failed") dot.classList.add("run-dot-failed");
         else dot.classList.add("run-dot-active");
         if (appState.selectedRun === stageRuns[r].id) dot.classList.add("run-dot-selected");
@@ -542,10 +542,12 @@ function connectSSE() {
 
   es.onopen = function() {
     $connDot.className = "conn-dot connected";
-    // On reconnect, refetch health + events to recover missed state
+    // On reconnect, refetch health snapshot only — don't replay the full
+    // event log into live state as it can duplicate run entries and refire
+    // side effects. The SSE stream will deliver any events missed during
+    // the disconnection window.
     if (wasConnected) {
       fetchHealth();
-      reconstructRuns();
     }
     wasConnected = true;
   };
