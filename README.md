@@ -85,36 +85,7 @@ wait_for_idle = true
 
 Version it. Share it. Fork someone else's.
 
-## Quick Start
-
-```bash
-# Install from crates.io
-cargo install tutti
-
-# Or install from source
-git clone https://github.com/nutthouse/tutti.git
-cd tutti
-cargo install --path . --locked
-
-# Initialize in your project
-cd your-project
-tt init
-
-# Edit your team config
-$EDITOR tutti.toml
-
-# Launch
-tt up
-```
-
-If `tt` is not found after install, add Cargo bin to your shell PATH:
-
-```bash
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-## Project Status (v0.5.0 — March 2026)
+## Project Status (v0.6.0 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
@@ -469,7 +440,6 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [ ] Agent-to-agent message bus
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
-- [x] Web dashboard (factory floor + Agent Focus Mode)
 
 ## License
 
