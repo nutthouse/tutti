@@ -262,9 +262,16 @@ function renderPipeline() {
       card.appendChild(el("span", "state-chip", stateLabel(primary)));
       card.appendChild(el("div", "agent-runtime", primary.runtime || "\u2014"));
 
-      // Click handler — enter focus mode
+      // Click + keyboard handler — enter focus mode
+      card.setAttribute("tabindex", "0");
+      card.setAttribute("role", "button");
       card.addEventListener("click", (function(ws, ag) {
         return function() { enterFocusMode(ws, ag); };
+      })(primary.workspace, primary.agent));
+      card.addEventListener("keydown", (function(ws, ag) {
+        return function(e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); enterFocusMode(ws, ag); }
+        };
       })(primary.workspace, primary.agent));
     }
 
@@ -617,6 +624,7 @@ var $focusProgress = document.getElementById("focus-progress");
 var $focusInput    = document.getElementById("focus-prompt-input");
 var $focusSend     = document.getElementById("focus-send");
 var focusPollId    = null;
+var focusPolling   = false;
 
 function enterFocusMode(workspace, agent) {
   appState.view = "focus";
@@ -665,13 +673,17 @@ document.addEventListener("keydown", function(e) {
 function pollFocus() {
   var fa = appState.focusAgent;
   if (!fa) return;
+  if (focusPolling) return; // prevent overlapping polls
+  focusPolling = true;
   var url = "/v1/agents/" + encodeURIComponent(fa.workspace) + "/" + encodeURIComponent(fa.agent) + "/focus?lines=200";
   fetch(url).then(function(res) { return res.json(); }).then(function(json) {
+    focusPolling = false;
     // Stale guard: if agent changed mid-flight, discard
     if (!appState.focusAgent || appState.focusAgent.workspace !== fa.workspace || appState.focusAgent.agent !== fa.agent) return;
     if (!json.data) return;
     renderFocusView(json.data);
   }).catch(function() {
+    focusPolling = false;
     // Network error — show reconnecting state
     if (appState.focusAgent && appState.focusAgent.agent === fa.agent) {
       $focusTerminal.textContent = "Connection lost. Reconnecting\u2026";
@@ -701,7 +713,10 @@ function renderFocusView(data) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agent: fa.agent, workspace: fa.workspace })
-      }).then(function() { startBtn.textContent = "Started"; })
+      }).then(function(res) {
+          if (!res.ok) { startBtn.textContent = "Failed"; startBtn.disabled = false; }
+          else { startBtn.textContent = "Started"; }
+        })
         .catch(function() { startBtn.textContent = "Failed"; startBtn.disabled = false; });
     });
     emptyDiv.appendChild(startBtn);
@@ -772,7 +787,7 @@ function renderFocusView(data) {
 }
 
 function statRow(label, value, colorClass) {
-  return '<div class="focus-stat-row"><span class="focus-stat-label">' + label + '</span><span class="focus-stat-value' + (colorClass ? ' ' + colorClass : '') + '">' + value + '</span></div>';
+  return '<div class="focus-stat-row"><span class="focus-stat-label">' + escapeHtml(label) + '</span><span class="focus-stat-value' + (colorClass ? ' ' + colorClass : '') + '">' + escapeHtml(String(value)) + '</span></div>';
 }
 
 function formatTokens(n) {

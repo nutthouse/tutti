@@ -593,7 +593,8 @@ fn route_read(
                 let lines: u32 = query
                     .get("lines")
                     .and_then(|v| v.parse().ok())
-                    .unwrap_or(200);
+                    .unwrap_or(200)
+                    .clamp(1, 10_000);
                 agent_focus_data(workspace, agent_name, lines, targets)
             } else {
                 Err(TuttiError::ConfigValidation(
@@ -1062,6 +1063,16 @@ fn agent_focus_data(
         .find(|t| t.name == workspace)
         .ok_or_else(|| TuttiError::AgentNotFound(format!("{workspace}/{agent_name}")))?;
 
+    // Validate agent exists in this workspace's config
+    let agent_config = target
+        .config
+        .agents
+        .iter()
+        .find(|a| a.name == agent_name)
+        .ok_or_else(|| TuttiError::AgentNotFound(format!("{workspace}/{agent_name}")))?;
+
+    let runtime = agent_config.runtime.as_deref().unwrap_or("claude-code");
+
     let session =
         crate::session::TmuxSession::session_name(&target.config.workspace.name, agent_name);
     let running = crate::session::TmuxSession::session_exists(&session);
@@ -1074,13 +1085,6 @@ fn agent_focus_data(
     };
 
     // Context % — extract from the terminal output we just captured
-    let runtime = target
-        .config
-        .agents
-        .iter()
-        .find(|a| a.name == agent_name)
-        .and_then(|a| a.runtime.as_deref())
-        .unwrap_or("claude-code");
     let context_pct = snapshot::extract_context_pct_for_runtime(runtime, &terminal_output);
 
     // Usage stats — scan workspace usage and extract per-agent data
