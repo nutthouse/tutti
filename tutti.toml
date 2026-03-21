@@ -209,6 +209,7 @@ agent = "implementer"
 inject_files = [".tutti/state/auto/selected_issue.json", ".tutti/state/auto/branch.json"]
 wait_for_idle = true
 wait_timeout_secs = 3600
+startup_grace_secs = 120
 text = """
 Read the full issue body from .tutti/state/auto/selected_issue.json, read the planner handoff JSON from {{output.plan_issue.path}}, and use .tutti/state/auto/branch.json as source of truth for the target branch. Implement only the smallest coherent code slice that advances the issue and aligns with plan_issue.first_slice. Inspect only the files named in the plan plus any directly adjacent test/helper files you need.
 
