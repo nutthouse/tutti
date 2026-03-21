@@ -583,6 +583,24 @@ fn route_read(
                 ))
             }
         }
+        _ if path.starts_with("/v1/agents/") && path.contains("/focus") => {
+            // GET /v1/agents/{workspace}/{agent}/focus?lines=200
+            let parts: Vec<&str> = path.split('/').collect();
+            // Expected: ["", "v1", "agents", "{workspace}", "{agent}", "focus"]
+            if parts.len() == 6 && parts[5] == "focus" {
+                let workspace = parts[3];
+                let agent_name = parts[4];
+                let lines: u32 = query
+                    .get("lines")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(200);
+                agent_focus_data(workspace, agent_name, lines, targets)
+            } else {
+                Err(TuttiError::ConfigValidation(
+                    "invalid agent focus path".to_string(),
+                ))
+            }
+        }
         _ => Err(TuttiError::ConfigValidation("not found".to_string())),
     }
 }
@@ -1029,6 +1047,143 @@ fn idempotency_save(
     );
     std::fs::write(file, serde_json::to_string_pretty(&map)?)?;
     Ok(())
+}
+
+/// Combined focus endpoint — terminal output, usage stats, git diff, and context %
+/// in a single response. Polled at 2s by the dashboard focus view.
+fn agent_focus_data(
+    workspace: &str,
+    agent_name: &str,
+    lines: u32,
+    targets: &[WorkspaceTarget],
+) -> Result<Value> {
+    let target = targets
+        .iter()
+        .find(|t| t.name == workspace)
+        .ok_or_else(|| TuttiError::AgentNotFound(format!("{workspace}/{agent_name}")))?;
+
+    let session =
+        crate::session::TmuxSession::session_name(&target.config.workspace.name, agent_name);
+    let running = crate::session::TmuxSession::session_exists(&session);
+
+    // Terminal output
+    let terminal_output = if running {
+        crate::session::TmuxSession::capture_pane(&session, lines).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Context % — extract from the terminal output we just captured
+    let runtime = target
+        .config
+        .agents
+        .iter()
+        .find(|a| a.name == agent_name)
+        .and_then(|a| a.runtime.as_deref())
+        .unwrap_or("claude-code");
+    let context_pct = snapshot::extract_context_pct_for_runtime(runtime, &terminal_output);
+
+    // Usage stats — scan workspace usage and extract per-agent data
+    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    let usage_data = crate::usage::scan_workspace_usage(
+        &target.project_root,
+        &target.config.workspace.name,
+        since,
+    )
+    .ok()
+    .and_then(|wu| wu.by_agent.get(agent_name).cloned())
+    .unwrap_or_default();
+
+    // Git diff — resolve worktree and run git diff
+    let worktree_path = target
+        .project_root
+        .join(".tutti")
+        .join("worktrees")
+        .join(agent_name);
+    let (diff_text, files_changed, insertions, deletions) = if worktree_path.exists() {
+        let diff = std::process::Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(&worktree_path)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        let stat = std::process::Command::new("git")
+            .args(["diff", "HEAD", "--stat"])
+            .current_dir(&worktree_path)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        // Parse stat summary: " N files changed, M insertions(+), D deletions(-)"
+        let (fc, ins, del) = parse_diff_stat(&stat);
+        (diff, fc, ins, del)
+    } else {
+        (String::new(), 0, 0, 0)
+    };
+
+    Ok(api_ok(
+        "agent.focus",
+        json!({
+            "workspace": workspace,
+            "agent": agent_name,
+            "session": session,
+            "running": running,
+            "terminal": terminal_output,
+            "context_pct": context_pct,
+            "usage": {
+                "input_tokens": usage_data.total.input_tokens,
+                "output_tokens": usage_data.total.output_tokens,
+                "cache_read": usage_data.total.cache_read_input_tokens,
+                "cache_write": usage_data.total.cache_creation_input_tokens,
+            },
+            "diff": {
+                "text": diff_text,
+                "files_changed": files_changed,
+                "insertions": insertions,
+                "deletions": deletions,
+            }
+        }),
+    ))
+}
+
+fn parse_diff_stat(stat: &str) -> (usize, usize, usize) {
+    // Parse git diff --stat summary line:
+    // " 3 files changed, 45 insertions(+), 12 deletions(-)"
+    let mut files = 0;
+    let mut ins = 0;
+    let mut del = 0;
+    for line in stat.lines().rev() {
+        let l = line.trim();
+        if l.contains("changed") {
+            for part in l.split(',') {
+                let p = part.trim();
+                if p.contains("file") {
+                    files = p
+                        .split_whitespace()
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
+                } else if p.contains("insertion") {
+                    ins = p
+                        .split_whitespace()
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
+                } else if p.contains("deletion") {
+                    del = p
+                        .split_whitespace()
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or(0);
+                }
+            }
+            break;
+        }
+    }
+    (files, ins, del)
 }
 
 /// Gather agent status snapshots across all served workspaces

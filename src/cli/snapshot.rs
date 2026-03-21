@@ -184,7 +184,7 @@ fn detect_status(
     }
 }
 
-fn extract_context_pct_for_runtime(runtime_name: &str, output: &str) -> Option<u8> {
+pub(crate) fn extract_context_pct_for_runtime(runtime_name: &str, output: &str) -> Option<u8> {
     let runtime = runtime_name.to_ascii_lowercase();
     if runtime.contains("claude") {
         return extract_context_pct_with_hints(
