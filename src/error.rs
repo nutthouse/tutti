@@ -58,6 +58,9 @@ pub enum TuttiError {
 
     #[error("remote connectivity error: {0}")]
     RemoteConnection(String),
+
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;

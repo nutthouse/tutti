@@ -5,6 +5,7 @@ mod config;
 mod dashboard;
 mod error;
 mod health;
+mod identity;
 mod permissions;
 mod runtime;
 mod scheduler;
