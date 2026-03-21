@@ -687,6 +687,21 @@ function reconstructRuns() {
       appState.events.unshift(evt);
       if (appState.events.length > 50) appState.events.length = 50;
     }
+    // Clean up orphan runs: if a run was "started" but no terminal event
+    // was found in the event window, mark it as stale. The /v1/events
+    // endpoint only returns recent events, so old runs without a matching
+    // completed/failed event are zombies.
+    var runIds = Object.keys(appState.runs);
+    var cutoff = Date.now() - 30 * 60 * 1000; // 30 min age threshold
+    for (var j = 0; j < runIds.length; j++) {
+      var run = appState.runs[runIds[j]];
+      if (run.status === "running") {
+        var startedMs = new Date(run.startedAt).getTime();
+        if (startedMs < cutoff) {
+          delete appState.runs[runIds[j]];
+        }
+      }
+    }
     scheduleRender();
   }).catch(function(e) {
     console.warn("event reconstruction failed:", e);
