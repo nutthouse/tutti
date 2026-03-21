@@ -214,6 +214,54 @@ main#factory {
 }
 .stage.working { animation: pulse-border 2s ease-in-out infinite; }
 
+/* ── run dots — work items flowing through the pipeline ── */
+.run-dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 8px;
+  min-height: 12px;
+}
+.run-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.run-dot-active {
+  background: var(--working);
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+.run-dot-failed {
+  background: var(--blocked);
+  box-shadow: 0 0 6px rgba(239,68,68,0.4);
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+/* flow connector with animated dash when carrying a run */
+.flow-connector.flowing {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--flow-active) 0px,
+    var(--flow-active) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  background-size: 24px 2px;
+  animation: flow-march 0.6s linear infinite;
+}
+@keyframes flow-march {
+  from { background-position: 0 0; }
+  to { background-position: 24px 0; }
+}
+
+/* HUD active-run indicator */
+.hud-item.active-run { color: var(--working); }
+
 /* empty/unknown stage */
 .stage.empty {
   border-style: dashed;
@@ -278,6 +326,73 @@ main#factory {
 #detail-drawer .detail-events .evt-type { color: var(--text-secondary); font-weight: 500; }
 #detail-drawer .detail-events .evt-time { float: right; font-size: 0.625rem; }
 
+/* ── dispatch panel ── */
+#dispatch-panel {
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  padding: 8px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dispatch-toggle {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(99,102,241,0.1);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.dispatch-toggle:hover { background: rgba(99,102,241,0.2); }
+.dispatch-form {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+.dispatch-form.open { display: flex; }
+.dispatch-form select,
+.dispatch-form input {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.dispatch-form select { min-width: 140px; }
+.dispatch-form input { width: 100px; }
+.dispatch-form select:focus,
+.dispatch-form input:focus { border-color: var(--accent); outline: none; }
+#dispatch-go {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--working);
+  border: none;
+  border-radius: 4px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+#dispatch-go:hover { background: #16a34a; }
+#dispatch-go:disabled { opacity: 0.5; cursor: not-allowed; }
+.dispatch-status {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--dim);
+}
+.dispatch-status.ok { color: var(--working); }
+.dispatch-status.err { color: var(--blocked); }
+
 /* ── event timeline ── */
 footer#timeline {
   border-top: 1px solid var(--border);
@@ -333,6 +448,21 @@ footer#timeline h3 {
     border-top-color: inherit;
   }
   .stage { min-width: auto; min-height: 44px; }
+  .flow-connector.flowing {
+    background: repeating-linear-gradient(
+      180deg,
+      var(--flow-active) 0px,
+      var(--flow-active) 6px,
+      transparent 6px,
+      transparent 12px
+    );
+    background-size: 2px 24px;
+    animation: flow-march-v 0.6s linear infinite;
+  }
+  @keyframes flow-march-v {
+    from { background-position: 0 0; }
+    to { background-position: 0 24px; }
+  }
   #detail-drawer { max-height: 50vh; }
   footer#timeline { max-height: 120px; }
 }

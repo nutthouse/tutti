@@ -902,6 +902,12 @@ pub fn load_run_steps(project_root: &Path, run_id: &str) -> Result<Vec<WorkflowS
     Ok(steps)
 }
 
+/// Maximum number of events to keep in events.jsonl before rotating.
+/// When exceeded, the oldest events are archived to events-{timestamp}.jsonl
+/// and only the most recent MAX_EVENTS_RETAIN events are kept in the active file.
+const MAX_EVENTS_BEFORE_ROTATE: usize = 5000;
+const MAX_EVENTS_RETAIN: usize = 2500;
+
 pub fn append_control_event(project_root: &Path, event: &ControlEvent) -> Result<()> {
     let state_dir = project_root.join(".tutti").join("state");
     std::fs::create_dir_all(&state_dir)?;
@@ -913,6 +919,31 @@ pub fn append_control_event(project_root: &Path, event: &ControlEvent) -> Result
     let line = serde_json::to_string(event)?;
     use std::io::Write;
     writeln!(file, "{line}")?;
+    drop(file);
+
+    // Rotate if the file has grown too large (best-effort, non-blocking)
+    let _ = maybe_rotate_events(&state_dir);
+    Ok(())
+}
+
+fn maybe_rotate_events(state_dir: &Path) -> Result<()> {
+    let path = state_dir.join("events.jsonl");
+    let body = std::fs::read_to_string(&path)?;
+    let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() <= MAX_EVENTS_BEFORE_ROTATE {
+        return Ok(());
+    }
+
+    // Archive the old events
+    let split = lines.len() - MAX_EVENTS_RETAIN;
+    let archive_name = format!("events-{}.jsonl", chrono::Utc::now().format("%Y%m%d%H%M%S"));
+    let archive_path = state_dir.join(archive_name);
+    std::fs::write(&archive_path, lines[..split].join("\n") + "\n")?;
+
+    // Atomically rewrite the active file with only the recent events
+    let tmp_path = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp_path, lines[split..].join("\n") + "\n")?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
@@ -1311,6 +1342,51 @@ mod tests {
         let loaded = load_control_events(&dir).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].event, "agent.started");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn control_events_rotation() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-events-rotate-{}", std::process::id()));
+        ensure_tutti_dir(&dir).unwrap();
+
+        // Write more than MAX_EVENTS_BEFORE_ROTATE events
+        let count = MAX_EVENTS_BEFORE_ROTATE + 100;
+        for i in 0..count {
+            let event = ControlEvent {
+                event: "agent.working".to_string(),
+                workspace: "ws".to_string(),
+                agent: Some("test".to_string()),
+                timestamp: Utc::now(),
+                correlation_id: format!("evt-{i}"),
+                data: None,
+            };
+            append_control_event(&dir, &event).unwrap();
+        }
+
+        // After rotation, the active file should be smaller than what we wrote.
+        // Events appended after the rotation point remain in the active file.
+        let loaded = load_control_events(&dir).unwrap();
+        assert!(
+            loaded.len() < count,
+            "rotation should reduce event count from {count}, got {}",
+            loaded.len()
+        );
+
+        // An archive file should exist
+        let state_dir = dir.join(".tutti").join("state");
+        let archives: Vec<_> = std::fs::read_dir(&state_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name().to_string_lossy().starts_with("events-")
+                    && e.file_name().to_string_lossy().ends_with(".jsonl")
+                    && e.file_name().to_string_lossy() != "events.jsonl"
+            })
+            .collect();
+        assert!(!archives.is_empty(), "archive file should exist");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

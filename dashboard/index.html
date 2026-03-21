@@ -15,6 +15,7 @@
     <div class="bar-right">
       <span class="hud-item" id="hud-active" title="working agents">0 active</span>
       <span class="hud-item" id="hud-blocked" title="blocked or auth-failed agents">0 blocked</span>
+      <span class="hud-item" id="hud-runs" title="active workflow runs"></span>
       <span class="hud-item" id="hud-bottleneck" title="longest-working agent"></span>
       <span class="conn-dot" id="conn-status" title="SSE connection"></span>
     </div>
@@ -33,6 +34,16 @@
     </div>
     <div class="detail-meta" id="detail-meta"></div>
     <ul class="detail-events" id="detail-events"></ul>
+  </div>
+
+  <div id="dispatch-panel">
+    <button class="dispatch-toggle" id="dispatch-toggle" title="dispatch a workflow run">+ run</button>
+    <div class="dispatch-form" id="dispatch-form">
+      <select id="dispatch-workflow"><option value="">loading…</option></select>
+      <input id="dispatch-issue" type="text" placeholder="issue # (optional)" />
+      <button id="dispatch-go">dispatch</button>
+      <span id="dispatch-status" class="dispatch-status"></span>
+    </div>
   </div>
 
   <footer id="timeline">
