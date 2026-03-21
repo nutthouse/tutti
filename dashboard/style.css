@@ -214,6 +214,54 @@ main#factory {
 }
 .stage.working { animation: pulse-border 2s ease-in-out infinite; }
 
+/* ── run dots — work items flowing through the pipeline ── */
+.run-dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 8px;
+  min-height: 12px;
+}
+.run-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.run-dot-active {
+  background: var(--working);
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+.run-dot-failed {
+  background: var(--blocked);
+  box-shadow: 0 0 6px rgba(239,68,68,0.4);
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+/* flow connector with animated dash when carrying a run */
+.flow-connector.flowing {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--flow-active) 0px,
+    var(--flow-active) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  background-size: 24px 2px;
+  animation: flow-march 0.6s linear infinite;
+}
+@keyframes flow-march {
+  from { background-position: 0 0; }
+  to { background-position: 24px 0; }
+}
+
+/* HUD active-run indicator */
+.hud-item.active-run { color: var(--working); }
+
 /* empty/unknown stage */
 .stage.empty {
   border-style: dashed;
@@ -333,6 +381,21 @@ footer#timeline h3 {
     border-top-color: inherit;
   }
   .stage { min-width: auto; min-height: 44px; }
+  .flow-connector.flowing {
+    background: repeating-linear-gradient(
+      180deg,
+      var(--flow-active) 0px,
+      var(--flow-active) 6px,
+      transparent 6px,
+      transparent 12px
+    );
+    background-size: 2px 24px;
+    animation: flow-march-v 0.6s linear infinite;
+  }
+  @keyframes flow-march-v {
+    from { background-position: 0 0; }
+    to { background-position: 0 24px; }
+  }
   #detail-drawer { max-height: 50vh; }
   footer#timeline { max-height: 120px; }
 }

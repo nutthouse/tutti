@@ -207,6 +207,160 @@ var singleResult = findBottleneck({
 });
 assert("single working agent is bottleneck", singleResult.agent, "reviewer");
 
+// ── Run tracking functions under test ──
+function runStageFromEvent(evt) {
+  if (!evt || !evt.data) return null;
+  var agent = evt.agent || (evt.data && evt.data.agent);
+  if (agent) return stageFor(agent);
+  return null;
+}
+
+function processWorkflowEvent(evt) {
+  var id = evt.correlation_id;
+  if (!id) return;
+  if (evt.event === "workflow.started") {
+    testRuns[id] = {
+      id: id, status: "running", stage: null, stepIndex: 0,
+      totalSteps: (evt.data && evt.data.total_steps) || 0,
+      workflowName: (evt.data && evt.data.workflow_name) || "",
+      startedAt: evt.timestamp
+    };
+    return;
+  }
+  var run = testRuns[id];
+  if (!run) return;
+  if (evt.event === "workflow.step.started") {
+    run.stage = runStageFromEvent(evt);
+    run.stepIndex = (evt.data && evt.data.step_index) || run.stepIndex;
+    run.totalSteps = (evt.data && evt.data.total_steps) || run.totalSteps;
+    run.status = "running";
+  } else if (evt.event === "workflow.step.failed") {
+    run.stage = runStageFromEvent(evt);
+    run.status = "failed";
+  } else if (evt.event === "workflow.completed") {
+    run.status = "completed";
+  } else if (evt.event === "workflow.failed") {
+    run.status = "failed";
+  }
+}
+
+function runsAtStage(stage) {
+  var result = [];
+  var ids = Object.keys(testRuns);
+  for (var i = 0; i < ids.length; i++) {
+    var run = testRuns[ids[i]];
+    if (run.stage === stage) result.push(run);
+  }
+  return result;
+}
+
+var testRuns = {};
+
+suite("runStageFromEvent");
+assert("null event returns null", runStageFromEvent(null), null);
+assert("event without data returns null", runStageFromEvent({ event: "test" }), null);
+assert("event with agent maps to stage", runStageFromEvent({ agent: "planner", data: {} }), "planner");
+assert("event with data.agent maps to stage", runStageFromEvent({ data: { agent: "implementer" } }), "implementer");
+assertNull("unknown agent returns null", runStageFromEvent({ agent: "conductor", data: {} }));
+
+suite("processWorkflowEvent — workflow lifecycle");
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "run-1",
+  data: { workflow_name: "sdlc", total_steps: 5 },
+  timestamp: new Date().toISOString()
+});
+assertTruthy("workflow.started creates run", testRuns["run-1"]);
+assert("run status is running", testRuns["run-1"].status, "running");
+assert("run totalSteps is 5", testRuns["run-1"].totalSteps, 5);
+assert("run workflowName is sdlc", testRuns["run-1"].workflowName, "sdlc");
+
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "run-1",
+  agent: "planner", data: { step_index: 1, total_steps: 5 }
+});
+assert("step.started sets stage to planner", testRuns["run-1"].stage, "planner");
+assert("step.started sets stepIndex", testRuns["run-1"].stepIndex, 1);
+
+processWorkflowEvent({
+  event: "workflow.step.completed", correlation_id: "run-1",
+  agent: "planner", data: { step_index: 1 }
+});
+assert("step.completed keeps status running", testRuns["run-1"].status, "running");
+
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "run-1",
+  agent: "implementer", data: { step_index: 2, total_steps: 5 }
+});
+assert("second step moves stage to implementer", testRuns["run-1"].stage, "implementer");
+
+processWorkflowEvent({
+  event: "workflow.completed", correlation_id: "run-1",
+  data: { success: true }
+});
+assert("workflow.completed sets status completed", testRuns["run-1"].status, "completed");
+
+suite("processWorkflowEvent — failure");
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "run-2",
+  data: { workflow_name: "test-wf", total_steps: 3 },
+  timestamp: new Date().toISOString()
+});
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "run-2",
+  agent: "tester", data: { step_index: 1, total_steps: 3 }
+});
+processWorkflowEvent({
+  event: "workflow.step.failed", correlation_id: "run-2",
+  agent: "tester", data: { step_index: 1, message: "timed out" }
+});
+assert("step.failed sets status to failed", testRuns["run-2"].status, "failed");
+assert("step.failed keeps stage at tester", testRuns["run-2"].stage, "tester");
+
+suite("processWorkflowEvent — ignores unknown runs");
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "unknown-run",
+  agent: "planner", data: { step_index: 1 }
+});
+assertNull("no run created for unknown correlation_id", testRuns["unknown-run"]);
+
+suite("runsAtStage");
+testRuns = {};
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "r1",
+  data: { workflow_name: "a", total_steps: 2 },
+  timestamp: new Date().toISOString()
+});
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "r1",
+  agent: "planner", data: { step_index: 1 }
+});
+processWorkflowEvent({
+  event: "workflow.started", correlation_id: "r2",
+  data: { workflow_name: "b", total_steps: 2 },
+  timestamp: new Date().toISOString()
+});
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "r2",
+  agent: "planner", data: { step_index: 1 }
+});
+assert("two runs at planner stage", runsAtStage("planner").length, 2);
+assert("zero runs at implementer stage", runsAtStage("implementer").length, 0);
+processWorkflowEvent({
+  event: "workflow.step.started", correlation_id: "r1",
+  agent: "implementer", data: { step_index: 2 }
+});
+assert("one run moved to implementer", runsAtStage("implementer").length, 1);
+assert("one run still at planner", runsAtStage("planner").length, 1);
+
+suite("processWorkflowEvent — no correlation_id");
+testRuns = {};
+var prevKeys = Object.keys(testRuns).length;
+processWorkflowEvent({ event: "workflow.started", data: {} });
+assert("no run created without correlation_id", Object.keys(testRuns).length, prevKeys);
+
 // ── Summary ──
 var $summary = document.getElementById("summary");
 $summary.className = failed > 0 ? "fail" : "pass";

@@ -560,6 +560,17 @@ fn step_type_name(step: &ResolvedStep) -> &'static str {
     }
 }
 
+fn step_agent_name(step: &ResolvedStep) -> Option<&str> {
+    match step {
+        ResolvedStep::Prompt { agent, .. } => Some(agent),
+        ResolvedStep::Command { agent, .. } => agent.as_deref(),
+        ResolvedStep::EnsureRunning { agent, .. } => Some(agent),
+        ResolvedStep::Workflow { .. } => None,
+        ResolvedStep::Land { agent, .. } => Some(agent),
+        ResolvedStep::Review { agent, .. } => Some(agent),
+    }
+}
+
 fn sanitize_step_key(input: &str) -> String {
     input
         .chars()
@@ -775,6 +786,22 @@ impl<'a> WorkflowExecutor<'a> {
                     None
                 };
                 attempted_steps.insert(step_index);
+                let _ = append_control_event(
+                    self.project_root,
+                    &ControlEvent {
+                        event: "workflow.step.started".to_string(),
+                        workspace: self.config.workspace.name.clone(),
+                        agent: step_agent_name(step).map(|s| s.to_string()),
+                        timestamp: Utc::now(),
+                        correlation_id: run_id.clone(),
+                        data: Some(json!({
+                            "workflow_name": workflow.name,
+                            "step_index": step_index,
+                            "step_type": step_type_name(step),
+                            "total_steps": workflow.steps.len()
+                        })),
+                    },
+                );
                 if let Err(err) =
                     record_step_intent(self.project_root, &run_id, &workflow.name, step_index, step)
                 {
@@ -2054,6 +2081,41 @@ impl<'a> WorkflowExecutor<'a> {
                     }
                 }
             }
+        }
+
+        // Emit step completion events for all steps attempted in this run
+        for sr in &step_results {
+            if !attempted_steps.contains(&sr.index) {
+                continue;
+            }
+            let step_agent = workflow
+                .steps
+                .get(sr.index.saturating_sub(1))
+                .and_then(|s| step_agent_name(s).map(|a| a.to_string()));
+            let event_name = if sr.status == StepStatus::Success {
+                "workflow.step.completed"
+            } else {
+                "workflow.step.failed"
+            };
+            let _ = append_control_event(
+                self.project_root,
+                &ControlEvent {
+                    event: event_name.to_string(),
+                    workspace: self.config.workspace.name.clone(),
+                    agent: step_agent,
+                    timestamp: Utc::now(),
+                    correlation_id: run_id.clone(),
+                    data: Some(json!({
+                        "workflow_name": workflow.name,
+                        "step_index": sr.index,
+                        "step_type": sr.step_type,
+                        "total_steps": workflow.steps.len(),
+                        "duration_ms": sr.duration_ms,
+                        "timed_out": sr.timed_out,
+                        "message": sr.message
+                    })),
+                },
+            );
         }
 
         let result = ExecutionResult {

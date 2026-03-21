@@ -20,7 +20,71 @@ var appState = {
   events: [],      // recent events (newest first), capped at 50
   eventCount: 0,
   selectedAgent: null, // composite key of currently selected agent
+  runs: {},        // correlation_id -> run state { stage, status, steps, workflow_name }
 };
+
+// ── Run tracking ──
+// Maps a step's agent to a pipeline stage so we can position the dot
+function runStageFromEvent(evt) {
+  if (!evt || !evt.data) return null;
+  var agent = evt.agent || (evt.data && evt.data.agent);
+  if (agent) return stageFor(agent);
+  return null;
+}
+
+// Process a workflow event and update run tracking state
+function processWorkflowEvent(evt) {
+  var id = evt.correlation_id;
+  if (!id) return;
+
+  if (evt.event === "workflow.started") {
+    appState.runs[id] = {
+      id: id,
+      status: "running",
+      stage: null,
+      stepIndex: 0,
+      totalSteps: (evt.data && evt.data.total_steps) || 0,
+      workflowName: (evt.data && evt.data.workflow_name) || "",
+      startedAt: evt.timestamp
+    };
+    return;
+  }
+
+  var run = appState.runs[id];
+  if (!run) return;
+
+  if (evt.event === "workflow.step.started") {
+    run.stage = runStageFromEvent(evt);
+    run.stepIndex = (evt.data && evt.data.step_index) || run.stepIndex;
+    run.totalSteps = (evt.data && evt.data.total_steps) || run.totalSteps;
+    run.status = "running";
+  } else if (evt.event === "workflow.step.completed") {
+    // step done — stage will update when next step starts
+  } else if (evt.event === "workflow.step.failed") {
+    run.stage = runStageFromEvent(evt);
+    run.status = "failed";
+  } else if (evt.event === "workflow.completed") {
+    run.status = "completed";
+    // Auto-remove completed runs after 8 seconds so the dot exits
+    setTimeout(function() {
+      delete appState.runs[id];
+      scheduleRender();
+    }, 8000);
+  } else if (evt.event === "workflow.failed") {
+    run.status = "failed";
+  }
+}
+
+// Get active runs at a given stage
+function runsAtStage(stage) {
+  var result = [];
+  var ids = Object.keys(appState.runs);
+  for (var i = 0; i < ids.length; i++) {
+    var run = appState.runs[ids[i]];
+    if (run.stage === stage) result.push(run);
+  }
+  return result;
+}
 
 // Build a composite key for workspace-scoped agent storage
 function agentKey(workspace, agent) {
@@ -127,12 +191,17 @@ function renderPipeline() {
     // Flow connector between stages
     if (i > 0) {
       var conn = el("div", "flow-connector");
-      var prevAgents = stageAgents[STAGE_ORDER[i - 1]] || [];
+      var prevStage = STAGE_ORDER[i - 1];
+      var prevAgents = stageAgents[prevStage] || [];
       var prevActive = false;
       for (var p = 0; p < prevAgents.length; p++) {
         if (stateClass(prevAgents[p]) === "working") { prevActive = true; break; }
       }
       if (prevActive) conn.classList.add("active");
+      // Add flowing animation if a run is transitioning through this connector
+      if (runsAtStage(prevStage).length > 0 || runsAtStage(stage).length > 0) {
+        conn.classList.add("flowing");
+      }
       $pipeline.appendChild(conn);
     }
 
@@ -159,6 +228,20 @@ function renderPipeline() {
       })(key));
     }
 
+    // Render work-item dots for active runs at this stage
+    var stageRuns = runsAtStage(stage);
+    if (stageRuns.length > 0) {
+      var dotsRow = el("div", "run-dots");
+      for (var r = 0; r < stageRuns.length; r++) {
+        var dot = el("span", "run-dot");
+        if (stageRuns[r].status === "failed") dot.classList.add("run-dot-failed");
+        else dot.classList.add("run-dot-active");
+        dot.title = stageRuns[r].workflowName + " (step " + stageRuns[r].stepIndex + "/" + stageRuns[r].totalSteps + ")";
+        dotsRow.appendChild(dot);
+      }
+      card.appendChild(dotsRow);
+    }
+
     $pipeline.appendChild(card);
   }
 
@@ -173,6 +256,18 @@ function renderPipeline() {
   $hudActive.textContent = active + " active";
   $hudBlock.textContent = blocked + " blocked";
   $hudBlock.className = "hud-item" + (blocked > 0 ? " alert" : "");
+
+  // Run count in HUD
+  var runIds = Object.keys(appState.runs);
+  var runningCount = 0;
+  for (i = 0; i < runIds.length; i++) {
+    if (appState.runs[runIds[i]].status === "running") runningCount++;
+  }
+  var $hudRuns = document.getElementById("hud-runs");
+  if ($hudRuns) {
+    $hudRuns.textContent = runningCount > 0 ? runningCount + " run" + (runningCount > 1 ? "s" : "") : "";
+    $hudRuns.className = "hud-item" + (runningCount > 0 ? " active-run" : "");
+  }
 
   // Bottleneck indicator
   var bottleneck = findBottleneck();
@@ -338,17 +433,23 @@ function connectSSE() {
         appState.agents[key] = merged;
       }
 
+      // Track workflow runs
+      if (data.event && data.event.indexOf("workflow.") === 0) {
+        processWorkflowEvent(data);
+      }
+
       scheduleRender();
     } catch (_) { /* ignore parse errors */ }
   };
 
-  // Event types actually emitted by the server (state/mod.rs transition_events)
+  // Event types actually emitted by the server
   var eventTypes = [
     "agent.started", "agent.stopped",
     "agent.working", "agent.idle",
     "agent.auth_failed", "agent.auth_recovered",
-    "agent.rate_limited", "agent.provider_down", "agent.provider_recovered"
-    // Phase 1b will add: workflow.step, workflow.stage_transition, run.completed
+    "agent.rate_limited", "agent.provider_down", "agent.provider_recovered",
+    "workflow.started", "workflow.completed", "workflow.failed",
+    "workflow.step.started", "workflow.step.completed", "workflow.step.failed"
   ];
   for (var i = 0; i < eventTypes.length; i++) {
     es.addEventListener(eventTypes[i], handler);
