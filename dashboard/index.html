@@ -46,6 +46,37 @@
     </div>
   </div>
 
+  <!-- Agent Focus Mode (full-screen takeover) -->
+  <div id="focus-view" role="main" style="display:none">
+    <div class="focus-bar">
+      <button class="focus-back" id="focus-back" role="button" aria-label="Return to factory floor">&larr; factory floor</button>
+      <span class="focus-agent-name" id="focus-agent-name">—</span>
+      <span class="focus-status" id="focus-status"></span>
+      <span class="focus-meta" id="focus-meta"></span>
+    </div>
+    <div class="focus-grid">
+      <div class="focus-terminal" id="focus-terminal" role="log" aria-live="polite"></div>
+      <div class="focus-sidebar">
+        <div class="focus-section">
+          <h3>usage</h3>
+          <div class="focus-stats" id="focus-stats"></div>
+        </div>
+        <div class="focus-section">
+          <h3>changes</h3>
+          <div class="focus-diff" id="focus-diff"></div>
+        </div>
+        <div class="focus-section">
+          <h3>progress</h3>
+          <div class="focus-progress" id="focus-progress"></div>
+        </div>
+      </div>
+    </div>
+    <div class="focus-prompt-bar">
+      <input type="text" id="focus-prompt-input" placeholder="Send a prompt to this agent..." aria-label="Send prompt to agent" />
+      <button class="focus-send" id="focus-send" aria-label="Send">send</button>
+    </div>
+  </div>
+
   <footer id="timeline">
     <h3>recent events</h3>
     <ul id="event-list"></ul>

@@ -433,6 +433,215 @@ main#factory {
 .dispatch-status.ok { color: var(--working); }
 .dispatch-status.err { color: var(--blocked); }
 
+/* ── agent focus mode ── */
+#focus-view {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 100;
+  flex-direction: column;
+  animation: focus-enter 250ms ease-out;
+}
+@keyframes focus-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.focus-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+.focus-back {
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  padding: 4px 8px;
+}
+.focus-back:hover { text-decoration: underline; }
+.focus-agent-name {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.8125rem;
+}
+.focus-status {
+  font-size: 0.6875rem;
+}
+.focus-status.working { color: var(--working); }
+.focus-status.stopped { color: var(--dim); }
+.focus-status.blocked { color: var(--blocked); }
+.focus-meta {
+  color: var(--dim);
+  margin-left: auto;
+}
+.focus-grid {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.focus-terminal {
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.focus-terminal .term-tool { color: var(--working); }
+.focus-terminal .term-prompt { color: var(--accent); }
+.focus-terminal .term-empty {
+  color: var(--dim);
+  text-align: center;
+  padding-top: 48px;
+  font-size: 0.8125rem;
+}
+.focus-terminal .term-empty button {
+  display: block;
+  margin: 12px auto 0;
+  background: var(--working);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  padding: 6px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.focus-sidebar {
+  background: var(--surface);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.focus-section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.focus-section h3 {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+.focus-stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  padding: 2px 0;
+}
+.focus-stat-label { color: var(--dim); }
+.focus-stat-value { color: var(--text); font-weight: 500; }
+.focus-stat-value.green { color: var(--working); }
+.focus-stat-value.amber { color: var(--auth-fail); }
+.focus-stat-value.red { color: var(--blocked); }
+/* context fill bar */
+.focus-ctx-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  margin-top: 4px;
+  overflow: hidden;
+}
+.focus-ctx-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease-out;
+}
+/* diff in sidebar */
+.focus-diff {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.focus-diff-empty { color: var(--dim); font-size: 0.6875rem; }
+.focus-diff-add { color: var(--working); background: rgba(34,197,94,0.08); padding: 0 4px; }
+.focus-diff-del { color: var(--blocked); background: rgba(239,68,68,0.08); padding: 0 4px; }
+.focus-diff-hunk { color: var(--accent); font-weight: 500; }
+.focus-diff-file { color: var(--text-secondary); font-weight: 600; padding: 4px 0 2px; }
+/* prompt bar */
+.focus-prompt-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.focus-prompt-bar input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.focus-prompt-bar input:focus { border-color: var(--accent); outline: none; }
+.focus-send {
+  background: var(--working);
+  color: var(--bg);
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.focus-send:hover { background: #16a34a; }
+.focus-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.focus-send.sending { animation: dot-pulse 1.2s ease-in-out infinite; }
+
+/* ── focus mobile ── */
+@media (max-width: 767px) {
+  .focus-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+  .focus-terminal {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    min-height: 50vh;
+  }
+  .focus-sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    border-bottom: 1px solid var(--border);
+  }
+  .focus-section {
+    min-width: 80vw;
+    scroll-snap-align: start;
+    flex-shrink: 0;
+  }
+  .focus-prompt-bar { padding: 8px; }
+  .focus-prompt-bar input { font-size: 16px; /* prevent iOS zoom */ }
+}
+
 /* ── event timeline ── */
 footer#timeline {
   border-top: 1px solid var(--border);

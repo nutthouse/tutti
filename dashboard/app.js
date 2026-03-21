@@ -262,10 +262,17 @@ function renderPipeline() {
       card.appendChild(el("span", "state-chip", stateLabel(primary)));
       card.appendChild(el("div", "agent-runtime", primary.runtime || "\u2014"));
 
-      // Click handler for detail drawer
-      card.addEventListener("click", (function(k) {
-        return function() { selectAgent(k); };
-      })(key));
+      // Click + keyboard handler — enter focus mode
+      card.setAttribute("tabindex", "0");
+      card.setAttribute("role", "button");
+      card.addEventListener("click", (function(ws, ag) {
+        return function() { enterFocusMode(ws, ag); };
+      })(primary.workspace, primary.agent));
+      card.addEventListener("keydown", (function(ws, ag) {
+        return function(e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); enterFocusMode(ws, ag); }
+        };
+      })(primary.workspace, primary.agent));
     }
 
     // Render work-item dots for active runs at this stage
@@ -604,6 +611,236 @@ function connectSSE() {
   es.onmessage = handler;
 }
 
+// ── Agent Focus Mode ──
+var $focusView     = document.getElementById("focus-view");
+var $focusBack     = document.getElementById("focus-back");
+var $focusAgentName = document.getElementById("focus-agent-name");
+var $focusStatus   = document.getElementById("focus-status");
+var $focusMeta     = document.getElementById("focus-meta");
+var $focusTerminal = document.getElementById("focus-terminal");
+var $focusStats    = document.getElementById("focus-stats");
+var $focusDiff     = document.getElementById("focus-diff");
+var $focusProgress = document.getElementById("focus-progress");
+var $focusInput    = document.getElementById("focus-prompt-input");
+var $focusSend     = document.getElementById("focus-send");
+var focusPollId    = null;
+var focusPolling   = false;
+
+function enterFocusMode(workspace, agent) {
+  appState.view = "focus";
+  appState.focusAgent = { workspace: workspace, agent: agent };
+  appState.selectedAgent = null;
+
+  // Hide factory, show focus
+  document.getElementById("factory").style.display = "none";
+  document.getElementById("detail-drawer").style.display = "none";
+  document.getElementById("dispatch-panel").style.display = "none";
+  document.getElementById("timeline").style.display = "none";
+  $focusView.style.display = "flex";
+
+  $focusAgentName.textContent = agent;
+  $focusTerminal.textContent = "Connecting\u2026";
+  $focusStats.innerHTML = "";
+  $focusDiff.innerHTML = '<div class="focus-diff-empty">Loading diff\u2026</div>';
+  $focusProgress.innerHTML = "";
+
+  // Start polling
+  pollFocus();
+  focusPollId = setInterval(pollFocus, 2000);
+}
+
+function exitFocusMode() {
+  appState.view = "factory";
+  appState.focusAgent = null;
+  if (focusPollId) { clearInterval(focusPollId); focusPollId = null; }
+
+  $focusView.style.display = "none";
+  document.getElementById("factory").style.display = "";
+  document.getElementById("dispatch-panel").style.display = "";
+  document.getElementById("timeline").style.display = "";
+
+  renderPipeline();
+  renderTimeline();
+}
+
+if ($focusBack) $focusBack.addEventListener("click", exitFocusMode);
+
+// Keyboard: Escape exits focus mode
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape" && appState.view === "focus") exitFocusMode();
+});
+
+function pollFocus() {
+  var fa = appState.focusAgent;
+  if (!fa) return;
+  if (focusPolling) return; // prevent overlapping polls
+  focusPolling = true;
+  var url = "/v1/agents/" + encodeURIComponent(fa.workspace) + "/" + encodeURIComponent(fa.agent) + "/focus?lines=200";
+  fetch(url).then(function(res) { return res.json(); }).then(function(json) {
+    focusPolling = false;
+    // Stale guard: if agent changed mid-flight, discard
+    if (!appState.focusAgent || appState.focusAgent.workspace !== fa.workspace || appState.focusAgent.agent !== fa.agent) return;
+    if (!json.data) return;
+    renderFocusView(json.data);
+  }).catch(function() {
+    focusPolling = false;
+    // Network error — show reconnecting state
+    if (appState.focusAgent && appState.focusAgent.agent === fa.agent) {
+      $focusTerminal.textContent = "Connection lost. Reconnecting\u2026";
+    }
+  });
+}
+
+function renderFocusView(data) {
+  // Status bar
+  var stateStr = data.running ? "working" : "stopped";
+  $focusStatus.textContent = "\u25CF " + stateStr;
+  $focusStatus.className = "focus-status " + stateStr;
+  $focusMeta.textContent = data.session || "";
+
+  // Terminal
+  if (!data.running && !data.terminal) {
+    $focusTerminal.innerHTML = "";
+    var emptyDiv = el("div", "term-empty", "Agent is not running.");
+    var startBtn = document.createElement("button");
+    startBtn.textContent = "Start Agent";
+    startBtn.addEventListener("click", function() {
+      var fa = appState.focusAgent;
+      if (!fa) return;
+      startBtn.disabled = true;
+      startBtn.textContent = "Starting\u2026";
+      fetch("/v1/actions/up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: fa.agent, workspace: fa.workspace })
+      }).then(function(res) {
+          if (!res.ok) { startBtn.textContent = "Failed"; startBtn.disabled = false; }
+          else { startBtn.textContent = "Started"; }
+        })
+        .catch(function() { startBtn.textContent = "Failed"; startBtn.disabled = false; });
+    });
+    emptyDiv.appendChild(startBtn);
+    $focusTerminal.appendChild(emptyDiv);
+  } else {
+    // Smart auto-scroll: only scroll if user is at the bottom
+    var termEl = $focusTerminal;
+    var wasAtBottom = termEl.scrollHeight - termEl.scrollTop - termEl.clientHeight < 30;
+    termEl.textContent = data.terminal || "";
+    if (wasAtBottom) termEl.scrollTop = termEl.scrollHeight;
+  }
+
+  // Usage stats
+  var u = data.usage || {};
+  var statsHtml = "";
+  statsHtml += statRow("input tokens", formatTokens(u.input_tokens || 0));
+  statsHtml += statRow("output tokens", formatTokens(u.output_tokens || 0));
+  statsHtml += statRow("cache read", formatTokens(u.cache_read || 0), "green");
+  statsHtml += statRow("cache write", formatTokens(u.cache_write || 0));
+  // Context bar
+  var ctxPct = data.context_pct;
+  if (ctxPct != null) {
+    var ctxColor = ctxPct <= 70 ? "green" : (ctxPct <= 90 ? "amber" : "red");
+    statsHtml += statRow("context", ctxPct + "%", ctxColor);
+    statsHtml += '<div class="focus-ctx-bar"><div class="focus-ctx-fill" style="width:' + ctxPct + '%;background:var(--' + (ctxColor === "green" ? "working" : ctxColor === "amber" ? "auth-fail" : "blocked") + ')"></div></div>';
+  } else {
+    statsHtml += statRow("context", "\u2014");
+  }
+  $focusStats.innerHTML = statsHtml;
+
+  // Diff
+  var d = data.diff || {};
+  if (d.text) {
+    var diffHtml = "";
+    var lines = d.text.split("\n");
+    for (var i = 0; i < lines.length && i < 100; i++) {
+      var line = lines[i];
+      var cls = "";
+      if (line.indexOf("+") === 0 && line.indexOf("+++") !== 0) cls = "focus-diff-add";
+      else if (line.indexOf("-") === 0 && line.indexOf("---") !== 0) cls = "focus-diff-del";
+      else if (line.indexOf("@@") === 0) cls = "focus-diff-hunk";
+      else if (line.indexOf("diff ") === 0) cls = "focus-diff-file";
+      diffHtml += '<div class="' + cls + '">' + escapeHtml(line) + '</div>';
+    }
+    if (lines.length > 100) diffHtml += '<div class="focus-diff-empty">\u2026 ' + (lines.length - 100) + ' more lines</div>';
+    diffHtml += '<div style="margin-top:4px;font-size:9px;color:var(--dim)">' + (d.files_changed || 0) + ' files, +' + (d.insertions || 0) + ' -' + (d.deletions || 0) + '</div>';
+    $focusDiff.innerHTML = diffHtml;
+  } else {
+    $focusDiff.innerHTML = '<div class="focus-diff-empty">No changes yet.</div>';
+  }
+
+  // Progress — show active run for this agent if any
+  var progressHtml = "";
+  var runIds = Object.keys(appState.runs);
+  for (var j = 0; j < runIds.length; j++) {
+    var run = appState.runs[runIds[j]];
+    if (run.status === "running") {
+      progressHtml += statRow("workflow", run.workflowName);
+      progressHtml += statRow("step", run.stepIndex + " / " + run.totalSteps);
+      progressHtml += statRow("started", timeAgo(run.startedAt));
+      break;
+    }
+  }
+  if (!progressHtml) {
+    progressHtml = '<div class="focus-diff-empty">No active run.</div>';
+  }
+  $focusProgress.innerHTML = progressHtml;
+}
+
+function statRow(label, value, colorClass) {
+  return '<div class="focus-stat-row"><span class="focus-stat-label">' + escapeHtml(label) + '</span><span class="focus-stat-value' + (colorClass ? ' ' + colorClass : '') + '">' + escapeHtml(String(value)) + '</span></div>';
+}
+
+function formatTokens(n) {
+  if (!n) return "0";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Prompt send from focus view
+if ($focusSend) {
+  $focusSend.addEventListener("click", sendFocusPrompt);
+}
+if ($focusInput) {
+  $focusInput.addEventListener("keydown", function(e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendFocusPrompt(); }
+  });
+}
+
+function sendFocusPrompt() {
+  var fa = appState.focusAgent;
+  if (!fa || !$focusInput.value.trim()) return;
+  var prompt = $focusInput.value.trim();
+  $focusSend.disabled = true;
+  $focusSend.classList.add("sending");
+
+  fetch("/v1/actions/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent: fa.agent, workspace: fa.workspace, prompt: prompt, auto_up: true })
+  }).then(function(res) { return res.json(); }).then(function(json) {
+    $focusSend.disabled = false;
+    $focusSend.classList.remove("sending");
+    if (json.ok) {
+      $focusInput.value = "";
+      $focusInput.style.borderColor = "var(--working)";
+      setTimeout(function() { $focusInput.style.borderColor = ""; }, 1000);
+    } else {
+      $focusInput.style.borderColor = "var(--blocked)";
+      setTimeout(function() { $focusInput.style.borderColor = ""; }, 2000);
+    }
+  }).catch(function() {
+    $focusSend.disabled = false;
+    $focusSend.classList.remove("sending");
+    $focusInput.style.borderColor = "var(--blocked)";
+    setTimeout(function() { $focusInput.style.borderColor = ""; }, 2000);
+  });
+}
+
 // ── Dispatch panel ──
 var $dispatchToggle = document.getElementById("dispatch-toggle");
 var $dispatchForm   = document.getElementById("dispatch-form");
@@ -657,7 +894,7 @@ if ($dispatchGo) {
       body: JSON.stringify(body)
     }).then(function(res) { return res.json(); }).then(function(json) {
       $dispatchGo.disabled = false;
-      if (json.status === "ok") {
+      if (json.ok) {
         $dispatchStatus.textContent = "dispatched";
         $dispatchStatus.className = "dispatch-status ok";
       } else {

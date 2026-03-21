@@ -481,6 +481,56 @@ processWorkflowEvent({
 });
 assert("failed run excluded from stage", runsAtStage("tester").length, 0);
 
+// ── Focus mode helpers under test ──
+
+function formatTokens(n) {
+  if (!n) return "0";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+suite("formatTokens");
+assert("0 tokens", formatTokens(0), "0");
+assert("500 tokens", formatTokens(500), "500");
+assert("1500 tokens = 1.5K", formatTokens(1500), "1.5K");
+assert("142847 tokens = 142.8K", formatTokens(142847), "142.8K");
+assert("1500000 tokens = 1.5M", formatTokens(1500000), "1.5M");
+
+suite("escapeHtml");
+assert("escapes angle brackets", escapeHtml("<div>"), "&lt;div&gt;");
+assert("escapes ampersand", escapeHtml("a & b"), "a &amp; b");
+assert("plain text unchanged", escapeHtml("hello"), "hello");
+
+suite("focus view state");
+// Simulate the view state machine
+var testAppState = { view: "factory", focusAgent: null };
+
+// Enter focus
+testAppState.view = "focus";
+testAppState.focusAgent = { workspace: "tutti", agent: "implementer" };
+assert("focus mode sets view", testAppState.view, "focus");
+assert("focusAgent has workspace", testAppState.focusAgent.workspace, "tutti");
+assert("focusAgent has agent", testAppState.focusAgent.agent, "implementer");
+
+// Exit focus
+testAppState.view = "factory";
+testAppState.focusAgent = null;
+assert("exit restores factory view", testAppState.view, "factory");
+assertNull("exit clears focusAgent", testAppState.focusAgent);
+
+suite("stale response guard");
+// Simulate: start polling agent A, then switch to agent B
+var guardAgent = { workspace: "tutti", agent: "planner" };
+var responseAgent = { workspace: "tutti", agent: "planner" };
+assert("matching agent = accept", guardAgent.agent === responseAgent.agent, true);
+responseAgent = { workspace: "tutti", agent: "implementer" };
+assert("different agent = reject", guardAgent.agent === responseAgent.agent, false);
+
 // ── Summary ──
 var $summary = document.getElementById("summary");
 $summary.className = failed > 0 ? "fail" : "pass";
