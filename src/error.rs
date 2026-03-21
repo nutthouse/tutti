@@ -60,15 +60,19 @@ pub enum TuttiError {
     RemoteConnection(String),
 
     #[error("invalid or unknown API key")]
+    #[allow(dead_code)]
     AuthKeyInvalid,
 
     #[error("API key has expired")]
+    #[allow(dead_code)]
     AuthKeyExpired,
 
     #[error("permission denied: {0}")]
+    #[allow(dead_code)]
     AuthPermissionDenied(String),
 
     #[error("failed to write audit log: {0}")]
+    #[allow(dead_code)]
     AuthAuditWrite(String),
 }
 

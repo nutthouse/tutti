@@ -473,9 +473,7 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
         TuttiError::AuthKeyInvalid => {
             "Regenerate a key with `tt auth key-gen` or check the key value".to_string()
         }
-        TuttiError::AuthKeyExpired => {
-            "Generate a new key with `tt auth key-gen`".to_string()
-        }
+        TuttiError::AuthKeyExpired => "Generate a new key with `tt auth key-gen`".to_string(),
         TuttiError::AuthPermissionDenied(_) => {
             "Ask a workspace Owner to grant a higher role".to_string()
         }
