@@ -1076,7 +1076,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     &rendered,
                                     baseline_pane_hash,
                                     output_json.as_deref(),
-                                    Duration::from_secs(20),
+                                    Duration::from_secs((*startup_grace_secs).max(20)),
                                 )?
                             {
                                 failed_steps.push(step_index);
@@ -1088,10 +1088,10 @@ impl<'a> WorkflowExecutor<'a> {
                                     duration_ms: started.elapsed().as_millis() as u64,
                                     exit_code: None,
                                     timed_out: true,
-                                    message: Some(
-                                        "prompt did not start activity or produce output within 20s"
-                                            .to_string(),
-                                    ),
+                                    message: Some(format!(
+                                        "prompt did not start activity or produce output within {}s",
+                                        (*startup_grace_secs).max(20)
+                                    )),
                                     stdout: None,
                                     stderr: None,
                                 });
