@@ -827,6 +827,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 })
                 .collect(),
             tool_packs: vec![],
@@ -836,6 +837,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         }
     }
 

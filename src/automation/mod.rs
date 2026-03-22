@@ -202,7 +202,7 @@ impl<'a> WorkflowResolver<'a> {
                         .agents
                         .iter()
                         .find(|a| a.name == effective_agent)
-                        .and_then(|a| a.resolved_runtime(&self.config.defaults))
+                        .and_then(|a| a.resolved_runtime(&self.config.defaults, &self.config.roles))
                         .unwrap_or_else(|| "unknown".to_string());
                     steps.push(ResolvedStep::Prompt {
                         step_id: id.clone(),
@@ -1063,12 +1063,196 @@ impl<'a> WorkflowExecutor<'a> {
                             wait_for_idle,
                             wait_timeout_secs,
                             startup_grace_secs,
+                            artifact_glob: step_artifact_glob,
+                            artifact_name: step_artifact_name,
                             ..
                         } = step
                         {
                             if runtime == "codex" || runtime == "claude-code" {
                                 maybe_submit_buffered_prompt(session_name, &rendered)?;
                             }
+
+                            // Artifact-polling mode: artifact_glob set but wait_for_idle is false.
+                            // Poll for the artifact file instead of idle detection.
+                            // This supports interactive skills (e.g. /office-hours) where the
+                            // agent goes idle while waiting for human input.
+                            let use_artifact_polling = step_artifact_glob.is_some()
+                                && step_artifact_name.is_some()
+                                && !*wait_for_idle;
+
+                            if use_artifact_polling
+                                && let Some((ref expanded_pattern, ref pre_snap)) =
+                                    artifact_pre_snapshot
+                            {
+                                let poll_interval = Duration::from_secs(5);
+                                let deadline = Duration::from_secs(*wait_timeout_secs);
+                                let poll_start = std::time::Instant::now();
+                                let art_name = step_artifact_name.as_deref().unwrap();
+
+                                eprintln!(
+                                    "  artifact-polling mode: waiting up to {}s for new file matching '{}'",
+                                    wait_timeout_secs, expanded_pattern
+                                );
+
+                                let mut artifact_found = false;
+                                while poll_start.elapsed() < deadline {
+                                    std::thread::sleep(poll_interval);
+
+                                    // Check if session is still alive
+                                    if !TmuxSession::session_exists(session_name) {
+                                        // Session exited — check if artifact was produced
+                                        // before breaking
+                                        if let Ok(artifact_path) =
+                                            capture_artifact(pre_snap, expanded_pattern, art_name)
+                                        {
+                                            match store_artifact_output(
+                                                self.project_root,
+                                                &run_id,
+                                                art_name,
+                                                &artifact_path,
+                                            ) {
+                                                Ok(result) => {
+                                                    output_files.insert(
+                                                        art_name.to_string(),
+                                                        result.json_path.display().to_string(),
+                                                    );
+                                                    outputs
+                                                        .insert(art_name.to_string(), result.value);
+                                                    artifact_found = true;
+                                                }
+                                                Err(e) => {
+                                                    failed_steps.push(step_index);
+                                                    success = false;
+                                                    step_results.push(StepResult {
+                                                        index: step_index,
+                                                        step_type: "prompt".to_string(),
+                                                        status: StepStatus::Failed,
+                                                        duration_ms: started.elapsed().as_millis()
+                                                            as u64,
+                                                        exit_code: None,
+                                                        timed_out: false,
+                                                        message: Some(format!(
+                                                            "artifact store failed for '{}': {e}",
+                                                            art_name
+                                                        )),
+                                                        stdout: None,
+                                                        stderr: None,
+                                                    });
+                                                    // Abort the prompt step on store failure
+                                                    break;
+                                                }
+                                            }
+                                        } else {
+                                            // Session died without producing the artifact
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis()
+                                                    as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(format!(
+                                                    "session exited before artifact '{}' was produced",
+                                                    art_name
+                                                )),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                        }
+                                        break;
+                                    }
+
+                                    // Check if new artifact file has appeared
+                                    if let Ok(artifact_path) =
+                                        capture_artifact(pre_snap, expanded_pattern, art_name)
+                                    {
+                                        match store_artifact_output(
+                                            self.project_root,
+                                            &run_id,
+                                            art_name,
+                                            &artifact_path,
+                                        ) {
+                                            Ok(result) => {
+                                                output_files.insert(
+                                                    art_name.to_string(),
+                                                    result.json_path.display().to_string(),
+                                                );
+                                                outputs.insert(art_name.to_string(), result.value);
+                                                artifact_found = true;
+                                            }
+                                            Err(e) => {
+                                                failed_steps.push(step_index);
+                                                success = false;
+                                                step_results.push(StepResult {
+                                                    index: step_index,
+                                                    step_type: "prompt".to_string(),
+                                                    status: StepStatus::Failed,
+                                                    duration_ms: started.elapsed().as_millis()
+                                                        as u64,
+                                                    exit_code: None,
+                                                    timed_out: false,
+                                                    message: Some(format!(
+                                                        "artifact store failed for '{}': {e}",
+                                                        art_name
+                                                    )),
+                                                    stdout: None,
+                                                    stderr: None,
+                                                });
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+
+                                if !artifact_found && success {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: true,
+                                        message: Some(format!(
+                                            "artifact '{}' not found after {}s of polling",
+                                            art_name, wait_timeout_secs
+                                        )),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
+
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: if artifact_found {
+                                        StepStatus::Success
+                                    } else {
+                                        StepStatus::Failed
+                                    },
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: if artifact_found { Some(0) } else { None },
+                                    timed_out: false,
+                                    message: Some(if artifact_found {
+                                        format!(
+                                            "artifact '{}' captured via polling after {}s",
+                                            art_name,
+                                            poll_start.elapsed().as_secs()
+                                        )
+                                    } else {
+                                        format!("artifact '{}' failed", art_name)
+                                    }),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                continue;
+                            }
+
                             if *wait_for_idle
                                 && !wait_for_prompt_activity_or_output(
                                     runtime,
@@ -1076,7 +1260,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     &rendered,
                                     baseline_pane_hash,
                                     output_json.as_deref(),
-                                    Duration::from_secs(20),
+                                    Duration::from_secs((*startup_grace_secs).max(20)),
                                 )?
                             {
                                 failed_steps.push(step_index);
@@ -1088,10 +1272,10 @@ impl<'a> WorkflowExecutor<'a> {
                                     duration_ms: started.elapsed().as_millis() as u64,
                                     exit_code: None,
                                     timed_out: true,
-                                    message: Some(
-                                        "prompt did not start activity or produce output within 20s"
-                                            .to_string(),
-                                    ),
+                                    message: Some(format!(
+                                        "prompt did not start activity or produce output within {}s",
+                                        (*startup_grace_secs).max(20)
+                                    )),
                                     stdout: None,
                                     stderr: None,
                                 });
@@ -1382,7 +1566,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     std::thread::sleep(Duration::from_secs(2));
                                     if let Ok(artifact_path) =
                                         capture_artifact(pre_snap, expanded_pattern, art_name)
-                                        && let Ok(saved) = store_artifact_output(
+                                        && let Ok(result) = store_artifact_output(
                                             self.project_root,
                                             &run_id,
                                             art_name,
@@ -1391,9 +1575,9 @@ impl<'a> WorkflowExecutor<'a> {
                                     {
                                         output_files.insert(
                                             art_name.to_string(),
-                                            saved.path.display().to_string(),
+                                            result.json_path.display().to_string(),
                                         );
-                                        outputs.insert(art_name.to_string(), saved);
+                                        outputs.insert(art_name.to_string(), result.value);
                                     }
                                 }
                                 step_results.push(StepResult {
@@ -1446,7 +1630,7 @@ impl<'a> WorkflowExecutor<'a> {
                                         std::thread::sleep(Duration::from_secs(2));
                                         if let Ok(artifact_path) =
                                             capture_artifact(pre_snap, expanded_pattern, art_name)
-                                            && let Ok(saved) = store_artifact_output(
+                                            && let Ok(result) = store_artifact_output(
                                                 self.project_root,
                                                 &run_id,
                                                 art_name,
@@ -1455,9 +1639,9 @@ impl<'a> WorkflowExecutor<'a> {
                                         {
                                             output_files.insert(
                                                 art_name.to_string(),
-                                                saved.path.display().to_string(),
+                                                result.json_path.display().to_string(),
                                             );
-                                            outputs.insert(art_name.to_string(), saved);
+                                            outputs.insert(art_name.to_string(), result.value);
                                         }
                                     }
                                     step_results.push(StepResult {
@@ -1540,12 +1724,12 @@ impl<'a> WorkflowExecutor<'a> {
                                         art_name,
                                         &artifact_path,
                                     ) {
-                                        Ok(saved) => {
+                                        Ok(result) => {
                                             output_files.insert(
                                                 art_name.to_string(),
-                                                saved.path.display().to_string(),
+                                                result.json_path.display().to_string(),
                                             );
-                                            outputs.insert(art_name.to_string(), saved);
+                                            outputs.insert(art_name.to_string(), result.value);
                                         }
                                         Err(e) => {
                                             failed_steps.push(step_index);
@@ -2378,6 +2562,9 @@ impl<'a> WorkflowExecutor<'a> {
             }
         }
 
+        let (template_id, template_version) =
+            crate::state::parse_template_tag(&self.project_root.join("tutti.toml"))
+                .unwrap_or((None, None));
         append_automation_run(
             self.project_root,
             &AutomationRunRecord {
@@ -2391,6 +2578,8 @@ impl<'a> WorkflowExecutor<'a> {
                 agent_scope: agent_scope.map(|s| s.to_string()),
                 hook_event: options.hook_event.clone(),
                 hook_agent: options.hook_agent.clone(),
+                template_id,
+                template_version,
             },
         )?;
 
@@ -2591,13 +2780,22 @@ fn capture_artifact(
     Ok(newest.clone())
 }
 
+/// Artifact output with both the raw file path (for inject_files) and the
+/// canonical JSON path (for checkpoint/resume).
+struct ArtifactStoreResult {
+    /// The in-memory output value (path points to the raw artifact file).
+    value: StepOutputValue,
+    /// The canonical JSON path that can be read back by `load_resume_outputs`.
+    json_path: PathBuf,
+}
+
 /// Store an artifact file as a step output value (copy to workflow-outputs and register).
 fn store_artifact_output(
     project_root: &Path,
     run_id: &str,
     artifact_name: &str,
     artifact_path: &Path,
-) -> Result<StepOutputValue> {
+) -> Result<ArtifactStoreResult> {
     let body = std::fs::read_to_string(artifact_path).map_err(|e| {
         TuttiError::ConfigValidation(format!(
             "failed reading artifact '{}' at {}: {e}",
@@ -2623,9 +2821,12 @@ fn store_artifact_output(
         ))
     })?;
 
-    Ok(StepOutputValue {
-        path: raw_path,
-        json: json_value,
+    Ok(ArtifactStoreResult {
+        value: StepOutputValue {
+            path: raw_path,
+            json: json_value,
+        },
+        json_path: canonical_path,
     })
 }
 
@@ -2643,7 +2844,7 @@ fn prompt_agent_with_files(
         .agents
         .iter()
         .find(|a| a.name == agent)
-        .and_then(|a| a.resolved_runtime(&config.defaults))
+        .and_then(|a| a.resolved_runtime(&config.defaults, &config.roles))
         .unwrap_or_else(|| "unknown".to_string());
 
     if !TmuxSession::session_exists(&session_name) {
@@ -4672,6 +4873,7 @@ mod tests {
                 persistent: false,
                 memory: None,
                 env: HashMap::new(),
+                role: None,
             }],
             tool_packs: vec![],
             workflows: vec![workflow],
@@ -4680,6 +4882,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         }
     }
 
@@ -5889,6 +6092,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 },
                 AgentConfig {
                     name: "reviewer".to_string(),
@@ -5902,6 +6106,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 },
             ],
             tool_packs: vec![],
@@ -5960,6 +6165,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
 
         let dir = std::env::temp_dir().join("tutti-test-resolver-control-steps");
@@ -6099,8 +6305,12 @@ mod tests {
         std::fs::write(&artifact, "# Design\nThis is the design doc.").unwrap();
 
         let result = store_artifact_output(&dir, "run-001", "design_doc", &artifact).unwrap();
-        assert!(result.path.exists());
-        assert!(matches!(result.json, Value::String(_)));
+        assert!(result.value.path.exists());
+        assert!(result.json_path.exists());
+        assert!(matches!(result.value.json, Value::String(_)));
+        // json_path should be resumable (valid JSON file)
+        let json_body = std::fs::read_to_string(&result.json_path).unwrap();
+        let _: Value = serde_json::from_str(&json_body).unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
     }

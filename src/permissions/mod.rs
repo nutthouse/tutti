@@ -3,6 +3,7 @@ use crate::error::Result;
 use serde_json::json;
 
 const CLAUDE_TOOL_NAMES: &[&str] = &[
+    "AskUserQuestion",
     "Bash",
     "Edit",
     "ExitPlanMode",
@@ -13,6 +14,7 @@ const CLAUDE_TOOL_NAMES: &[&str] = &[
     "NotebookEdit",
     "NotebookRead",
     "Read",
+    "Skill",
     "Task",
     "TodoRead",
     "TodoWrite",

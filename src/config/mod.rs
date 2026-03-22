@@ -12,6 +12,9 @@ pub struct TuttiConfig {
     pub workspace: WorkspaceConfig,
     #[serde(default)]
     pub defaults: DefaultsConfig,
+    /// Role-to-runtime mapping table. Agents with `role` resolve their runtime here.
+    #[serde(default)]
+    pub roles: Option<HashMap<String, String>>,
     #[serde(default)]
     pub launch: Option<LaunchConfig>,
     #[serde(default, rename = "agent")]
@@ -116,6 +119,9 @@ pub struct AgentConfig {
     /// Agent-level environment variables (override workspace env).
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Role name for runtime resolution via [roles] table.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -558,8 +564,20 @@ fn step_is_control(step: &WorkflowStepConfig) -> bool {
 }
 
 impl AgentConfig {
-    pub fn resolved_runtime(&self, defaults: &DefaultsConfig) -> Option<String> {
-        self.runtime.clone().or_else(|| defaults.runtime.clone())
+    pub(crate) fn resolved_runtime(
+        &self,
+        defaults: &DefaultsConfig,
+        roles: &Option<HashMap<String, String>>,
+    ) -> Option<String> {
+        // Resolution order: explicit runtime > role lookup > defaults.runtime
+        self.runtime
+            .clone()
+            .or_else(|| {
+                self.role
+                    .as_ref()
+                    .and_then(|role| roles.as_ref().and_then(|r| r.get(role).cloned()))
+            })
+            .or_else(|| defaults.runtime.clone())
     }
 
     pub fn resolved_worktree(&self, defaults: &DefaultsConfig) -> bool {
@@ -623,10 +641,32 @@ impl TuttiConfig {
         // Check for dependency cycles
         topological_sort(&self.agents)?;
 
+        // Validate role mappings
+        for agent in &self.agents {
+            if let Some(ref role) = agent.role {
+                match &self.roles {
+                    None => {
+                        return Err(TuttiError::ConfigValidation(format!(
+                            "agent '{}' has role '{}' but [roles] table is not defined",
+                            agent.name, role
+                        )));
+                    }
+                    Some(roles) => {
+                        if !roles.contains_key(role) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "agent '{}' has role '{}' but [roles] does not define it",
+                                agent.name, role
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         // Check runtimes are known
         let known_runtimes = ["claude-code", "codex", "aider", "openclaw"];
         for agent in &self.agents {
-            if let Some(rt) = agent.resolved_runtime(&self.defaults)
+            if let Some(rt) = agent.resolved_runtime(&self.defaults, &self.roles)
                 && !known_runtimes.contains(&rt.as_str())
             {
                 return Err(TuttiError::ConfigValidation(format!(
@@ -778,7 +818,10 @@ impl TuttiConfig {
                         artifact_name,
                         ..
                     } => {
+                        // Allow wait_timeout_secs/startup_grace_secs when artifact_glob
+                        // is set (artifact-polling mode uses wait_timeout_secs as deadline)
                         if !wait_for_idle.unwrap_or(false)
+                            && artifact_glob.is_none()
                             && (wait_timeout_secs.is_some() || startup_grace_secs.is_some())
                         {
                             return Err(TuttiError::ConfigValidation(format!(
@@ -857,13 +900,9 @@ impl TuttiConfig {
                                         idx + 1
                                     )));
                                 }
-                                if !wait_for_idle.unwrap_or(false) {
-                                    return Err(TuttiError::ConfigValidation(format!(
-                                        "workflow '{}', step {} uses artifact_glob but wait_for_idle is not true; artifact capture requires waiting for the step to complete",
-                                        workflow.name,
-                                        idx + 1
-                                    )));
-                                }
+                                // artifact_glob works in two modes:
+                                // - wait_for_idle=true: wait for idle, then capture (non-interactive)
+                                // - wait_for_idle=false/omitted: poll for artifact file (interactive skills)
                                 // Validate artifact_name matches step-id character rules
                                 if !n
                                     .chars()
@@ -2247,10 +2286,74 @@ workflow_source = "run"
             persistent: false,
             memory: None,
             env: HashMap::new(),
+            role: None,
         };
         assert_eq!(
-            agent.resolved_runtime(&defaults),
+            agent.resolved_runtime(&defaults, &None),
             Some("claude-code".to_string())
+        );
+    }
+
+    #[test]
+    fn resolved_runtime_uses_role_mapping() {
+        let defaults = DefaultsConfig {
+            worktree: true,
+            runtime: Some("claude-code".to_string()),
+        };
+        let roles: Option<HashMap<String, String>> = Some(
+            [("reviewer".to_string(), "codex".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let agent = AgentConfig {
+            name: "reviewer".to_string(),
+            runtime: None,
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: None,
+            env: HashMap::new(),
+            role: Some("reviewer".to_string()),
+        };
+        assert_eq!(
+            agent.resolved_runtime(&defaults, &roles),
+            Some("codex".to_string())
+        );
+    }
+
+    #[test]
+    fn resolved_runtime_explicit_overrides_role() {
+        let defaults = DefaultsConfig {
+            worktree: true,
+            runtime: Some("claude-code".to_string()),
+        };
+        let roles: Option<HashMap<String, String>> = Some(
+            [("reviewer".to_string(), "codex".to_string())]
+                .into_iter()
+                .collect(),
+        );
+        let agent = AgentConfig {
+            name: "reviewer".to_string(),
+            runtime: Some("aider".to_string()),
+            scope: None,
+            prompt: None,
+            depends_on: vec![],
+            worktree: None,
+            fresh_worktree: None,
+            branch: None,
+            persistent: false,
+            memory: None,
+            env: HashMap::new(),
+            role: Some("reviewer".to_string()),
+        };
+        // Explicit runtime wins over role mapping
+        assert_eq!(
+            agent.resolved_runtime(&defaults, &roles),
+            Some("aider".to_string())
         );
     }
 
@@ -2268,6 +2371,7 @@ workflow_source = "run"
             persistent: false,
             memory: None,
             env: HashMap::new(),
+            role: None,
         };
         assert_eq!(agent.resolved_branch(), "tutti/backend");
     }
@@ -2286,6 +2390,7 @@ workflow_source = "run"
             persistent: false,
             memory: None,
             env: HashMap::new(),
+            role: None,
         };
         assert!(!agent.resolved_fresh_worktree());
         agent.fresh_worktree = Some(true);
@@ -2473,7 +2578,7 @@ artifact_name = "design_doc"
     }
 
     #[test]
-    fn artifact_requires_wait_for_idle() {
+    fn artifact_glob_without_wait_for_idle_is_valid() {
         let toml_str = r#"
 [workspace]
 name = "test"
@@ -2490,12 +2595,14 @@ type = "prompt"
 id = "design"
 agent = "planner"
 text = "/office-hours"
+wait_timeout_secs = 3600
 artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
 artifact_name = "design_doc"
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("wait_for_idle"));
+        // Should validate without error — artifact_glob without wait_for_idle
+        // uses artifact-polling mode for interactive skills
+        config.validate().unwrap();
     }
 
     #[test]

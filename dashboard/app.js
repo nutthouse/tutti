@@ -737,7 +737,7 @@ function pollFocusUsage() {
   if (!fa) return;
   var url = "/v1/agents/" + encodeURIComponent(fa.workspace) + "/" + encodeURIComponent(fa.agent) + "/focus?lines=1&usage=1";
   fetch(url).then(function(res) { return res.json(); }).then(function(json) {
-    if (!appState.focusAgent || appState.focusAgent.agent !== fa.agent) return;
+    if (!appState.focusAgent || appState.focusAgent.workspace !== fa.workspace || appState.focusAgent.agent !== fa.agent) return;
     if (!json.data || !json.data.usage) return;
     // Update just the usage stats section
     var u = json.data.usage;
@@ -746,6 +746,12 @@ function pollFocusUsage() {
     statsHtml += statRow("output tokens", formatTokens(u.output_tokens || 0));
     statsHtml += statRow("cache read", formatTokens(u.cache_read || 0), "green");
     statsHtml += statRow("cache write", formatTokens(u.cache_write || 0));
+    var ctxPct = json.data.context_pct;
+    if (ctxPct != null) {
+      var ctxColor = ctxPct <= 70 ? "green" : (ctxPct <= 90 ? "amber" : "red");
+      statsHtml += statRow("context", ctxPct + "%", ctxColor);
+      statsHtml += '<div class="focus-ctx-bar"><div class="focus-ctx-fill" style="width:' + ctxPct + '%;background:var(--' + (ctxColor === "green" ? "working" : ctxColor === "amber" ? "auth-fail" : "blocked") + ')"></div></div>';
+    }
     $focusStats.innerHTML = statsHtml;
   }).catch(function() { /* silently ignore usage poll errors */ });
 }
@@ -788,23 +794,34 @@ function renderFocusView(data) {
     if (wasAtBottom) termEl.scrollTop = termEl.scrollHeight;
   }
 
-  // Usage stats
-  var u = data.usage || {};
-  var statsHtml = "";
-  statsHtml += statRow("input tokens", formatTokens(u.input_tokens || 0));
-  statsHtml += statRow("output tokens", formatTokens(u.output_tokens || 0));
-  statsHtml += statRow("cache read", formatTokens(u.cache_read || 0), "green");
-  statsHtml += statRow("cache write", formatTokens(u.cache_write || 0));
-  // Context bar
-  var ctxPct = data.context_pct;
-  if (ctxPct != null) {
+  // Usage stats — only update if this response includes usage data.
+  // The separate pollFocusUsage() handles the slow usage poll; don't
+  // overwrite it with zeros from the fast terminal poll.
+  if (data.usage && (data.usage.input_tokens || data.usage.output_tokens || data.usage.cache_read || data.usage.cache_write)) {
+    var u = data.usage;
+    var statsHtml = "";
+    statsHtml += statRow("input tokens", formatTokens(u.input_tokens || 0));
+    statsHtml += statRow("output tokens", formatTokens(u.output_tokens || 0));
+    statsHtml += statRow("cache read", formatTokens(u.cache_read || 0), "green");
+    statsHtml += statRow("cache write", formatTokens(u.cache_write || 0));
+    // Context bar
+    var ctxPct = data.context_pct;
+    if (ctxPct != null) {
+      var ctxColor = ctxPct <= 70 ? "green" : (ctxPct <= 90 ? "amber" : "red");
+      statsHtml += statRow("context", ctxPct + "%", ctxColor);
+      statsHtml += '<div class="focus-ctx-bar"><div class="focus-ctx-fill" style="width:' + ctxPct + '%;background:var(--' + (ctxColor === "green" ? "working" : ctxColor === "amber" ? "auth-fail" : "blocked") + ')"></div></div>';
+    } else {
+      statsHtml += statRow("context", "\u2014");
+    }
+    $focusStats.innerHTML = statsHtml;
+  } else if (data.context_pct != null && $focusStats.innerHTML === "") {
+    // At least show context bar even without full usage data
+    var ctxPct = data.context_pct;
     var ctxColor = ctxPct <= 70 ? "green" : (ctxPct <= 90 ? "amber" : "red");
-    statsHtml += statRow("context", ctxPct + "%", ctxColor);
+    var statsHtml = statRow("context", ctxPct + "%", ctxColor);
     statsHtml += '<div class="focus-ctx-bar"><div class="focus-ctx-fill" style="width:' + ctxPct + '%;background:var(--' + (ctxColor === "green" ? "working" : ctxColor === "amber" ? "auth-fail" : "blocked") + ')"></div></div>';
-  } else {
-    statsHtml += statRow("context", "\u2014");
+    $focusStats.innerHTML = statsHtml;
   }
-  $focusStats.innerHTML = statsHtml;
 
   // Diff
   var d = data.diff || {};

@@ -157,7 +157,7 @@ pub fn probe_workspace(
 
     for agent in &config.agents {
         let runtime_name = agent
-            .resolved_runtime(&config.defaults)
+            .resolved_runtime(&config.defaults, &config.roles)
             .unwrap_or_else(|| "unknown".to_string());
         let session_name = TmuxSession::session_name(&config.workspace.name, &agent.name);
         let running = TmuxSession::session_exists(&session_name);

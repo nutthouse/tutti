@@ -26,6 +26,16 @@ pub enum TuttiError {
     #[error("unknown runtime: {0}")]
     RuntimeUnknown(String),
 
+    #[error(
+        "template parse error: {0} — check the template syntax or run `tt init --template <name>` with a valid template"
+    )]
+    TemplateParse(String),
+
+    #[error(
+        "template not found: '{0}' — run `tt init` to list available templates, or provide a path to a custom .toml file"
+    )]
+    TemplateNotFound(String),
+
     #[error("agent '{0}' not found in config")]
     AgentNotFound(String),
 

@@ -56,7 +56,7 @@ pub fn gather_workspace_snapshots_with_selected_tail(
 
     for agent in &config.agents {
         let runtime_name = agent
-            .resolved_runtime(&config.defaults)
+            .resolved_runtime(&config.defaults, &config.roles)
             .unwrap_or_else(|| "—".to_string());
 
         let session = TmuxSession::session_name(&config.workspace.name, &agent.name);

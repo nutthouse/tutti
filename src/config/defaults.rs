@@ -1,4 +1,6 @@
 /// Default tutti.toml template written by `tt init`.
+/// Kept for backwards compatibility and tests; new `tt init` uses templates.
+#[allow(dead_code)]
 pub const DEFAULT_CONFIG: &str = r#"# tutti.toml — your agent team configuration
 # Docs: https://github.com/nutthouse/tutti
 

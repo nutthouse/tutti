@@ -79,7 +79,7 @@ pub fn run(
                 project_root: project_root.to_path_buf(),
                 agent_name: agent.name.clone(),
                 runtime: agent
-                    .resolved_runtime(&config.defaults)
+                    .resolved_runtime(&config.defaults, &config.roles)
                     .unwrap_or_else(|| "—".to_string()),
                 session_name: session.clone(),
                 reason: "manual".to_string(),
@@ -177,7 +177,7 @@ fn run_all(clean: bool) -> Result<()> {
                                 project_root: project_root.to_path_buf(),
                                 agent_name: agent.name.clone(),
                                 runtime: agent
-                                    .resolved_runtime(&config.defaults)
+                                    .resolved_runtime(&config.defaults, &config.roles)
                                     .unwrap_or_else(|| "—".to_string()),
                                 session_name: session.clone(),
                                 reason: "manual".to_string(),

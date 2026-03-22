@@ -39,7 +39,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize a new tutti.toml in the current directory
-    Init,
+    Init {
+        /// Template name or path to a template .toml file
+        #[arg(short, long)]
+        template: Option<String>,
+    },
 
     /// Launch agent sessions
     Up {

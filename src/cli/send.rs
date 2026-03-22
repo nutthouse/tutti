@@ -207,7 +207,7 @@ fn resolve_agent_ref(agent_ref: &str) -> Result<SendTarget> {
             .find(|a| a.name == agent_name)
             .ok_or_else(|| TuttiError::AgentNotFound(agent_ref.to_string()))?;
         let runtime_name = agent
-            .resolved_runtime(&config.defaults)
+            .resolved_runtime(&config.defaults, &config.roles)
             .unwrap_or_else(|| "unknown".to_string());
         let project_root = config_path.parent().ok_or_else(|| {
             TuttiError::ConfigValidation("could not determine workspace root".to_string())
@@ -227,7 +227,7 @@ fn resolve_agent_ref(agent_ref: &str) -> Result<SendTarget> {
             .find(|a| a.name == agent_ref)
             .ok_or_else(|| TuttiError::AgentNotFound(agent_ref.to_string()))?;
         let runtime_name = agent
-            .resolved_runtime(&config.defaults)
+            .resolved_runtime(&config.defaults, &config.roles)
             .unwrap_or_else(|| "unknown".to_string());
         let project_root = config_path.parent().ok_or_else(|| {
             TuttiError::ConfigValidation("could not determine workspace root".to_string())
