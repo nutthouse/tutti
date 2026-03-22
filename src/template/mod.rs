@@ -1,6 +1,6 @@
 use crate::error::{Result, TuttiError};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const SEPARATOR: &str = "# ── config below ──";
@@ -19,7 +19,7 @@ pub struct TemplateMetadata {
     #[serde(default)]
     pub detect_all: Vec<String>,
     #[serde(default)]
-    pub roles: HashMap<String, TemplateRoleDef>,
+    pub roles: BTreeMap<String, TemplateRoleDef>,
 }
 
 /// Role definition within a template.
