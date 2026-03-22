@@ -114,6 +114,21 @@ pub fn run(
     }
 
     if dry_run {
+        // Validate artifact_glob dependencies at dry-run time
+        for (idx, step) in resolved.steps.iter().enumerate() {
+            if let crate::automation::ResolvedStep::Prompt {
+                artifact_glob: Some(glob_pat),
+                ..
+            } = step
+                && glob_pat.contains("{slug}")
+                && let Err(e) = crate::automation::validate_gstack_slug_available()
+            {
+                return Err(crate::error::TuttiError::ConfigValidation(format!(
+                    "workflow step {} uses {{slug}} in artifact_glob but {e}",
+                    idx + 1
+                )));
+            }
+        }
         if json {
             println!(
                 "{}",
@@ -225,13 +240,18 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                 agent,
                 text,
                 inject_files,
+                artifact_glob,
+                artifact_name,
                 ..
             } => {
-                let summary = if inject_files.is_empty() {
+                let mut summary = if inject_files.is_empty() {
                     text.clone()
                 } else {
                     format!("{text} [inject:{}]", inject_files.len())
                 };
+                if let (Some(glob_pat), Some(name)) = (artifact_glob, artifact_name) {
+                    summary = format!("{summary} [artifact:{name} glob:{glob_pat}]");
+                }
                 table.add_row(vec![
                     (idx + 1).to_string(),
                     "prompt".to_string(),
@@ -332,6 +352,10 @@ enum DryRunStep {
         agent: String,
         summary: String,
         inject_files: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact_glob: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact_name: Option<String>,
     },
     Command {
         index: usize,
@@ -376,12 +400,16 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 agent,
                 text,
                 inject_files,
+                artifact_glob,
+                artifact_name,
                 ..
             } => steps.push(DryRunStep::Prompt {
                 index: idx + 1,
                 agent: agent.clone(),
                 summary: text.clone(),
                 inject_files: inject_files.len(),
+                artifact_glob: artifact_glob.clone(),
+                artifact_name: artifact_name.clone(),
             }),
             ResolvedStep::Command {
                 run,
@@ -522,10 +550,13 @@ mod tests {
                     runtime: "claude-code".to_string(),
                     session_name: "sess".to_string(),
                     inject_files: vec![],
+                    inject_files_raw: vec![],
                     output_json: None,
                     wait_for_idle: false,
                     wait_timeout_secs: 900,
                     startup_grace_secs: 30,
+                    artifact_glob: None,
+                    artifact_name: None,
                 },
                 ResolvedStep::Command {
                     step_id: None,
@@ -550,6 +581,7 @@ mod tests {
                 summary,
                 index,
                 inject_files,
+                ..
             } => {
                 assert_eq!(*index, 1);
                 assert_eq!(agent, "backend");
