@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.8.0] - 2026-03-23
+
+### Added
+- **Template Packs**: `tt init --template <name>` generates a fully configured
+  `tutti.toml` from built-in or custom templates. Three starter templates:
+  `gstack-startup` (5-agent interactive SDLC), `rust-cli` (3-agent with verify
+  workflow), and `minimal` (2-agent fallback).
+- **Role Mapping**: `[roles]` table maps logical roles to runtimes. Agents
+  declare `role = "planner"` instead of hardcoding `runtime = "claude-code"`.
+  Resolution order: explicit runtime > role lookup > defaults.
+- **Repo Auto-Detection**: Templates declare `detect` (any-match) and
+  `detect_all` (all-match) arrays of filenames. `tt init` without `--template`
+  scans the repo root and suggests the best-matching template.
+- **Artifact-Polling Mode**: When `artifact_glob` is set without `wait_for_idle`,
+  tutti polls for the artifact file instead of idle-detecting. Enables interactive
+  gstack skills (`/office-hours`, `/plan-eng-review`) where the agent waits for
+  human input mid-task.
+- **Template Event Tagging**: `template_id` and `template_version` on
+  `AutomationRunRecord`, parsed from `# template:` comment in tutti.toml.
+
+### Fixed
+- Added `Skill` and `AskUserQuestion` to `CLAUDE_TOOL_NAMES` so gstack skills
+  work in `dontAsk` permission mode.
+- Dashboard focus sidebar race condition: fast poll no longer overwrites usage
+  stats with zeros from empty response.
+
 ## [0.7.0] - 2026-03-22
 
 ### Added
