@@ -1091,18 +1091,21 @@ fn agent_focus_data(
     // Usage stats — expensive filesystem scan (~10s on large projects).
     // Only compute when ?usage=1 is passed. The dashboard requests this
     // on a slower 30s cadence, not on every 2s terminal poll.
-    let usage_data = if query.get("usage").map(|v| v == "1").unwrap_or(false) {
+    let include_usage = query.get("usage").map(|v| v == "1").unwrap_or(false);
+    let usage_data = if include_usage {
         let since = chrono::Utc::now() - chrono::Duration::days(7);
-        crate::usage::scan_workspace_usage(
-            &target.project_root,
-            &target.config.workspace.name,
-            since,
+        Some(
+            crate::usage::scan_workspace_usage(
+                &target.project_root,
+                &target.config.workspace.name,
+                since,
+            )
+            .ok()
+            .and_then(|wu| wu.by_agent.get(agent_name).cloned())
+            .unwrap_or_default(),
         )
-        .ok()
-        .and_then(|wu| wu.by_agent.get(agent_name).cloned())
-        .unwrap_or_default()
     } else {
-        crate::usage::AggregatedUsage::default()
+        None
     };
 
     // Git diff — resolve worktree and run git diff
@@ -1135,29 +1138,33 @@ fn agent_focus_data(
         (String::new(), 0, 0, 0)
     };
 
-    Ok(api_ok(
-        "agent.focus",
-        json!({
-            "workspace": workspace,
-            "agent": agent_name,
-            "session": session,
-            "running": running,
-            "terminal": terminal_output,
-            "context_pct": context_pct,
-            "usage": {
-                "input_tokens": usage_data.total.input_tokens,
-                "output_tokens": usage_data.total.output_tokens,
-                "cache_read": usage_data.total.cache_read_input_tokens,
-                "cache_write": usage_data.total.cache_creation_input_tokens,
-            },
-            "diff": {
-                "text": diff_text,
-                "files_changed": files_changed,
-                "insertions": insertions,
-                "deletions": deletions,
-            }
-        }),
-    ))
+    let mut focus_data = json!({
+        "workspace": workspace,
+        "agent": agent_name,
+        "session": session,
+        "running": running,
+        "terminal": terminal_output,
+        "context_pct": context_pct,
+        "diff": {
+            "text": diff_text,
+            "files_changed": files_changed,
+            "insertions": insertions,
+            "deletions": deletions,
+        }
+    });
+
+    // Only include usage when explicitly requested — prevents the fast poll
+    // from overwriting real usage data with zeros on the client side
+    if let Some(usage) = usage_data {
+        focus_data["usage"] = json!({
+            "input_tokens": usage.total.input_tokens,
+            "output_tokens": usage.total.output_tokens,
+            "cache_read": usage.total.cache_read_input_tokens,
+            "cache_write": usage.total.cache_creation_input_tokens,
+        });
+    }
+
+    Ok(api_ok("agent.focus", focus_data))
 }
 
 fn parse_diff_stat(stat: &str) -> (usize, usize, usize) {
