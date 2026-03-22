@@ -1375,6 +1375,27 @@ impl<'a> WorkflowExecutor<'a> {
                                 && finalize_implementer_worktree_changes(self.project_root, agent)?
                                 && prompt_step_has_branch_progress(self.project_root, agent)?
                             {
+                                // Run artifact capture before early success exit
+                                if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
+                                    (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                                {
+                                    std::thread::sleep(Duration::from_secs(2));
+                                    if let Ok(artifact_path) =
+                                        capture_artifact(pre_snap, expanded_pattern, art_name)
+                                        && let Ok(saved) = store_artifact_output(
+                                            self.project_root,
+                                            &run_id,
+                                            art_name,
+                                            &artifact_path,
+                                        )
+                                    {
+                                        output_files.insert(
+                                            art_name.to_string(),
+                                            saved.path.display().to_string(),
+                                        );
+                                        outputs.insert(art_name.to_string(), saved);
+                                    }
+                                }
                                 step_results.push(StepResult {
                                     index: step_index,
                                     step_type: "prompt".to_string(),
@@ -1418,6 +1439,27 @@ impl<'a> WorkflowExecutor<'a> {
                                     )?
                                     && prompt_step_has_branch_progress(self.project_root, agent)?
                                 {
+                                    // Run artifact capture before early success exit
+                                    if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
+                                        (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                                    {
+                                        std::thread::sleep(Duration::from_secs(2));
+                                        if let Ok(artifact_path) =
+                                            capture_artifact(pre_snap, expanded_pattern, art_name)
+                                            && let Ok(saved) = store_artifact_output(
+                                                self.project_root,
+                                                &run_id,
+                                                art_name,
+                                                &artifact_path,
+                                            )
+                                        {
+                                            output_files.insert(
+                                                art_name.to_string(),
+                                                saved.path.display().to_string(),
+                                            );
+                                            outputs.insert(art_name.to_string(), saved);
+                                        }
+                                    }
                                     step_results.push(StepResult {
                                         index: step_index,
                                         step_type: "prompt".to_string(),
@@ -2450,7 +2492,11 @@ pub fn validate_gstack_slug_available() -> Result<()> {
 /// Shell out to gstack-slug to resolve the project slug.
 fn resolve_gstack_slug() -> Result<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let slug_bin = PathBuf::from(&home).join(".claude/skills/gstack/bin/gstack-slug");
+    resolve_gstack_slug_with_home(&home)
+}
+
+fn resolve_gstack_slug_with_home(home: &str) -> Result<String> {
+    let slug_bin = PathBuf::from(home).join(".claude/skills/gstack/bin/gstack-slug");
 
     if !slug_bin.exists() {
         return Err(TuttiError::ConfigValidation(format!(
@@ -2578,7 +2624,7 @@ fn store_artifact_output(
     })?;
 
     Ok(StepOutputValue {
-        path: canonical_path,
+        path: raw_path,
         json: json_value,
     })
 }
@@ -6075,24 +6121,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn gstack_slug_missing_binary_returns_actionable_error() {
         // This test verifies the error message when gstack-slug is missing
-        // We test the error path by using a non-existent HOME
-        let original_home = std::env::var("HOME").ok();
-        unsafe {
-            std::env::set_var("HOME", "/nonexistent-path-for-test");
-        }
-
-        let result = resolve_gstack_slug();
+        // Uses the injectable home dir parameter instead of mutating process env
+        let result = resolve_gstack_slug_with_home("/nonexistent-path-for-test");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("gstack-slug not found"));
-
-        if let Some(home) = original_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
-        }
     }
 }

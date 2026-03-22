@@ -148,7 +148,7 @@ main#factory {
   background: var(--bg);
   padding: 0 4px;
   white-space: nowrap;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   opacity: 0.85;
 }
 

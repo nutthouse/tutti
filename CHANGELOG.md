@@ -5,10 +5,10 @@
 ### Added
 - **Artifact Pipeline**: Prompt steps can now capture and pass artifacts between
   workflow stages. New `artifact_glob` and `artifact_name` fields on prompt steps
-  enable glob-based artifact discovery after a skill completes, with pre-step
+  enable glob-based artifact discovery after a prompt step completes, with pre-step
   snapshot to prevent race conditions with concurrent runs.
 - **inject_files template expansion**: `inject_files` now supports
-  `{{output.step_id.path}}` template references, allowing artifacts from prior
+  `{{output.artifact_name.path}}` template references, allowing artifacts from prior
   steps to be automatically injected into downstream agents' worktrees.
 - **Dashboard artifact labels**: Flow connectors on the factory floor show
   artifact names flowing between pipeline stages during active workflow runs.

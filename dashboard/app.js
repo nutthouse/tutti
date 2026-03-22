@@ -132,7 +132,7 @@ function artifactBetweenStages(fromStage, toStage) {
   var ids = Object.keys(appState.runs);
   for (var i = 0; i < ids.length; i++) {
     var run = appState.runs[ids[i]];
-    if (!run.steps) continue;
+    if (!run.steps || run.status !== "running") continue;
     for (var j = 0; j < run.steps.length; j++) {
       var step = run.steps[j];
       if (step && step.artifactName && step.stage === fromStage && step.status === "completed") {
