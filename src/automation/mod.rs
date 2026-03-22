@@ -1063,12 +1063,177 @@ impl<'a> WorkflowExecutor<'a> {
                             wait_for_idle,
                             wait_timeout_secs,
                             startup_grace_secs,
+                            artifact_glob: step_artifact_glob,
+                            artifact_name: step_artifact_name,
                             ..
                         } = step
                         {
                             if runtime == "codex" || runtime == "claude-code" {
                                 maybe_submit_buffered_prompt(session_name, &rendered)?;
                             }
+
+                            // Artifact-polling mode: artifact_glob set but wait_for_idle is false.
+                            // Poll for the artifact file instead of idle detection.
+                            // This supports interactive skills (e.g. /office-hours) where the
+                            // agent goes idle while waiting for human input.
+                            let use_artifact_polling = step_artifact_glob.is_some()
+                                && step_artifact_name.is_some()
+                                && !*wait_for_idle;
+
+                            if use_artifact_polling
+                                && let Some((ref expanded_pattern, ref pre_snap)) =
+                                    artifact_pre_snapshot
+                            {
+                                    let poll_interval = Duration::from_secs(5);
+                                    let deadline = Duration::from_secs(*wait_timeout_secs);
+                                    let poll_start = std::time::Instant::now();
+                                    let art_name = step_artifact_name.as_deref().unwrap();
+
+                                    eprintln!(
+                                        "  artifact-polling mode: waiting up to {}s for new file matching '{}'",
+                                        wait_timeout_secs, expanded_pattern
+                                    );
+
+                                    let mut artifact_found = false;
+                                    while poll_start.elapsed() < deadline {
+                                        std::thread::sleep(poll_interval);
+
+                                        // Check if session is still alive
+                                        if !TmuxSession::session_exists(session_name) {
+                                            // Session exited — check if artifact was produced
+                                            // before breaking
+                                            if let Ok(artifact_path) = capture_artifact(
+                                                pre_snap,
+                                                expanded_pattern,
+                                                art_name,
+                                            ) {
+                                                match store_artifact_output(
+                                                    self.project_root,
+                                                    &run_id,
+                                                    art_name,
+                                                    &artifact_path,
+                                                ) {
+                                                    Ok(saved) => {
+                                                        output_files.insert(
+                                                            art_name.to_string(),
+                                                            saved.path.display().to_string(),
+                                                        );
+                                                        outputs.insert(art_name.to_string(), saved);
+                                                        artifact_found = true;
+                                                    }
+                                                    Err(e) => {
+                                                        failed_steps.push(step_index);
+                                                        success = false;
+                                                        step_results.push(StepResult {
+                                                            index: step_index,
+                                                            step_type: "prompt".to_string(),
+                                                            status: StepStatus::Failed,
+                                                            duration_ms: started.elapsed().as_millis()
+                                                                as u64,
+                                                            exit_code: None,
+                                                            timed_out: false,
+                                                            message: Some(format!(
+                                                                "artifact store failed for '{}': {e}",
+                                                                art_name
+                                                            )),
+                                                            stdout: None,
+                                                            stderr: None,
+                                                        });
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            break;
+                                        }
+
+                                        // Check if new artifact file has appeared
+                                        if let Ok(artifact_path) =
+                                            capture_artifact(pre_snap, expanded_pattern, art_name)
+                                        {
+                                            match store_artifact_output(
+                                                self.project_root,
+                                                &run_id,
+                                                art_name,
+                                                &artifact_path,
+                                            ) {
+                                                Ok(saved) => {
+                                                    output_files.insert(
+                                                        art_name.to_string(),
+                                                        saved.path.display().to_string(),
+                                                    );
+                                                    outputs.insert(art_name.to_string(), saved);
+                                                    artifact_found = true;
+                                                }
+                                                Err(e) => {
+                                                    failed_steps.push(step_index);
+                                                    success = false;
+                                                    step_results.push(StepResult {
+                                                        index: step_index,
+                                                        step_type: "prompt".to_string(),
+                                                        status: StepStatus::Failed,
+                                                        duration_ms: started.elapsed().as_millis()
+                                                            as u64,
+                                                        exit_code: None,
+                                                        timed_out: false,
+                                                        message: Some(format!(
+                                                            "artifact store failed for '{}': {e}",
+                                                            art_name
+                                                        )),
+                                                        stdout: None,
+                                                        stderr: None,
+                                                    });
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+
+                                    if !artifact_found && success {
+                                        failed_steps.push(step_index);
+                                        success = false;
+                                        step_results.push(StepResult {
+                                            index: step_index,
+                                            step_type: "prompt".to_string(),
+                                            status: StepStatus::Failed,
+                                            duration_ms: started.elapsed().as_millis() as u64,
+                                            exit_code: None,
+                                            timed_out: true,
+                                            message: Some(format!(
+                                                "artifact '{}' not found after {}s of polling",
+                                                art_name, wait_timeout_secs
+                                            )),
+                                            stdout: None,
+                                            stderr: None,
+                                        });
+                                        break;
+                                    }
+
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: if artifact_found {
+                                            StepStatus::Success
+                                        } else {
+                                            StepStatus::Failed
+                                        },
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: if artifact_found { Some(0) } else { None },
+                                        timed_out: false,
+                                        message: Some(if artifact_found {
+                                            format!(
+                                                "artifact '{}' captured via polling after {}s",
+                                                art_name,
+                                                poll_start.elapsed().as_secs()
+                                            )
+                                        } else {
+                                            format!("artifact '{}' failed", art_name)
+                                        }),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    continue;
+                            }
+
                             if *wait_for_idle
                                 && !wait_for_prompt_activity_or_output(
                                     runtime,

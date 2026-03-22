@@ -778,7 +778,10 @@ impl TuttiConfig {
                         artifact_name,
                         ..
                     } => {
+                        // Allow wait_timeout_secs/startup_grace_secs when artifact_glob
+                        // is set (artifact-polling mode uses wait_timeout_secs as deadline)
                         if !wait_for_idle.unwrap_or(false)
+                            && artifact_glob.is_none()
                             && (wait_timeout_secs.is_some() || startup_grace_secs.is_some())
                         {
                             return Err(TuttiError::ConfigValidation(format!(
@@ -857,13 +860,9 @@ impl TuttiConfig {
                                         idx + 1
                                     )));
                                 }
-                                if !wait_for_idle.unwrap_or(false) {
-                                    return Err(TuttiError::ConfigValidation(format!(
-                                        "workflow '{}', step {} uses artifact_glob but wait_for_idle is not true; artifact capture requires waiting for the step to complete",
-                                        workflow.name,
-                                        idx + 1
-                                    )));
-                                }
+                                // artifact_glob works in two modes:
+                                // - wait_for_idle=true: wait for idle, then capture (non-interactive)
+                                // - wait_for_idle=false/omitted: poll for artifact file (interactive skills)
                                 // Validate artifact_name matches step-id character rules
                                 if !n
                                     .chars()
@@ -2473,7 +2472,7 @@ artifact_name = "design_doc"
     }
 
     #[test]
-    fn artifact_requires_wait_for_idle() {
+    fn artifact_glob_without_wait_for_idle_is_valid() {
         let toml_str = r#"
 [workspace]
 name = "test"
@@ -2490,12 +2489,14 @@ type = "prompt"
 id = "design"
 agent = "planner"
 text = "/office-hours"
+wait_timeout_secs = 3600
 artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
 artifact_name = "design_doc"
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("wait_for_idle"));
+        // Should validate without error — artifact_glob without wait_for_idle
+        // uses artifact-polling mode for interactive skills
+        config.validate().unwrap();
     }
 
     #[test]
