@@ -21,10 +21,18 @@ Tutti spawns multiple AI coding agents in tmux sessions, gives each one its own 
 ```bash
 cargo install tutti        # install the CLI (requires Rust)
 cd your-project
-tt init                    # create a tutti.toml with detected runtimes
+tt init                    # auto-detect repo type and generate tutti.toml
 tt up                      # launch your agent team
 tt serve --port 4040       # start the web dashboard at localhost:4040
-tt run sdlc-auto           # run a full plan→implement→test→review→ship pipeline
+tt run sdlc-gstack         # run an interactive design→review→implement→test→ship pipeline
+```
+
+Or pick a template explicitly:
+
+```bash
+tt init --template gstack-startup   # 5-agent interactive SDLC team
+tt init --template rust-cli         # 3-agent Rust project team
+tt init --template minimal          # 2-agent starter
 ```
 
 **Prerequisites:** Rust toolchain, tmux, and at least one AI coding CLI installed (Claude Code, Codex, or Aider).
@@ -66,13 +74,18 @@ Your agent team topology is defined in `tutti.toml` — who does what, which run
 [workspace]
 name = "my-project"
 
+[roles]
+implementer = "claude-code"
+tester = "claude-code"
+reviewer = "codex"
+
 [[agent]]
 name = "implementer"
-runtime = "claude-code"
+role = "implementer"
 
 [[agent]]
 name = "tester"
-runtime = "claude-code"
+role = "tester"
 
 [[workflow]]
 name = "verify"
@@ -83,7 +96,7 @@ text = "Run the test suite and report results."
 wait_for_idle = true
 ```
 
-Version it. Share it. Fork someone else's.
+Swap `claude-code` for `codex` in `[roles]` and every agent using that role switches runtime — no per-agent edits. Version it. Share it. Fork someone else's.
 
 ## Quick Start
 
@@ -114,11 +127,15 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.5.0 — March 2026)
+## Project Status (v0.8.0 — March 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
-- Runtime adapters: Claude Code, Codex CLI, Aider
+- Runtime adapters: Claude Code, Codex CLI, Aider, OpenClaw
+- Template packs: `tt init --template gstack-startup` generates a fully configured team from built-in or custom templates, with repo auto-detection
+- Role mapping: `[roles]` table maps logical roles to runtimes — swap providers without editing every agent
+- Artifact pipeline: prompt steps capture and pass typed artifacts between workflow stages via `artifact_glob`/`artifact_name`
+- Artifact-polling mode: interactive skills (e.g. `/office-hours`) wait for artifact files instead of idle detection, enabling human-in-the-loop workflows
 - Dependency-aware startup order (`depends_on`)
 - Per-agent git worktree isolation
 - Cross-workspace registry (`tt workspaces`, `tt up --all`, `tt down --all`)
@@ -305,6 +322,21 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Push/open PRs from agent branches (`tt land <agent> --pr`)
 - Dispatch review packets to reviewer agent (`tt review <agent>`)
 - Ad-hoc prompt dispatch with optional auto-start + wait + captured output (`tt send --auto_up --wait --output`)
+
+### Template Packs (Built)
+- `tt init --template <name>` generates `tutti.toml` from built-in or custom templates
+- Three starter templates: `gstack-startup` (5-agent interactive SDLC), `rust-cli` (3-agent with verify workflow), `minimal` (2-agent fallback)
+- Repo auto-detection: templates declare `detect` (any-match) and `detect_all` (all-match) file patterns; `tt init` without `--template` scans the repo and suggests the best match
+- Role mapping via `[roles]` table — agents declare `role = "planner"` instead of hardcoding runtimes; resolution order: explicit runtime > role lookup > defaults
+- `{{project_name}}` variable substitution in template config body
+- Template tag (`# template: name version`) in generated config, propagated to `AutomationRunRecord`
+
+### Artifact Pipeline (Built)
+- Prompt steps capture output artifacts via `artifact_glob` and `artifact_name` — after a step completes, tutti globs for new files matching the pattern
+- Downstream steps reference artifacts via `inject_files = ["{{output.artifact_name.path}}"]` — files are copied into the target agent's worktree
+- Artifact-polling mode: when `artifact_glob` is set without `wait_for_idle`, tutti polls for the artifact file every 5s instead of idle-detecting, enabling interactive skills (e.g. `/office-hours`) where the agent waits for human input
+- Pre-step snapshot prevents race conditions with concurrent runs
+- Glob patterns support `~`, `{slug}`, `{workspace}`, and `{agent}` interpolation
 
 ### Automation (Built)
 - `tt run` / `tt verify` reusable workflow execution with persisted run records

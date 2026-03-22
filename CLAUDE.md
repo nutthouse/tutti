@@ -7,11 +7,14 @@
 
 ## Architecture
 - `src/cli/` — Clap command handlers, one file per subcommand
-- `src/config/` — TOML config types and parsing
+- `src/config/` — TOML config types and parsing (includes role mapping + `[roles]` table)
 - `src/runtime/` — RuntimeAdapter trait + per-runtime implementations
 - `src/session/` — tmux session management wrappers
 - `src/worktree/` — Git worktree lifecycle
 - `src/state/` — .tutti/ directory and agent state persistence
+- `src/template/` — Template pack parsing, generation, repo detection, and built-in templates
+- `src/automation/` — Workflow execution engine, artifact pipeline, artifact-polling mode
+- `src/permissions/` — Claude Code settings generation and shell policy shims
 - `src/error.rs` — Central error types via thiserror
 
 ## Naming
