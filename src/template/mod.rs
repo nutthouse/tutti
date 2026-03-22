@@ -71,7 +71,9 @@ pub fn parse_template(content: &str) -> Result<ParsedTemplate> {
 }
 
 /// Generate a tutti.toml from a parsed template.
-pub fn generate_config(template: &ParsedTemplate, project_name: &str) -> String {
+///
+/// Returns an error if the rendered config is not valid TOML.
+pub fn generate_config(template: &ParsedTemplate, project_name: &str) -> Result<String> {
     let header = format!(
         "# template: {} {}\n",
         template.metadata.name, template.metadata.version
@@ -81,7 +83,17 @@ pub fn generate_config(template: &ParsedTemplate, project_name: &str) -> String 
         .config_body
         .replace("{{project_name}}", project_name);
 
-    format!("{header}{body}")
+    let rendered = format!("{header}{body}");
+
+    // Validate the rendered TOML to catch template/substitution errors early
+    toml::from_str::<toml::Value>(&rendered).map_err(|e| {
+        TuttiError::TemplateParse(format!(
+            "generated config from template '{}' is invalid TOML: {e}",
+            template.metadata.name
+        ))
+    })?;
+
+    Ok(rendered)
 }
 
 /// Built-in templates embedded at compile time.
@@ -236,7 +248,7 @@ prompt = "You review code."
     #[test]
     fn generate_config_substitutes_variables() {
         let parsed = parse_template(TEST_TEMPLATE).unwrap();
-        let config = generate_config(&parsed, "my-app");
+        let config = generate_config(&parsed, "my-app").unwrap();
         assert!(config.starts_with("# template: test-template 0.1.0\n"));
         assert!(config.contains("name = \"my-app\""));
         assert!(!config.contains("{{project_name}}"));
@@ -245,7 +257,7 @@ prompt = "You review code."
     #[test]
     fn generated_config_parses_as_tutti_config() {
         let parsed = parse_template(TEST_TEMPLATE).unwrap();
-        let config_str = generate_config(&parsed, "my-app");
+        let config_str = generate_config(&parsed, "my-app").unwrap();
         let config: crate::config::TuttiConfig = toml::from_str(&config_str).unwrap();
         assert_eq!(config.workspace.name, "my-app");
         assert_eq!(config.agents.len(), 2);
@@ -298,7 +310,8 @@ name = "test"
             assert_eq!(parsed.metadata.name, name);
 
             // Verify generated config is valid TOML
-            let config_str = generate_config(&parsed, "test-project");
+            let config_str = generate_config(&parsed, "test-project")
+                .unwrap_or_else(|e| panic!("template '{}' generates invalid config: {}", name, e));
             let _config: crate::config::TuttiConfig = toml::from_str(&config_str)
                 .unwrap_or_else(|e| panic!("template '{}' generates invalid config: {}", name, e));
         }

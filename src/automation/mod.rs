@@ -1111,12 +1111,13 @@ impl<'a> WorkflowExecutor<'a> {
                                                 art_name,
                                                 &artifact_path,
                                             ) {
-                                                Ok(saved) => {
+                                                Ok(result) => {
                                                     output_files.insert(
                                                         art_name.to_string(),
-                                                        saved.path.display().to_string(),
+                                                        result.json_path.display().to_string(),
                                                     );
-                                                    outputs.insert(art_name.to_string(), saved);
+                                                    outputs
+                                                        .insert(art_name.to_string(), result.value);
                                                     artifact_found = true;
                                                 }
                                                 Err(e) => {
@@ -1137,9 +1138,29 @@ impl<'a> WorkflowExecutor<'a> {
                                                         stdout: None,
                                                         stderr: None,
                                                     });
+                                                    // Abort the prompt step on store failure
                                                     break;
                                                 }
                                             }
+                                        } else {
+                                            // Session died without producing the artifact
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis()
+                                                    as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(format!(
+                                                    "session exited before artifact '{}' was produced",
+                                                    art_name
+                                                )),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
                                         }
                                         break;
                                     }
@@ -1154,12 +1175,12 @@ impl<'a> WorkflowExecutor<'a> {
                                             art_name,
                                             &artifact_path,
                                         ) {
-                                            Ok(saved) => {
+                                            Ok(result) => {
                                                 output_files.insert(
                                                     art_name.to_string(),
-                                                    saved.path.display().to_string(),
+                                                    result.json_path.display().to_string(),
                                                 );
-                                                outputs.insert(art_name.to_string(), saved);
+                                                outputs.insert(art_name.to_string(), result.value);
                                                 artifact_found = true;
                                             }
                                             Err(e) => {
@@ -1545,7 +1566,7 @@ impl<'a> WorkflowExecutor<'a> {
                                     std::thread::sleep(Duration::from_secs(2));
                                     if let Ok(artifact_path) =
                                         capture_artifact(pre_snap, expanded_pattern, art_name)
-                                        && let Ok(saved) = store_artifact_output(
+                                        && let Ok(result) = store_artifact_output(
                                             self.project_root,
                                             &run_id,
                                             art_name,
@@ -1554,9 +1575,9 @@ impl<'a> WorkflowExecutor<'a> {
                                     {
                                         output_files.insert(
                                             art_name.to_string(),
-                                            saved.path.display().to_string(),
+                                            result.json_path.display().to_string(),
                                         );
-                                        outputs.insert(art_name.to_string(), saved);
+                                        outputs.insert(art_name.to_string(), result.value);
                                     }
                                 }
                                 step_results.push(StepResult {
@@ -1609,7 +1630,7 @@ impl<'a> WorkflowExecutor<'a> {
                                         std::thread::sleep(Duration::from_secs(2));
                                         if let Ok(artifact_path) =
                                             capture_artifact(pre_snap, expanded_pattern, art_name)
-                                            && let Ok(saved) = store_artifact_output(
+                                            && let Ok(result) = store_artifact_output(
                                                 self.project_root,
                                                 &run_id,
                                                 art_name,
@@ -1618,9 +1639,9 @@ impl<'a> WorkflowExecutor<'a> {
                                         {
                                             output_files.insert(
                                                 art_name.to_string(),
-                                                saved.path.display().to_string(),
+                                                result.json_path.display().to_string(),
                                             );
-                                            outputs.insert(art_name.to_string(), saved);
+                                            outputs.insert(art_name.to_string(), result.value);
                                         }
                                     }
                                     step_results.push(StepResult {
@@ -1703,12 +1724,12 @@ impl<'a> WorkflowExecutor<'a> {
                                         art_name,
                                         &artifact_path,
                                     ) {
-                                        Ok(saved) => {
+                                        Ok(result) => {
                                             output_files.insert(
                                                 art_name.to_string(),
-                                                saved.path.display().to_string(),
+                                                result.json_path.display().to_string(),
                                             );
-                                            outputs.insert(art_name.to_string(), saved);
+                                            outputs.insert(art_name.to_string(), result.value);
                                         }
                                         Err(e) => {
                                             failed_steps.push(step_index);
@@ -2542,7 +2563,8 @@ impl<'a> WorkflowExecutor<'a> {
         }
 
         let (template_id, template_version) =
-            crate::state::parse_template_tag(&self.project_root.join("tutti.toml"));
+            crate::state::parse_template_tag(&self.project_root.join("tutti.toml"))
+                .unwrap_or((None, None));
         append_automation_run(
             self.project_root,
             &AutomationRunRecord {
@@ -2758,13 +2780,22 @@ fn capture_artifact(
     Ok(newest.clone())
 }
 
+/// Artifact output with both the raw file path (for inject_files) and the
+/// canonical JSON path (for checkpoint/resume).
+struct ArtifactStoreResult {
+    /// The in-memory output value (path points to the raw artifact file).
+    value: StepOutputValue,
+    /// The canonical JSON path that can be read back by `load_resume_outputs`.
+    json_path: PathBuf,
+}
+
 /// Store an artifact file as a step output value (copy to workflow-outputs and register).
 fn store_artifact_output(
     project_root: &Path,
     run_id: &str,
     artifact_name: &str,
     artifact_path: &Path,
-) -> Result<StepOutputValue> {
+) -> Result<ArtifactStoreResult> {
     let body = std::fs::read_to_string(artifact_path).map_err(|e| {
         TuttiError::ConfigValidation(format!(
             "failed reading artifact '{}' at {}: {e}",
@@ -2790,9 +2821,12 @@ fn store_artifact_output(
         ))
     })?;
 
-    Ok(StepOutputValue {
-        path: raw_path,
-        json: json_value,
+    Ok(ArtifactStoreResult {
+        value: StepOutputValue {
+            path: raw_path,
+            json: json_value,
+        },
+        json_path: canonical_path,
     })
 }
 
@@ -6271,8 +6305,12 @@ mod tests {
         std::fs::write(&artifact, "# Design\nThis is the design doc.").unwrap();
 
         let result = store_artifact_output(&dir, "run-001", "design_doc", &artifact).unwrap();
-        assert!(result.path.exists());
-        assert!(matches!(result.json, Value::String(_)));
+        assert!(result.value.path.exists());
+        assert!(result.json_path.exists());
+        assert!(matches!(result.value.json, Value::String(_)));
+        // json_path should be resumable (valid JSON file)
+        let json_body = std::fs::read_to_string(&result.json_path).unwrap();
+        let _: Value = serde_json::from_str(&json_body).unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
     }

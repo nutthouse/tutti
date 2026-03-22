@@ -7,30 +7,32 @@ use std::path::{Path, PathBuf};
 
 /// Parse template_id and template_version from the first line of a tutti.toml.
 /// Expected format: `# template: <name> <version>`
-pub fn parse_template_tag(config_path: &Path) -> (Option<String>, Option<String>) {
-    let Ok(content) = std::fs::read_to_string(config_path) else {
-        return (None, None);
-    };
+///
+/// Returns `Ok((None, None))` when the file has no template tag.
+/// Returns `Err` when the file cannot be read.
+pub fn parse_template_tag(config_path: &Path) -> Result<(Option<String>, Option<String>)> {
+    let content = std::fs::read_to_string(config_path)?;
     let Some(first_line) = content.lines().next() else {
-        return (None, None);
+        return Ok((None, None));
     };
-    // Regex: ^# template: ([A-Za-z0-9_-]+) (.+)$
-    let stripped = first_line.strip_prefix("# template: ");
-    match stripped {
-        Some(rest) => {
-            let mut parts = rest.splitn(2, ' ');
-            let id = parts.next().map(|s| s.to_string());
-            let version = parts.next().map(|s| s.to_string());
-            if let Some(ref id_str) = id
+    let Some(rest) = first_line.strip_prefix("# template: ") else {
+        return Ok((None, None));
+    };
+    let mut parts = rest.splitn(2, ' ');
+    let id = parts.next().map(|s| s.to_string());
+    let version = parts.next().map(|s| s.to_string());
+    // Reject empty id, missing version, or empty version
+    match (&id, &version) {
+        (Some(id_str), Some(ver_str))
+            if !id_str.is_empty()
+                && !ver_str.is_empty()
                 && id_str
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            {
-                return (id, version);
-            }
-            (None, None)
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
+            Ok((id, version))
         }
-        None => (None, None),
+        _ => Ok((None, None)),
     }
 }
 
@@ -1691,7 +1693,7 @@ mod tests {
             "# template: gstack-startup 0.1.0\n[workspace]\nname = \"test\"\n",
         )
         .unwrap();
-        let (id, version) = parse_template_tag(&config_path);
+        let (id, version) = parse_template_tag(&config_path).unwrap();
         assert_eq!(id.as_deref(), Some("gstack-startup"));
         assert_eq!(version.as_deref(), Some("0.1.0"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1703,7 +1705,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let config_path = dir.join("tutti.toml");
         std::fs::write(&config_path, "[workspace]\nname = \"test\"\n").unwrap();
-        let (id, version) = parse_template_tag(&config_path);
+        let (id, version) = parse_template_tag(&config_path).unwrap();
         assert!(id.is_none());
         assert!(version.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1711,8 +1713,41 @@ mod tests {
 
     #[test]
     fn parse_template_tag_nonexistent_file() {
-        let (id, version) = parse_template_tag(Path::new("/nonexistent/tutti.toml"));
+        let missing = std::env::temp_dir().join(format!(
+            "tutti-test-nonexistent-{}/tutti.toml",
+            std::process::id()
+        ));
+        let result = parse_template_tag(&missing);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_template_tag_rejects_partial_tags() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-tpl-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Missing version
+        let config_path = dir.join("tutti.toml");
+        std::fs::write(
+            &config_path,
+            "# template: minimal\n[workspace]\nname = \"t\"\n",
+        )
+        .unwrap();
+        let (id, version) = parse_template_tag(&config_path).unwrap();
         assert!(id.is_none());
         assert!(version.is_none());
+
+        // Empty id
+        std::fs::write(
+            &config_path,
+            "# template:  0.1.0\n[workspace]\nname = \"t\"\n",
+        )
+        .unwrap();
+        let (id, version) = parse_template_tag(&config_path).unwrap();
+        assert!(id.is_none());
+        assert!(version.is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -564,7 +564,7 @@ fn step_is_control(step: &WorkflowStepConfig) -> bool {
 }
 
 impl AgentConfig {
-    pub fn resolved_runtime(
+    pub(crate) fn resolved_runtime(
         &self,
         defaults: &DefaultsConfig,
         roles: &Option<HashMap<String, String>>,

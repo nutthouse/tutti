@@ -364,7 +364,7 @@ artifact_name = "test_plan"
 # No wait_for_idle — artifact-polling mode for interactive /plan-eng-review
 
 [[workflow.step]]
-id = "implement"
+id = "implement_code"
 type = "prompt"
 agent = "implementer"
 text = "Read the design doc and test plan in your .tutti/artifacts/ directory. Implement the approved design. Commit and push when done."
@@ -376,7 +376,7 @@ inject_files = ["{{output.design_doc.path}}", "{{output.test_plan.path}}"]
 [[workflow.step]]
 id = "validate"
 type = "command"
-run = "cargo test --quiet"
+run = "cd .tutti/worktrees/implementer && cargo test --quiet"
 fail_mode = "closed"
 
 [[workflow.step]]

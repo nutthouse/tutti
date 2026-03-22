@@ -23,7 +23,13 @@ pub fn run(agent_ref: &str, lines: u32, json: bool) -> Result<()> {
     let agent = resolved.agent_config()?;
     let runtime_name = agent
         .resolved_runtime(&resolved.config.defaults, &resolved.config.roles)
-        .unwrap_or_else(|| "unknown".to_string());
+        .ok_or_else(|| {
+            TuttiError::ConfigValidation(format!(
+                "agent '{}' has no runtime — set 'runtime' on the agent, assign a 'role' \
+                 with a [roles] mapping, or set 'defaults.runtime' in tutti.toml",
+                resolved.agent_name
+            ))
+        })?;
     let session = TmuxSession::session_name(&resolved.workspace_name, &resolved.agent_name);
 
     ensure_session_running(&session, &resolved.agent_name)?;

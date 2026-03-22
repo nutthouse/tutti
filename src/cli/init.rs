@@ -22,7 +22,7 @@ pub fn run(template_name: Option<&str>) -> Result<()> {
         // Explicit template specified
         let (_tpl_name, parsed) = template::load_template(name)?;
         print_template_info(&parsed);
-        template::generate_config(&parsed, project_name)
+        template::generate_config(&parsed, project_name)?
     } else {
         // Auto-detect: scan repo for matching templates
         let matches = template::detect_templates(&cwd);
@@ -32,7 +32,7 @@ pub fn run(template_name: Option<&str>) -> Result<()> {
             let (name, parsed, _score) = &matches[0];
             println!("Detected repo type — using '{}' template.", name);
             print_template_info(parsed);
-            template::generate_config(parsed, project_name)
+            template::generate_config(parsed, project_name)?
         } else if matches.len() > 1 {
             // Low confidence: multiple matches — use first but list alternatives
             println!("Multiple templates match this repo:");
@@ -45,27 +45,36 @@ pub fn run(template_name: Option<&str>) -> Result<()> {
             println!();
 
             // Fall back to minimal
-            let content = BuiltinTemplates::get("minimal").unwrap();
+            let content = BuiltinTemplates::get("minimal").ok_or_else(|| {
+                TuttiError::TemplateParse(
+                    "built-in 'minimal' template missing — reinstall or run `tt doctor`".into(),
+                )
+            })?;
             let parsed = template::parse_template(content)?;
             println!(
                 "Using 'minimal' template. Run `tt init --template <name>` to choose a different template."
             );
-            template::generate_config(&parsed, project_name)
+            template::generate_config(&parsed, project_name)?
         } else {
             // No matches — fall back to minimal
-            let content = BuiltinTemplates::get("minimal").unwrap();
+            let content = BuiltinTemplates::get("minimal").ok_or_else(|| {
+                TuttiError::TemplateParse(
+                    "built-in 'minimal' template missing — reinstall or run `tt doctor`".into(),
+                )
+            })?;
             let parsed = template::parse_template(content)?;
             println!("No template matched this repo — using 'minimal' template.");
             println!("Available templates:");
             for &name in BuiltinTemplates::list() {
-                let c = BuiltinTemplates::get(name).unwrap();
-                if let Ok(p) = template::parse_template(c) {
+                if let Some(c) = BuiltinTemplates::get(name)
+                    && let Ok(p) = template::parse_template(c)
+                {
                     println!("  {:<20} {}", name, p.metadata.description);
                 }
             }
             println!();
             println!("Run `tt init --template <name>` to choose a specific template.");
-            template::generate_config(&parsed, project_name)
+            template::generate_config(&parsed, project_name)?
         }
     };
 
@@ -82,11 +91,15 @@ pub fn run(template_name: Option<&str>) -> Result<()> {
         println!("Created global config at {}", global_path.display());
     }
 
-    // Register this workspace in the global config
+    // Register using the workspace name from the generated config, falling back to dir basename
+    let workspace_name = toml::from_str::<crate::config::TuttiConfig>(&config_content)
+        .map(|c| c.workspace.name)
+        .unwrap_or_else(|_| project_name.to_string());
+
     let mut global = GlobalConfig::load()?;
-    global.register_workspace(project_name, &cwd);
+    global.register_workspace(&workspace_name, &cwd);
     global.save()?;
-    println!("Registered workspace '{project_name}'");
+    println!("Registered workspace '{workspace_name}'");
 
     println!("\nEdit tutti.toml to configure your agent team, then run: tt up");
     Ok(())
@@ -139,7 +152,7 @@ pub fn run_template_in(dir: &std::path::Path, template_name: &str) -> Result<()>
         .unwrap_or("unnamed");
 
     let (_name, parsed) = template::load_template(template_name)?;
-    let config_content = template::generate_config(&parsed, project_name);
+    let config_content = template::generate_config(&parsed, project_name)?;
     std::fs::write(&config_path, config_content)?;
     Ok(())
 }
