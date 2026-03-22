@@ -160,6 +160,10 @@ pub enum WorkflowStepConfig {
         wait_timeout_secs: Option<u64>,
         #[serde(default)]
         startup_grace_secs: Option<u64>,
+        #[serde(default)]
+        artifact_glob: Option<String>,
+        #[serde(default)]
+        artifact_name: Option<String>,
     },
     Command {
         #[serde(default)]
@@ -770,6 +774,8 @@ impl TuttiConfig {
                         wait_for_idle,
                         wait_timeout_secs,
                         startup_grace_secs,
+                        artifact_glob,
+                        artifact_name,
                         ..
                     } => {
                         if !wait_for_idle.unwrap_or(false)
@@ -821,6 +827,58 @@ impl TuttiConfig {
                             output_json.as_deref(),
                             &mut step_ids,
                         )?;
+                        match (artifact_glob.as_deref(), artifact_name.as_deref()) {
+                            (Some(_), None) | (None, Some(_)) => {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} must set both artifact_glob and artifact_name, or neither",
+                                    workflow.name,
+                                    idx + 1
+                                )));
+                            }
+                            (Some(_), Some(_)) if id.is_none() => {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} uses artifact_name but is missing id",
+                                    workflow.name,
+                                    idx + 1
+                                )));
+                            }
+                            (Some(g), Some(n)) => {
+                                if g.trim().is_empty() {
+                                    return Err(TuttiError::ConfigValidation(format!(
+                                        "workflow '{}', step {} has empty artifact_glob",
+                                        workflow.name,
+                                        idx + 1
+                                    )));
+                                }
+                                if n.trim().is_empty() {
+                                    return Err(TuttiError::ConfigValidation(format!(
+                                        "workflow '{}', step {} has empty artifact_name",
+                                        workflow.name,
+                                        idx + 1
+                                    )));
+                                }
+                                if !wait_for_idle.unwrap_or(false) {
+                                    return Err(TuttiError::ConfigValidation(format!(
+                                        "workflow '{}', step {} uses artifact_glob but wait_for_idle is not true; artifact capture requires waiting for the step to complete",
+                                        workflow.name,
+                                        idx + 1
+                                    )));
+                                }
+                                // Validate artifact_name matches step-id character rules
+                                if !n
+                                    .chars()
+                                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                                {
+                                    return Err(TuttiError::ConfigValidation(format!(
+                                        "workflow '{}', step {} artifact_name '{}' contains invalid characters; only [A-Za-z0-9_-] are allowed",
+                                        workflow.name,
+                                        idx + 1,
+                                        n
+                                    )));
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                     WorkflowStepConfig::Command {
                         id,
@@ -2291,5 +2349,179 @@ name = "test"
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         assert!(config.webhooks.is_empty());
+    }
+
+    #[test]
+    fn artifact_glob_and_name_parse_from_toml() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "sdlc"
+
+[[workflow.step]]
+type = "prompt"
+id = "design"
+agent = "planner"
+text = "/office-hours"
+wait_for_idle = true
+artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
+artifact_name = "design_doc"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
+        match &config.workflows[0].steps[0] {
+            WorkflowStepConfig::Prompt {
+                artifact_glob,
+                artifact_name,
+                ..
+            } => {
+                assert_eq!(
+                    artifact_glob.as_deref(),
+                    Some("~/.gstack/projects/{slug}/*-design-*.md")
+                );
+                assert_eq!(artifact_name.as_deref(), Some("design_doc"));
+            }
+            _ => panic!("expected prompt"),
+        }
+    }
+
+    #[test]
+    fn artifact_glob_without_name_rejects() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "sdlc"
+
+[[workflow.step]]
+type = "prompt"
+id = "design"
+agent = "planner"
+text = "/office-hours"
+artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("both artifact_glob and artifact_name")
+        );
+    }
+
+    #[test]
+    fn artifact_name_without_glob_rejects() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "sdlc"
+
+[[workflow.step]]
+type = "prompt"
+id = "design"
+agent = "planner"
+text = "/office-hours"
+artifact_name = "design_doc"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("both artifact_glob and artifact_name")
+        );
+    }
+
+    #[test]
+    fn artifact_name_requires_step_id() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "sdlc"
+
+[[workflow.step]]
+type = "prompt"
+agent = "planner"
+text = "/office-hours"
+artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
+artifact_name = "design_doc"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("missing id"));
+    }
+
+    #[test]
+    fn artifact_requires_wait_for_idle() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "sdlc"
+
+[[workflow.step]]
+type = "prompt"
+id = "design"
+agent = "planner"
+text = "/office-hours"
+artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
+artifact_name = "design_doc"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("wait_for_idle"));
+    }
+
+    #[test]
+    fn artifact_name_rejects_invalid_characters() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "sdlc"
+
+[[workflow.step]]
+type = "prompt"
+id = "design"
+agent = "planner"
+text = "/office-hours"
+wait_for_idle = true
+artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
+artifact_name = "design.doc"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
     }
 }
