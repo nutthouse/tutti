@@ -137,12 +137,14 @@ pub fn run(
             budget::enforce_pre_exec(&config, project_root, "up", Some(&agent.name))?;
         print_budget_warnings(&budget_outcome);
 
-        let runtime_name = agent.resolved_runtime(&config.defaults).ok_or_else(|| {
-            TuttiError::ConfigValidation(format!(
-                "agent '{}' has no runtime (set runtime on agent or in [defaults])",
-                agent.name
-            ))
-        })?;
+        let runtime_name = agent
+            .resolved_runtime(&config.defaults, &config.roles)
+            .ok_or_else(|| {
+                TuttiError::ConfigValidation(format!(
+                    "agent '{}' has no runtime (set runtime on agent or in [defaults])",
+                    agent.name
+                ))
+            })?;
 
         let session = TmuxSession::session_name(&config.workspace.name, &agent.name);
 
@@ -713,7 +715,7 @@ fn resolve_launch_permissions<'a>(
 
     let needs_supported_runtime_policy = agents.iter().any(|agent| {
         agent
-            .resolved_runtime(&config.defaults)
+            .resolved_runtime(&config.defaults, &config.roles)
             .as_deref()
             .is_some_and(runtime_supports_policy_constrained_no_prompt)
     });
@@ -1358,7 +1360,7 @@ fn agent_uses_profile(
     let Some(profile) = global.get_profile(profile_name) else {
         return false;
     };
-    let Some(runtime_name) = agent.resolved_runtime(&config.defaults) else {
+    let Some(runtime_name) = agent.resolved_runtime(&config.defaults, &config.roles) else {
         return false;
     };
     runtime::compatible_command_override(
@@ -1537,7 +1539,8 @@ fn run_all(
                         }
                     }
 
-                    let runtime_name = match agent.resolved_runtime(&config.defaults) {
+                    let runtime_name = match agent.resolved_runtime(&config.defaults, &config.roles)
+                    {
                         Some(rt) => rt,
                         None => {
                             eprintln!("  Skipping {} (no runtime)", agent.name);
@@ -1771,6 +1774,7 @@ mod tests {
             persistent: false,
             memory: None,
             env: HashMap::new(),
+            role: None,
         }
     }
 
@@ -1803,6 +1807,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 },
                 AgentConfig {
                     name: "codex-agent".to_string(),
@@ -1816,6 +1821,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 },
             ],
             tool_packs: vec![],
@@ -1825,6 +1831,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -1943,6 +1950,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let env = build_workspace_env(&config);
         assert_eq!(env.get("GIT_AUTHOR_NAME").unwrap(), "Test User");
@@ -1978,6 +1986,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let mut env = build_workspace_env(&config);
         // Simulate agent-level override
@@ -2014,6 +2023,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -2065,6 +2075,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -2128,6 +2139,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -2180,6 +2192,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -2241,6 +2254,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let global = GlobalConfig {
             user: None,
@@ -2327,6 +2341,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
 
         let resolved = resolve_launch_settings(
@@ -2360,6 +2375,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
         let launch_settings = LaunchSettings {
             mode: LaunchMode::Auto,
@@ -2561,6 +2577,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         let injected =
@@ -2604,6 +2621,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         // Inject twice
@@ -2649,6 +2667,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
@@ -2679,6 +2698,7 @@ mod tests {
             persistent: false,
             memory: None,
             env: HashMap::new(),
+            role: None,
         };
 
         inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
@@ -2707,6 +2727,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         inject_agent_memory(&dir, &working.to_string_lossy(), &agent, "claude-code").unwrap();
@@ -2739,6 +2760,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         // working_dir == project_root → should not mutate CLAUDE.md, returns false
@@ -2783,6 +2805,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         let result =
@@ -2819,6 +2842,7 @@ mod tests {
             persistent: false,
             memory: Some(".tutti/state/memory/backend.md".to_string()),
             env: HashMap::new(),
+            role: None,
         };
 
         // file_injected=true → claude-code skips prompt prepending

@@ -26,6 +26,12 @@ pub enum TuttiError {
     #[error("unknown runtime: {0}")]
     RuntimeUnknown(String),
 
+    #[error("template parse error: {0}")]
+    TemplateParse(String),
+
+    #[error("template not found: {0}")]
+    TemplateNotFound(String),
+
     #[error("agent '{0}' not found in config")]
     AgentNotFound(String),
 

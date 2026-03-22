@@ -1,0 +1,68 @@
+[template]
+name = "rust-cli"
+version = "0.1.0"
+description = "Focused Rust CLI team"
+detect_all = ["Cargo.toml", "src/main.rs"]
+
+[template.roles.implementer]
+default_runtime = "claude-code"
+description = "Writes code, commits, pushes"
+
+[template.roles.tester]
+default_runtime = "claude-code"
+description = "Writes and runs tests"
+
+[template.roles.reviewer]
+default_runtime = "codex"
+description = "Reviews diffs for correctness and style"
+
+# ── config below ──
+[workspace]
+name = "{{project_name}}"
+description = "Rust CLI team — generated from rust-cli template"
+
+[defaults]
+worktree = true
+
+[roles]
+implementer = "claude-code"
+tester = "claude-code"
+reviewer = "codex"
+
+[[agent]]
+name = "implementer"
+role = "implementer"
+scope = "src/**"
+prompt = "You own implementation. Follow existing patterns. Commit and push when done."
+
+[[agent]]
+name = "tester"
+role = "tester"
+scope = "src/**"
+depends_on = ["implementer"]
+prompt = "You write and run tests. Run cargo test after changes."
+
+[[agent]]
+name = "reviewer"
+role = "reviewer"
+prompt = "You review PRs for correctness and style."
+
+[[workflow]]
+name = "verify"
+description = "Run cargo test and clippy"
+
+[[workflow.step]]
+id = "test"
+type = "command"
+run = "cargo test --quiet"
+cwd = "workspace"
+fail_mode = "closed"
+timeout_secs = 600
+
+[[workflow.step]]
+id = "clippy"
+type = "command"
+run = "cargo clippy -- -D warnings"
+cwd = "workspace"
+fail_mode = "closed"
+timeout_secs = 300

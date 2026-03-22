@@ -258,6 +258,7 @@ mod tests {
                 persistent: false,
                 memory: None,
                 env: HashMap::new(),
+                role: None,
             }],
             tool_packs: vec![],
             workflows: vec![],
@@ -271,6 +272,7 @@ mod tests {
                 agent_weekly_tokens: caps,
             }),
             webhooks: vec![],
+            roles: None,
         }
     }
 

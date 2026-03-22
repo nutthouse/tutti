@@ -574,6 +574,7 @@ mod tests {
                 persistent: false,
                 memory: None,
                 env: HashMap::new(),
+                role: None,
             }],
             tool_packs: vec![],
             workflows: vec![],
@@ -586,6 +587,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         }
     }
 

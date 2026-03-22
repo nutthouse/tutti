@@ -22,7 +22,7 @@ pub fn run(agent_ref: &str, lines: u32, json: bool) -> Result<()> {
     let resolved = super::agent_ref::resolve(agent_ref)?;
     let agent = resolved.agent_config()?;
     let runtime_name = agent
-        .resolved_runtime(&resolved.config.defaults)
+        .resolved_runtime(&resolved.config.defaults, &resolved.config.roles)
         .unwrap_or_else(|| "unknown".to_string());
     let session = TmuxSession::session_name(&resolved.workspace_name, &resolved.agent_name);
 

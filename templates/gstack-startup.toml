@@ -1,0 +1,68 @@
+[template]
+name = "gstack-startup"
+version = "0.1.0"
+description = "Full SDLC team for startup repos"
+detect = ["package.json", "Cargo.toml", "pyproject.toml"]
+
+[template.roles.planner]
+default_runtime = "claude-code"
+description = "Breaks work into steps, produces structured plans"
+
+[template.roles.implementer]
+default_runtime = "claude-code"
+description = "Writes code, commits, pushes"
+
+[template.roles.tester]
+default_runtime = "claude-code"
+description = "Writes and runs tests"
+
+[template.roles.reviewer]
+default_runtime = "codex"
+description = "Reviews diffs for correctness and style"
+
+[template.roles.docs-release]
+default_runtime = "claude-code"
+description = "Updates docs and changelog"
+
+# ── config below ──
+[workspace]
+name = "{{project_name}}"
+description = "Full SDLC team — generated from gstack-startup template"
+
+[defaults]
+worktree = true
+
+[roles]
+planner = "claude-code"
+implementer = "claude-code"
+tester = "claude-code"
+reviewer = "codex"
+docs-release = "claude-code"
+
+[[agent]]
+name = "planner"
+role = "planner"
+scope = "docs/**"
+prompt = "You own planning and design."
+
+[[agent]]
+name = "implementer"
+role = "implementer"
+scope = "src/**"
+prompt = "You own implementation. Commit and push when done."
+
+[[agent]]
+name = "tester"
+role = "tester"
+scope = "src/**"
+prompt = "You write and run tests."
+
+[[agent]]
+name = "reviewer"
+role = "reviewer"
+prompt = "You review PRs for correctness and style."
+
+[[agent]]
+name = "docs-release"
+role = "docs-release"
+prompt = "You update docs, changelog, and version."

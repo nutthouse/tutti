@@ -1,0 +1,37 @@
+[template]
+name = "minimal"
+version = "0.1.0"
+description = "Minimal two-agent setup"
+
+[template.roles.backend]
+default_runtime = "claude-code"
+description = "Backend development"
+
+[template.roles.frontend]
+default_runtime = "claude-code"
+description = "Frontend development"
+
+# ── config below ──
+[workspace]
+name = "{{project_name}}"
+description = "Minimal agent team — generated from minimal template"
+
+[defaults]
+worktree = true
+runtime = "claude-code"
+
+[roles]
+backend = "claude-code"
+frontend = "claude-code"
+
+[[agent]]
+name = "backend"
+role = "backend"
+scope = "src/api/**"
+prompt = "You own the API layer. Follow existing patterns."
+
+[[agent]]
+name = "frontend"
+role = "frontend"
+scope = "src/app/**"
+prompt = "You own the UI. Follow existing component patterns."

@@ -10,6 +10,7 @@ mod runtime;
 mod scheduler;
 mod session;
 mod state;
+mod template;
 mod usage;
 mod webhook;
 mod worktree;
@@ -24,7 +25,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Init => cli::init::run(),
+        Commands::Init { ref template } => cli::init::run(template.as_deref()),
         Commands::Up {
             ref agent,
             ref workspace,
