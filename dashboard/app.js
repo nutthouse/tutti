@@ -82,7 +82,8 @@ function processWorkflowEvent(evt) {
         status: "running",
         startedAt: evt.timestamp,
         durationMs: null,
-        message: null
+        message: null,
+        artifactName: (evt.data && evt.data.artifact_name) || null
       };
     }
   } else if (evt.event === "workflow.step.completed") {
@@ -124,6 +125,26 @@ function runsAtStage(stage) {
     if (run.stage === stage && run.status !== "completed" && run.status !== "failed") result.push(run);
   }
   return result;
+}
+
+// Find artifact name flowing between two pipeline stages (from active runs)
+function artifactBetweenStages(fromStage, toStage) {
+  var ids = Object.keys(appState.runs);
+  for (var i = 0; i < ids.length; i++) {
+    var run = appState.runs[ids[i]];
+    if (!run.steps || run.status !== "running") continue;
+    for (var j = 0; j < run.steps.length; j++) {
+      var step = run.steps[j];
+      if (step && step.artifactName && step.stage === fromStage && step.status === "completed") {
+        // Check if the next step targets the toStage
+        var nextStep = run.steps[j + 1];
+        if (nextStep && nextStep.stage === toStage) {
+          return step.artifactName;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 // Build a composite key for workspace-scoped agent storage
@@ -241,6 +262,12 @@ function renderPipeline() {
       // Add flowing animation if a run is transitioning through this connector
       if (runsAtStage(prevStage).length > 0 || runsAtStage(stage).length > 0) {
         conn.classList.add("flowing");
+      }
+      // Show artifact labels on connectors
+      var artifactLabel = artifactBetweenStages(prevStage, stage);
+      if (artifactLabel) {
+        var label = el("span", "artifact-label", artifactLabel);
+        conn.appendChild(label);
       }
       $pipeline.appendChild(conn);
     }

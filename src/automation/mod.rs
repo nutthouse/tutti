@@ -190,6 +190,8 @@ impl<'a> WorkflowResolver<'a> {
                     wait_for_idle,
                     wait_timeout_secs,
                     startup_grace_secs,
+                    artifact_glob,
+                    artifact_name,
                 } => {
                     let effective_agent = agent_override.unwrap_or(agent.as_str());
                     self.ensure_agent_exists(effective_agent)?;
@@ -211,12 +213,15 @@ impl<'a> WorkflowResolver<'a> {
                         session_name,
                         inject_files: self
                             .resolve_prompt_injected_files(effective_agent, inject_files),
+                        inject_files_raw: inject_files.clone(),
                         output_json: self
                             .resolve_prompt_output_path(effective_agent, output_json)?,
                         wait_for_idle: wait_for_idle.unwrap_or(false),
                         wait_timeout_secs: wait_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
                         startup_grace_secs: startup_grace_secs
                             .unwrap_or(DEFAULT_STARTUP_GRACE_SECS),
+                        artifact_glob: artifact_glob.clone(),
+                        artifact_name: artifact_name.clone(),
                     });
                 }
                 WorkflowStepConfig::Command {
@@ -486,10 +491,13 @@ pub enum ResolvedStep {
         runtime: String,
         session_name: String,
         inject_files: Vec<PromptInjectedFile>,
+        inject_files_raw: Vec<String>,
         output_json: Option<PathBuf>,
         wait_for_idle: bool,
         wait_timeout_secs: u64,
         startup_grace_secs: u64,
+        artifact_glob: Option<String>,
+        artifact_name: Option<String>,
     },
     Command {
         step_id: Option<String>,
@@ -794,12 +802,22 @@ impl<'a> WorkflowExecutor<'a> {
                         agent: step_agent_name(step).map(|s| s.to_string()),
                         timestamp: Utc::now(),
                         correlation_id: run_id.clone(),
-                        data: Some(json!({
-                            "workflow_name": workflow.name,
-                            "step_index": step_index,
-                            "step_type": step_type_name(step),
-                            "total_steps": workflow.steps.len()
-                        })),
+                        data: Some({
+                            let mut d = json!({
+                                "workflow_name": workflow.name,
+                                "step_index": step_index,
+                                "step_type": step_type_name(step),
+                                "total_steps": workflow.steps.len()
+                            });
+                            if let ResolvedStep::Prompt {
+                                artifact_name: Some(name),
+                                ..
+                            } = step
+                            {
+                                d["artifact_name"] = json!(name);
+                            }
+                            d
+                        }),
                     },
                 );
                 if let Err(err) =
@@ -826,9 +844,12 @@ impl<'a> WorkflowExecutor<'a> {
                         step_id,
                         text,
                         inject_files,
+                        inject_files_raw,
                         session_name,
                         runtime: step_runtime,
                         wait_timeout_secs: step_wait_timeout,
+                        artifact_glob,
+                        artifact_name,
                         ..
                     } => {
                         let started = std::time::Instant::now();
@@ -883,7 +904,60 @@ impl<'a> WorkflowExecutor<'a> {
                             }
                         }
 
-                        if let Err(e) = inject_prompt_files(inject_files) {
+                        // Template-expand inject_files (supports {{output.step_id.path}}).
+                        // We expand the RAW strings first, then resolve paths. If an expanded
+                        // path is absolute (e.g. from an artifact output), use it directly
+                        // instead of joining to project_root.
+                        let expanded_inject_files: Vec<PromptInjectedFile> = match inject_files_raw
+                            .iter()
+                            .zip(inject_files.iter())
+                            .map(|(raw, resolved)| {
+                                let expanded = render_template(raw, &outputs, false)?;
+                                let expanded_path = PathBuf::from(&expanded);
+                                if expanded_path.is_absolute() {
+                                    // Absolute path from artifact output — use directly
+                                    let fname = expanded_path.file_name().ok_or_else(|| {
+                                        TuttiError::ConfigValidation(format!(
+                                            "inject_files expanded path has no filename: {}",
+                                            expanded_path.display()
+                                        ))
+                                    })?;
+                                    Ok(PromptInjectedFile {
+                                        source: expanded_path.clone(),
+                                        destination: resolved
+                                            .destination
+                                            .parent()
+                                            .unwrap_or(Path::new("."))
+                                            .join(fname),
+                                    })
+                                } else {
+                                    // Relative path — use the pre-resolved version
+                                    Ok(resolved.clone())
+                                }
+                            })
+                            .collect::<Result<Vec<_>>>()
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                failed_steps.push(step_index);
+                                success = false;
+                                step_results.push(StepResult {
+                                    index: step_index,
+                                    step_type: "prompt".to_string(),
+                                    status: StepStatus::Failed,
+                                    duration_ms: started.elapsed().as_millis() as u64,
+                                    exit_code: None,
+                                    timed_out: false,
+                                    message: Some(format!(
+                                        "inject_files template expansion failed: {e}"
+                                    )),
+                                    stdout: None,
+                                    stderr: None,
+                                });
+                                break;
+                            }
+                        };
+                        if let Err(e) = inject_prompt_files(&expanded_inject_files) {
                             failed_steps.push(step_index);
                             success = false;
                             step_results.push(StepResult {
@@ -910,6 +984,56 @@ impl<'a> WorkflowExecutor<'a> {
                         {
                             let _ = std::fs::remove_file(path);
                         }
+
+                        // Pre-step artifact snapshot: record existing files before sending
+                        let artifact_pre_snapshot = if let (Some(glob_pat), Some(_)) =
+                            (artifact_glob.as_deref(), artifact_name.as_deref())
+                        {
+                            match expand_artifact_glob(glob_pat, &self.config.workspace.name, agent)
+                            {
+                                Ok(expanded) => match snapshot_artifact_glob(&expanded) {
+                                    Ok(snap) => Some((expanded.clone(), snap)),
+                                    Err(e) => {
+                                        failed_steps.push(step_index);
+                                        success = false;
+                                        step_results.push(StepResult {
+                                            index: step_index,
+                                            step_type: "prompt".to_string(),
+                                            status: StepStatus::Failed,
+                                            duration_ms: started.elapsed().as_millis() as u64,
+                                            exit_code: None,
+                                            timed_out: false,
+                                            message: Some(format!(
+                                                "artifact pre-snapshot failed: {e}"
+                                            )),
+                                            stdout: None,
+                                            stderr: None,
+                                        });
+                                        break;
+                                    }
+                                },
+                                Err(e) => {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(format!(
+                                            "artifact_glob expansion failed: {e}"
+                                        )),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
+                            }
+                        } else {
+                            None
+                        };
 
                         let baseline_pane_hash =
                             TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)
@@ -1251,6 +1375,27 @@ impl<'a> WorkflowExecutor<'a> {
                                 && finalize_implementer_worktree_changes(self.project_root, agent)?
                                 && prompt_step_has_branch_progress(self.project_root, agent)?
                             {
+                                // Run artifact capture before early success exit
+                                if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
+                                    (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                                {
+                                    std::thread::sleep(Duration::from_secs(2));
+                                    if let Ok(artifact_path) =
+                                        capture_artifact(pre_snap, expanded_pattern, art_name)
+                                        && let Ok(saved) = store_artifact_output(
+                                            self.project_root,
+                                            &run_id,
+                                            art_name,
+                                            &artifact_path,
+                                        )
+                                    {
+                                        output_files.insert(
+                                            art_name.to_string(),
+                                            saved.path.display().to_string(),
+                                        );
+                                        outputs.insert(art_name.to_string(), saved);
+                                    }
+                                }
                                 step_results.push(StepResult {
                                     index: step_index,
                                     step_type: "prompt".to_string(),
@@ -1294,6 +1439,27 @@ impl<'a> WorkflowExecutor<'a> {
                                     )?
                                     && prompt_step_has_branch_progress(self.project_root, agent)?
                                 {
+                                    // Run artifact capture before early success exit
+                                    if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
+                                        (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                                    {
+                                        std::thread::sleep(Duration::from_secs(2));
+                                        if let Ok(artifact_path) =
+                                            capture_artifact(pre_snap, expanded_pattern, art_name)
+                                            && let Ok(saved) = store_artifact_output(
+                                                self.project_root,
+                                                &run_id,
+                                                art_name,
+                                                &artifact_path,
+                                            )
+                                        {
+                                            output_files.insert(
+                                                art_name.to_string(),
+                                                saved.path.display().to_string(),
+                                            );
+                                            outputs.insert(art_name.to_string(), saved);
+                                        }
+                                    }
                                     step_results.push(StepResult {
                                         index: step_index,
                                         step_type: "prompt".to_string(),
@@ -1356,6 +1522,68 @@ impl<'a> WorkflowExecutor<'a> {
                                     stderr: None,
                                 });
                                 break;
+                            }
+                        }
+
+                        // Post-step artifact capture
+                        if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
+                            (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                        {
+                            // Brief settle time for filesystem I/O
+                            std::thread::sleep(Duration::from_secs(2));
+
+                            match capture_artifact(pre_snap, expanded_pattern, art_name) {
+                                Ok(artifact_path) => {
+                                    match store_artifact_output(
+                                        self.project_root,
+                                        &run_id,
+                                        art_name,
+                                        &artifact_path,
+                                    ) {
+                                        Ok(saved) => {
+                                            output_files.insert(
+                                                art_name.to_string(),
+                                                saved.path.display().to_string(),
+                                            );
+                                            outputs.insert(art_name.to_string(), saved);
+                                        }
+                                        Err(e) => {
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis() as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(format!(
+                                                    "artifact capture failed for '{}': {e}",
+                                                    art_name
+                                                )),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    failed_steps.push(step_index);
+                                    success = false;
+                                    step_results.push(StepResult {
+                                        index: step_index,
+                                        step_type: "prompt".to_string(),
+                                        status: StepStatus::Failed,
+                                        duration_ms: started.elapsed().as_millis() as u64,
+                                        exit_code: None,
+                                        timed_out: false,
+                                        message: Some(e.to_string()),
+                                        stdout: None,
+                                        stderr: None,
+                                    });
+                                    break;
+                                }
                             }
                         }
 
@@ -2222,6 +2450,185 @@ fn inject_prompt_files(files: &[PromptInjectedFile]) -> Result<()> {
     Ok(())
 }
 
+/// Expand tilde and variable placeholders in an artifact glob pattern.
+fn expand_artifact_glob(pattern: &str, workspace_name: &str, agent_name: &str) -> Result<String> {
+    let home = std::env::var("HOME").map_err(|_| {
+        TuttiError::ConfigValidation("HOME environment variable is not set".to_string())
+    })?;
+
+    let mut expanded = pattern.to_string();
+
+    // Expand ~ at the start of the pattern
+    if expanded.starts_with("~/") {
+        expanded = format!("{}/{}", home, &expanded[2..]);
+    }
+
+    // Expand {workspace} and {agent}
+    expanded = expanded.replace("{workspace}", workspace_name);
+    expanded = expanded.replace("{agent}", agent_name);
+
+    // Expand {slug} by shelling out to gstack-slug
+    if expanded.contains("{slug}") {
+        let slug = resolve_gstack_slug()?;
+        expanded = expanded.replace("{slug}", &slug);
+    }
+
+    Ok(expanded)
+}
+
+/// Validate that gstack-slug is available (for dry-run checks).
+pub fn validate_gstack_slug_available() -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let slug_bin = PathBuf::from(&home).join(".claude/skills/gstack/bin/gstack-slug");
+    if !slug_bin.exists() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "gstack-slug not found at {} — install gstack or use a full path in artifact_glob instead of {{slug}}",
+            slug_bin.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Shell out to gstack-slug to resolve the project slug.
+fn resolve_gstack_slug() -> Result<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    resolve_gstack_slug_with_home(&home)
+}
+
+fn resolve_gstack_slug_with_home(home: &str) -> Result<String> {
+    let slug_bin = PathBuf::from(home).join(".claude/skills/gstack/bin/gstack-slug");
+
+    if !slug_bin.exists() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "gstack-slug not found at {} — install gstack or use a full path in artifact_glob instead of {{slug}}",
+            slug_bin.display()
+        )));
+    }
+
+    let output = Command::new(&slug_bin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            TuttiError::ConfigValidation(format!(
+                "failed to run gstack-slug at {}: {e}",
+                slug_bin.display()
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TuttiError::ConfigValidation(format!(
+            "gstack-slug exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(slug) = line.strip_prefix("SLUG=") {
+            return Ok(slug.to_string());
+        }
+    }
+
+    Err(TuttiError::ConfigValidation(format!(
+        "gstack-slug did not output SLUG=<value>; got: {}",
+        stdout.trim()
+    )))
+}
+
+/// Snapshot files matching a glob pattern (for pre-step artifact capture).
+fn snapshot_artifact_glob(pattern: &str) -> Result<HashSet<PathBuf>> {
+    let paths = glob::glob(pattern).map_err(|e| {
+        TuttiError::ConfigValidation(format!("invalid artifact_glob pattern '{}': {e}", pattern))
+    })?;
+    Ok(paths.filter_map(|p| p.ok()).collect())
+}
+
+/// After a step completes, capture the newest artifact that appeared since the pre-step snapshot.
+fn capture_artifact(
+    pre_snapshot: &HashSet<PathBuf>,
+    pattern: &str,
+    artifact_name: &str,
+) -> Result<PathBuf> {
+    let post_files: Vec<PathBuf> = glob::glob(pattern)
+        .map_err(|e| {
+            TuttiError::ConfigValidation(format!(
+                "invalid artifact_glob pattern '{}': {e}",
+                pattern
+            ))
+        })?
+        .filter_map(|p| p.ok())
+        .filter(|p| !pre_snapshot.contains(p))
+        .collect();
+
+    if post_files.is_empty() {
+        return Err(TuttiError::ConfigValidation(format!(
+            "artifact not found: artifact_glob '{}' matched no new files after step completed for artifact '{}'",
+            pattern, artifact_name
+        )));
+    }
+
+    if post_files.len() > 1 {
+        eprintln!(
+            "warning: artifact_glob '{}' matched {} new files for '{}', using most recent",
+            pattern,
+            post_files.len(),
+            artifact_name
+        );
+    }
+
+    let newest = post_files
+        .iter()
+        .max_by_key(|p| {
+            p.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        })
+        .unwrap(); // safe: post_files is non-empty
+
+    Ok(newest.clone())
+}
+
+/// Store an artifact file as a step output value (copy to workflow-outputs and register).
+fn store_artifact_output(
+    project_root: &Path,
+    run_id: &str,
+    artifact_name: &str,
+    artifact_path: &Path,
+) -> Result<StepOutputValue> {
+    let body = std::fs::read_to_string(artifact_path).map_err(|e| {
+        TuttiError::ConfigValidation(format!(
+            "failed reading artifact '{}' at {}: {e}",
+            artifact_name,
+            artifact_path.display()
+        ))
+    })?;
+
+    // Store as JSON string value (artifact content may not be valid JSON)
+    let json_value = Value::String(body);
+    let canonical_path = save_workflow_output(project_root, run_id, artifact_name, &json_value)?;
+
+    // Also copy the raw artifact file alongside the JSON
+    let raw_path = canonical_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{}.raw", artifact_name));
+    std::fs::copy(artifact_path, &raw_path).map_err(|e| {
+        TuttiError::ConfigValidation(format!(
+            "failed copying artifact '{}' to {}: {e}",
+            artifact_name,
+            raw_path.display()
+        ))
+    })?;
+
+    Ok(StepOutputValue {
+        path: raw_path,
+        json: json_value,
+    })
+}
+
 fn prompt_agent_with_files(
     project_root: &Path,
     config: &TuttiConfig,
@@ -2958,11 +3365,15 @@ fn step_intent_payload(step: &ResolvedStep) -> Value {
             agent,
             text,
             session_name,
+            artifact_glob,
+            artifact_name,
             ..
         } => json!({
             "agent": agent,
             "session_name": session_name,
             "text_chars": text.chars().count(),
+            "artifact_glob": artifact_glob,
+            "artifact_name": artifact_name,
         }),
         ResolvedStep::Command {
             run,
@@ -5575,5 +5986,147 @@ mod tests {
         assert!(matches!(resolved.steps[2], ResolvedStep::Review { .. }));
         assert!(matches!(resolved.steps[3], ResolvedStep::Land { .. }));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_artifact_glob_replaces_workspace_and_agent() {
+        let expanded =
+            expand_artifact_glob("/tmp/{workspace}/{agent}/*.md", "my-project", "planner").unwrap();
+        assert_eq!(expanded, "/tmp/my-project/planner/*.md");
+    }
+
+    #[test]
+    fn expand_artifact_glob_expands_tilde() {
+        let home = std::env::var("HOME").unwrap();
+        let expanded = expand_artifact_glob("~/.gstack/test/*.md", "ws", "ag").unwrap();
+        assert!(expanded.starts_with(&home));
+        assert!(expanded.ends_with("/.gstack/test/*.md"));
+    }
+
+    #[test]
+    fn snapshot_artifact_glob_captures_existing_files() {
+        let dir = std::env::temp_dir().join("tutti-test-snapshot-glob");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let file1 = dir.join("design-001.md");
+        let file2 = dir.join("design-002.md");
+        std::fs::write(&file1, "doc1").unwrap();
+        std::fs::write(&file2, "doc2").unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let snapshot = snapshot_artifact_glob(&pattern).unwrap();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.contains(&file1));
+        assert!(snapshot.contains(&file2));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_picks_newest_new_file() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-artifact");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Pre-existing file
+        let old = dir.join("design-old.md");
+        std::fs::write(&old, "old content").unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+        assert_eq!(pre_snapshot.len(), 1);
+
+        // Simulate skill creating a new file
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let new_file = dir.join("design-new.md");
+        std::fs::write(&new_file, "new artifact content").unwrap();
+
+        let result = capture_artifact(&pre_snapshot, &pattern, "design_doc").unwrap();
+        assert_eq!(result, new_file);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_zero_new_files_fails() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-zero");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let old = dir.join("design-old.md");
+        std::fs::write(&old, "old").unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+
+        // No new files created
+        let err = capture_artifact(&pre_snapshot, &pattern, "design_doc").unwrap_err();
+        assert!(err.to_string().contains("matched no new files"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_multiple_new_files_picks_newest() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-multi");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+
+        // Create two new files with different mtimes
+        let file1 = dir.join("design-a.md");
+        std::fs::write(&file1, "first").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let file2 = dir.join("design-b.md");
+        std::fs::write(&file2, "second (newest)").unwrap();
+
+        let result = capture_artifact(&pre_snapshot, &pattern, "design_doc").unwrap();
+        assert_eq!(result, file2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_artifact_output_creates_output_value() {
+        let dir = std::env::temp_dir().join("tutti-test-store-artifact");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".tutti/state/workflow-outputs")).unwrap();
+
+        let artifact = dir.join("my-design.md");
+        std::fs::write(&artifact, "# Design\nThis is the design doc.").unwrap();
+
+        let result = store_artifact_output(&dir, "run-001", "design_doc", &artifact).unwrap();
+        assert!(result.path.exists());
+        assert!(matches!(result.json, Value::String(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_template_with_artifact_output() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "design_doc".to_string(),
+            StepOutputValue {
+                path: PathBuf::from("/tmp/artifacts/design_doc.raw"),
+                json: Value::String("design content".to_string()),
+            },
+        );
+
+        let rendered = render_template("Read {{output.design_doc.path}}", &outputs, false).unwrap();
+        assert_eq!(rendered, "Read /tmp/artifacts/design_doc.raw");
+    }
+
+    #[test]
+    fn gstack_slug_missing_binary_returns_actionable_error() {
+        // This test verifies the error message when gstack-slug is missing
+        // Uses the injectable home dir parameter instead of mutating process env
+        let result = resolve_gstack_slug_with_home("/nonexistent-path-for-test");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("gstack-slug not found"));
     }
 }
