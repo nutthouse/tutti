@@ -202,7 +202,7 @@ impl<'a> WorkflowResolver<'a> {
                         .agents
                         .iter()
                         .find(|a| a.name == effective_agent)
-                        .and_then(|a| a.resolved_runtime(&self.config.defaults))
+                        .and_then(|a| a.resolved_runtime(&self.config.defaults, &self.config.roles))
                         .unwrap_or_else(|| "unknown".to_string());
                     steps.push(ResolvedStep::Prompt {
                         step_id: id.clone(),
@@ -2543,6 +2543,8 @@ impl<'a> WorkflowExecutor<'a> {
             }
         }
 
+        let (template_id, template_version) =
+            crate::state::parse_template_tag(&self.project_root.join("tutti.toml"));
         append_automation_run(
             self.project_root,
             &AutomationRunRecord {
@@ -2556,6 +2558,8 @@ impl<'a> WorkflowExecutor<'a> {
                 agent_scope: agent_scope.map(|s| s.to_string()),
                 hook_event: options.hook_event.clone(),
                 hook_agent: options.hook_agent.clone(),
+                template_id,
+                template_version,
             },
         )?;
 
@@ -2808,7 +2812,7 @@ fn prompt_agent_with_files(
         .agents
         .iter()
         .find(|a| a.name == agent)
-        .and_then(|a| a.resolved_runtime(&config.defaults))
+        .and_then(|a| a.resolved_runtime(&config.defaults, &config.roles))
         .unwrap_or_else(|| "unknown".to_string());
 
     if !TmuxSession::session_exists(&session_name) {
@@ -4837,6 +4841,7 @@ mod tests {
                 persistent: false,
                 memory: None,
                 env: HashMap::new(),
+                role: None,
             }],
             tool_packs: vec![],
             workflows: vec![workflow],
@@ -4845,6 +4850,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         }
     }
 
@@ -6054,6 +6060,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 },
                 AgentConfig {
                     name: "reviewer".to_string(),
@@ -6067,6 +6074,7 @@ mod tests {
                     persistent: false,
                     memory: None,
                     env: HashMap::new(),
+                    role: None,
                 },
             ],
             tool_packs: vec![],
@@ -6125,6 +6133,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         };
 
         let dir = std::env::temp_dir().join("tutti-test-resolver-control-steps");

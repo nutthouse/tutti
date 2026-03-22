@@ -5,6 +5,35 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Parse template_id and template_version from the first line of a tutti.toml.
+/// Expected format: `# template: <name> <version>`
+pub fn parse_template_tag(config_path: &Path) -> (Option<String>, Option<String>) {
+    let Ok(content) = std::fs::read_to_string(config_path) else {
+        return (None, None);
+    };
+    let Some(first_line) = content.lines().next() else {
+        return (None, None);
+    };
+    // Regex: ^# template: ([A-Za-z0-9_-]+) (.+)$
+    let stripped = first_line.strip_prefix("# template: ");
+    match stripped {
+        Some(rest) => {
+            let mut parts = rest.splitn(2, ' ');
+            let id = parts.next().map(|s| s.to_string());
+            let version = parts.next().map(|s| s.to_string());
+            if let Some(ref id_str) = id
+                && id_str
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return (id, version);
+            }
+            (None, None)
+        }
+        None => (None, None),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentState {
     pub name: String,
@@ -29,6 +58,12 @@ pub struct AutomationRunRecord {
     pub agent_scope: Option<String>,
     pub hook_event: Option<String>,
     pub hook_agent: Option<String>,
+    /// Template identifier from the `# template:` comment in tutti.toml.
+    #[serde(default)]
+    pub template_id: Option<String>,
+    /// Template version from the `# template:` comment in tutti.toml.
+    #[serde(default)]
+    pub template_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,6 +442,9 @@ impl From<&TuttiError> for FailureCategory {
             }
             TuttiError::IssueClaim(_) => FailureCategory::Policy,
             TuttiError::AgentNotFound(_) => FailureCategory::Config,
+            TuttiError::TemplateParse(_) | TuttiError::TemplateNotFound(_) => {
+                FailureCategory::Config
+            }
             TuttiError::Ssh(_) | TuttiError::RemoteConnection(_) => FailureCategory::Runtime,
             TuttiError::Io(_) => FailureCategory::Unknown,
         }
@@ -453,6 +491,13 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
         TuttiError::ConfigNotFound(_) => "Run `tt init` to create tutti.toml".to_string(),
         TuttiError::ConfigParse(_) | TuttiError::ConfigValidation(_) => {
             "Review tutti.toml for syntax or schema errors".to_string()
+        }
+        TuttiError::TemplateParse(_) => {
+            "Check template file format — ensure [template] section and separator are present"
+                .to_string()
+        }
+        TuttiError::TemplateNotFound(name) => {
+            format!("Template '{name}' not found — run `tt init` to see available templates")
         }
         TuttiError::State(_) | TuttiError::UsageData(_) => {
             "Check .tutti/state/ directory permissions and disk space".to_string()
@@ -1164,6 +1209,8 @@ mod tests {
             agent_scope: Some("backend".to_string()),
             hook_event: None,
             hook_agent: None,
+            template_id: None,
+            template_version: None,
         };
         append_automation_run(&dir, &record).unwrap();
         append_automation_run(&dir, &record).unwrap();
@@ -1632,5 +1679,40 @@ mod tests {
         assert_eq!(HealthState::Working.color(), "green");
         assert_eq!(HealthState::AuthFailed.color(), "red");
         assert_eq!(HealthState::ProviderDown.color(), "magenta");
+    }
+
+    #[test]
+    fn parse_template_tag_valid() {
+        let dir = std::env::temp_dir().join(format!("tutti-test-tpl-tag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("tutti.toml");
+        std::fs::write(
+            &config_path,
+            "# template: gstack-startup 0.1.0\n[workspace]\nname = \"test\"\n",
+        )
+        .unwrap();
+        let (id, version) = parse_template_tag(&config_path);
+        assert_eq!(id.as_deref(), Some("gstack-startup"));
+        assert_eq!(version.as_deref(), Some("0.1.0"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parse_template_tag_missing() {
+        let dir = std::env::temp_dir().join(format!("tutti-test-tpl-tag2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("tutti.toml");
+        std::fs::write(&config_path, "[workspace]\nname = \"test\"\n").unwrap();
+        let (id, version) = parse_template_tag(&config_path);
+        assert!(id.is_none());
+        assert!(version.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parse_template_tag_nonexistent_file() {
+        let (id, version) = parse_template_tag(Path::new("/nonexistent/tutti.toml"));
+        assert!(id.is_none());
+        assert!(version.is_none());
     }
 }

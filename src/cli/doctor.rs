@@ -151,7 +151,7 @@ fn evaluate_checks(
 
     let launch_targets_supported_runtime = config.agents.iter().any(|agent| {
         agent
-            .resolved_runtime(&config.defaults)
+            .resolved_runtime(&config.defaults, &config.roles)
             .as_deref()
             .is_some_and(|rt| matches!(rt, "claude-code" | "codex" | "openclaw" | "aider"))
     });
@@ -185,7 +185,7 @@ fn evaluate_checks(
         && policy_configured
         && config.agents.iter().any(|agent| {
             agent
-                .resolved_runtime(&config.defaults)
+                .resolved_runtime(&config.defaults, &config.roles)
                 .as_deref()
                 .is_some_and(|rt| matches!(rt, "codex" | "openclaw" | "aider"))
         })
@@ -198,7 +198,7 @@ fn evaluate_checks(
     }
 
     for agent in &config.agents {
-        let Some(runtime_name) = agent.resolved_runtime(&config.defaults) else {
+        let Some(runtime_name) = agent.resolved_runtime(&config.defaults, &config.roles) else {
             checks.push(DoctorCheck {
                 check: format!("runtime/{}", agent.name),
                 status: DoctorStatus::Fail,
@@ -592,6 +592,7 @@ mod tests {
                 persistent: false,
                 memory: None,
                 env: HashMap::new(),
+                role: None,
             }],
             tool_packs: vec![],
             workflows: vec![],
@@ -600,6 +601,7 @@ mod tests {
             observe: None,
             budget: None,
             webhooks: vec![],
+            roles: None,
         }
     }
 
