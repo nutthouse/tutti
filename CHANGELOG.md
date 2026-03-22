@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0] - 2026-03-22
+
+### Added
+- **Artifact Pipeline**: Prompt steps can now capture and pass artifacts between
+  workflow stages. New `artifact_glob` and `artifact_name` fields on prompt steps
+  enable glob-based artifact discovery after a skill completes, with pre-step
+  snapshot to prevent race conditions with concurrent runs.
+- **inject_files template expansion**: `inject_files` now supports
+  `{{output.step_id.path}}` template references, allowing artifacts from prior
+  steps to be automatically injected into downstream agents' worktrees.
+- **Dashboard artifact labels**: Flow connectors on the factory floor show
+  artifact names flowing between pipeline stages during active workflow runs.
+- **Dry-run artifact validation**: `tt run --dry-run` validates gstack-slug
+  availability when artifact_glob uses `{slug}` interpolation, catching
+  configuration errors before workflow execution.
+- **Variable interpolation in globs**: `{slug}`, `{workspace}`, `{agent}`, and
+  `~` are expanded in artifact_glob patterns at runtime.
+
 ## Unreleased
 
 ### Added
