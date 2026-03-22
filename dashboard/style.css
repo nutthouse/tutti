@@ -138,6 +138,19 @@ main#factory {
   border: 4px solid transparent;
   border-left-color: inherit;
 }
+.artifact-label {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--flow-active);
+  background: var(--bg);
+  padding: 0 4px;
+  white-space: nowrap;
+  font-family: var(--mono);
+  opacity: 0.85;
+}
 
 /* stage card — the "machine" on the floor */
 .stage {
