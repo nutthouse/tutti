@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.1] - 2026-03-23
+
+### Fixed
+- Dashboard focus sidebar: usage stats no longer flash and disappear. The
+  `/focus` endpoint now omits `usage` from the response unless `?usage=1` is
+  explicitly requested, preventing the fast 2s poll from overwriting real
+  token counts with zeros.
+
 ## [0.8.0] - 2026-03-23
 
 ### Added
