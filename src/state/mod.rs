@@ -623,6 +623,66 @@ pub fn append_automation_run(project_root: &Path, record: &AutomationRunRecord) 
     Ok(())
 }
 
+/// A single step timing entry within a run telemetry record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepTimingEntry {
+    pub id: String,
+    pub duration_secs: f64,
+    pub status: String,
+}
+
+/// Telemetry summary emitted after each `tt run` workflow completes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunTelemetryEntry {
+    pub run_id: String,
+    pub workflow: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_version: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+    pub duration_secs: f64,
+    pub total_steps: usize,
+    pub passed_steps: usize,
+    pub failed_steps: usize,
+    pub step_timings: Vec<StepTimingEntry>,
+}
+
+/// Append a run telemetry entry to .tutti/state/run-telemetry.jsonl.
+///
+/// If the write fails, a warning is printed to stderr but no error is returned.
+pub(crate) fn append_run_telemetry(project_root: &Path, entry: &RunTelemetryEntry) {
+    let state_dir = project_root.join(".tutti").join("state");
+    if let Err(e) = std::fs::create_dir_all(&state_dir) {
+        eprintln!("warn: failed to create telemetry directory: {e}");
+        return;
+    }
+    let path = state_dir.join("run-telemetry.jsonl");
+    let line = match serde_json::to_string(entry) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("warn: failed to serialize run telemetry: {e}");
+            return;
+        }
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path);
+    match file {
+        Ok(mut f) => {
+            use std::io::Write;
+            if let Err(e) = writeln!(f, "{line}") {
+                eprintln!("warn: failed to write run telemetry: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("warn: failed to open run telemetry file: {e}");
+        }
+    }
+}
+
 /// Save latest verification summary to .tutti/state/verify-last.json.
 pub fn save_verify_last_summary(project_root: &Path, summary: &VerifyLastSummary) -> Result<()> {
     let state_dir = project_root.join(".tutti").join("state");
@@ -1747,6 +1807,121 @@ mod tests {
         let (id, version) = parse_template_tag(&config_path).unwrap();
         assert!(id.is_none());
         assert!(version.is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn make_telemetry_entry(run_id: &str, workflow: &str) -> RunTelemetryEntry {
+        let now = Utc::now();
+        RunTelemetryEntry {
+            run_id: run_id.to_string(),
+            workflow: workflow.to_string(),
+            template_id: Some("gstack-startup".to_string()),
+            template_version: Some("0.1.0".to_string()),
+            started_at: now - chrono::Duration::seconds(1800),
+            completed_at: now,
+            duration_secs: 1800.0,
+            total_steps: 3,
+            passed_steps: 2,
+            failed_steps: 1,
+            step_timings: vec![
+                StepTimingEntry {
+                    id: "design".to_string(),
+                    duration_secs: 600.0,
+                    status: "success".to_string(),
+                },
+                StepTimingEntry {
+                    id: "implement".to_string(),
+                    duration_secs: 900.0,
+                    status: "success".to_string(),
+                },
+                StepTimingEntry {
+                    id: "review".to_string(),
+                    duration_secs: 300.0,
+                    status: "failed".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn run_telemetry_creates_file_with_valid_json() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-telemetry-create-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let entry = make_telemetry_entry("run-001", "sdlc-gstack");
+        append_run_telemetry(&dir, &entry);
+
+        let path = dir.join(".tutti/state/run-telemetry.jsonl");
+        assert!(path.exists(), "telemetry file should be created");
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed["run_id"], "run-001");
+        assert_eq!(parsed["workflow"], "sdlc-gstack");
+        assert_eq!(parsed["template_id"], "gstack-startup");
+        assert_eq!(parsed["template_version"], "0.1.0");
+        assert_eq!(parsed["total_steps"], 3);
+        assert_eq!(parsed["passed_steps"], 2);
+        assert_eq!(parsed["failed_steps"], 1);
+        assert_eq!(parsed["step_timings"].as_array().unwrap().len(), 3);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_telemetry_appends_multiple_runs() {
+        let dir = std::env::temp_dir().join(format!(
+            "tutti-test-telemetry-append-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let entry1 = make_telemetry_entry("run-001", "sdlc-gstack");
+        let entry2 = make_telemetry_entry("run-002", "sdlc-auto");
+        append_run_telemetry(&dir, &entry1);
+        append_run_telemetry(&dir, &entry2);
+
+        let path = dir.join(".tutti/state/run-telemetry.jsonl");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "should have two lines, not overwrite");
+
+        let parsed1: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let parsed2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(parsed1["run_id"], "run-001");
+        assert_eq!(parsed2["run_id"], "run-002");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_telemetry_creates_missing_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-telemetry-mkdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Intentionally do NOT create the directory — append_run_telemetry should create it.
+
+        let entry = make_telemetry_entry("run-003", "sdlc-gstack");
+        append_run_telemetry(&dir, &entry);
+
+        let path = dir.join(".tutti/state/run-telemetry.jsonl");
+        assert!(
+            path.exists(),
+            "telemetry file should be created even if .tutti/state/ was missing"
+        );
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(parsed["run_id"], "run-003");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

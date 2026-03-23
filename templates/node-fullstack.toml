@@ -1,0 +1,153 @@
+[template]
+name = "node-fullstack"
+version = "0.1.0"
+description = "Node.js full-stack project with frontend and backend agents"
+detect = ["package.json"]
+
+[template.roles.planner]
+default_runtime = "claude-code"
+description = "Breaks work into steps, produces structured plans"
+
+[template.roles.frontend]
+default_runtime = "claude-code"
+description = "Implements UI components and client-side logic"
+
+[template.roles.backend]
+default_runtime = "claude-code"
+description = "Implements API routes, services, and data layer"
+
+[template.roles.tester]
+default_runtime = "claude-code"
+description = "Writes and runs tests"
+
+# ── config below ──
+[workspace]
+name = "{{project_name}}"
+description = "Node.js full-stack team — generated from node-fullstack template"
+
+[defaults]
+worktree = true
+
+[roles]
+planner = "claude-code"
+frontend = "claude-code"
+backend = "claude-code"
+tester = "claude-code"
+
+[[agent]]
+name = "planner"
+role = "planner"
+scope = "docs/**"
+prompt = "You own planning and design."
+
+[[agent]]
+name = "frontend"
+role = "frontend"
+scope = "src/app/**,src/components/**,src/pages/**,public/**"
+prompt = "You own frontend implementation. Build UI components and pages. Commit and push when done."
+
+[[agent]]
+name = "backend"
+role = "backend"
+scope = "src/api/**,src/services/**,src/models/**"
+prompt = "You own backend implementation. Build API routes and services. Commit and push when done."
+
+[[agent]]
+name = "tester"
+role = "tester"
+scope = "src/**,tests/**"
+prompt = "You write and run tests."
+
+# ─── Interactive SDLC with gstack artifact flow ───
+# Human-in-the-loop workflow: each gstack skill is interactive.
+# Tutti automates the artifact handoff between steps, not the skill execution.
+
+[[workflow]]
+name = "sdlc-gstack"
+description = "Interactive SDLC with gstack skill artifact flow: design → review → implement → test → ship"
+
+[[workflow.step]]
+id = "ensure_planner"
+type = "ensure_running"
+agent = "planner"
+
+[[workflow.step]]
+id = "ensure_frontend"
+type = "ensure_running"
+agent = "frontend"
+
+[[workflow.step]]
+id = "ensure_backend"
+type = "ensure_running"
+agent = "backend"
+
+[[workflow.step]]
+id = "ensure_tester"
+type = "ensure_running"
+agent = "tester"
+
+[[workflow.step]]
+id = "design"
+type = "prompt"
+agent = "planner"
+text = "/office-hours"
+wait_timeout_secs = 3600
+startup_grace_secs = 120
+artifact_glob = "~/.gstack/projects/{slug}/*-design-*.md"
+artifact_name = "design_doc"
+
+[[workflow.step]]
+id = "eng_review"
+type = "prompt"
+agent = "planner"
+text = "/plan-eng-review"
+wait_timeout_secs = 3600
+startup_grace_secs = 60
+inject_files = ["{{output.design_doc.path}}"]
+artifact_glob = "~/.gstack/projects/{slug}/*-test-plan-*.md"
+artifact_name = "test_plan"
+
+[[workflow.step]]
+id = "implement_backend"
+type = "prompt"
+agent = "backend"
+text = "Read the design doc and test plan in your .tutti/artifacts/ directory. Implement the approved backend design. Commit and push when done."
+wait_for_idle = true
+wait_timeout_secs = 7200
+startup_grace_secs = 120
+inject_files = ["{{output.design_doc.path}}", "{{output.test_plan.path}}"]
+
+[[workflow.step]]
+id = "implement_frontend"
+type = "prompt"
+agent = "frontend"
+text = "Read the design doc in your .tutti/artifacts/ directory. Implement the approved frontend design. Commit and push when done."
+wait_for_idle = true
+wait_timeout_secs = 7200
+startup_grace_secs = 120
+inject_files = ["{{output.design_doc.path}}"]
+
+[[workflow.step]]
+id = "validate"
+type = "command"
+run = "cd .tutti/worktrees/backend && npm test --quiet"
+fail_mode = "closed"
+
+[[workflow.step]]
+id = "qa"
+type = "prompt"
+agent = "tester"
+text = "/review"
+wait_for_idle = true
+wait_timeout_secs = 3600
+startup_grace_secs = 60
+inject_files = ["{{output.test_plan.path}}"]
+
+[[workflow.step]]
+id = "ship"
+type = "prompt"
+agent = "planner"
+text = "/ship"
+wait_for_idle = true
+wait_timeout_secs = 1800
+startup_grace_secs = 60

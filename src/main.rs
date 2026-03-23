@@ -17,7 +17,8 @@ mod worktree;
 
 use clap::Parser;
 use cli::{
-    Cli, Commands, IssueClaimSubcommand, RemoteSubcommand, RunsSubcommand, WorkspacesSubcommand,
+    Cli, Commands, IssueClaimSubcommand, RemoteSubcommand, RunsSubcommand, TemplateSubcommand,
+    WorkspacesSubcommand,
 };
 use std::process;
 
@@ -183,6 +184,9 @@ fn main() {
                 ref reason,
             } => cli::issue_claim::release(state, reason.as_deref()),
             IssueClaimSubcommand::Sweep => cli::issue_claim::sweep(),
+        },
+        Commands::Template { command } => match command {
+            TemplateSubcommand::List => cli::init::template_list(),
         },
     };
 

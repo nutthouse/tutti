@@ -9,10 +9,11 @@ use crate::permissions::evaluate_command_policy;
 use crate::runtime::{self, AgentStatus};
 use crate::session::TmuxSession;
 use crate::state::{
-    AutomationRunRecord, ControlEvent, VerifyLastSummary, WorkflowStepIntentRecord,
-    WorkflowStepOutcomeRecord, append_automation_run, append_control_event, append_policy_decision,
-    load_workflow_checkpoint, load_workflow_intent, save_verify_last_summary,
-    save_workflow_checkpoint, save_workflow_intent, save_workflow_output,
+    AutomationRunRecord, ControlEvent, RunTelemetryEntry, StepTimingEntry, VerifyLastSummary,
+    WorkflowStepIntentRecord, WorkflowStepOutcomeRecord, append_automation_run,
+    append_control_event, append_policy_decision, append_run_telemetry, load_workflow_checkpoint,
+    load_workflow_intent, save_verify_last_summary, save_workflow_checkpoint, save_workflow_intent,
+    save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -2578,10 +2579,53 @@ impl<'a> WorkflowExecutor<'a> {
                 agent_scope: agent_scope.map(|s| s.to_string()),
                 hook_event: options.hook_event.clone(),
                 hook_agent: options.hook_agent.clone(),
-                template_id,
-                template_version,
+                template_id: template_id.clone(),
+                template_version: template_version.clone(),
             },
         )?;
+
+        // Emit run telemetry (best-effort — failures log a warning but don't fail the run).
+        let duration_secs =
+            ((result.finished_at - result.started_at).num_milliseconds() as f64 / 1000.0).max(0.0);
+        let step_timings: Vec<StepTimingEntry> = result
+            .step_results
+            .iter()
+            .map(|s| StepTimingEntry {
+                id: s.step_type.clone(),
+                duration_secs: s.duration_ms as f64 / 1000.0,
+                status: match s.status {
+                    StepStatus::Success => "success".to_string(),
+                    StepStatus::Warning => "warning".to_string(),
+                    StepStatus::Failed => "failed".to_string(),
+                },
+            })
+            .collect();
+        let passed = result
+            .step_results
+            .iter()
+            .filter(|s| matches!(s.status, StepStatus::Success | StepStatus::Warning))
+            .count();
+        let failed = result
+            .step_results
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .count();
+        append_run_telemetry(
+            self.project_root,
+            &RunTelemetryEntry {
+                run_id: result.run_id.clone(),
+                workflow: result.workflow_name.clone(),
+                template_id,
+                template_version,
+                started_at: result.started_at,
+                completed_at: result.finished_at,
+                duration_secs,
+                total_steps: result.step_results.len(),
+                passed_steps: passed,
+                failed_steps: failed,
+                step_timings,
+            },
+        );
 
         save_execution_checkpoint(self.project_root, options, agent_scope, &result)?;
 

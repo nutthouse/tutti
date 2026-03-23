@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.9.0] - 2026-03-23
+
+### Added
+- **Interactive `tt init`**: Progressive disclosure bootstrap — auto-detects repo
+  type, shows a team preview table ("character creation screen"), then offers
+  Launch / Customize / Quit. One command to working agents.
+- **Customize mode**: Swap runtimes for roles, remove agents, change project name
+  — all with a live preview that re-renders after each change.
+- **Auto-launch**: Press L during `tt init` to write config and immediately launch
+  all agents via `tt up`.
+- **Re-init with backup**: Running `tt init` when tutti.toml exists offers to back
+  up the existing config instead of refusing.
+- **Node.js template** (`node-fullstack`): 4-agent team with frontend/backend split,
+  detects `package.json`, includes sdlc-gstack workflow.
+- **Python template** (`python-api`): 3-agent team, detects `pyproject.toml` and
+  `requirements.txt`, includes simplified sdlc-gstack workflow with pytest.
+- **`tt template list`**: New subcommand showing all built-in and custom templates
+  with detection rules and descriptions.
+- **Custom template discovery**: Place `.toml` template files in
+  `~/.config/tutti/templates/` — they're auto-discovered and participate in repo
+  detection scoring.
+- **Run telemetry**: After each `tt run` completes, step-level timing and pass/fail
+  data is emitted to `.tutti/state/run-telemetry.jsonl` for future evidence-backed
+  template comparison.
+- **`InputSource` trait**: Interactive prompts are testable via mock input — enables
+  full coverage of the init flow without stdin.
+
+### Fixed
+- EOF stdin no longer causes infinite loop in interactive prompts — returns default
+  on EOF or read error.
+- Template detection scoring unified: `detect_templates` and custom template
+  discovery now use the same `score_template_detection` function.
+- Negative telemetry durations clamped to zero.
+
 ## [0.8.1] - 2026-03-23
 
 ### Fixed
