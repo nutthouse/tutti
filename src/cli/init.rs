@@ -456,8 +456,9 @@ fn remove_agent_from_config_body(config_body: &mut String, agent_name: &str) {
         if let Some(block_start) = before.rfind("[[agent]]") {
             // Walk forward to find the next [[agent]] or [[workflow]] or end
             let after_block = &config_body[block_start + "[[agent]]".len()..];
+            // Stop at any next table header (both [[array]] and [table])
             let block_end = after_block
-                .find("\n[[")
+                .find("\n[")
                 .map(|p| block_start + "[[agent]]".len() + p)
                 .unwrap_or(config_body.len());
             // Include any leading newline before the block

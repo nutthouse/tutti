@@ -149,7 +149,7 @@ pub fn detect_templates(repo_root: &Path) -> Vec<(String, ParsedTemplate, usize)
 
 /// Score a template's detection rules against a repo root.
 /// Returns 0 if the template doesn't match.
-pub fn score_template_detection(metadata: &TemplateMetadata, repo_root: &Path) -> usize {
+pub(crate) fn score_template_detection(metadata: &TemplateMetadata, repo_root: &Path) -> usize {
     let mut score = 0;
     let mut any_match_ok = metadata.detect.is_empty();
     let mut all_match_ok = true;
@@ -179,7 +179,7 @@ pub fn score_template_detection(metadata: &TemplateMetadata, repo_root: &Path) -
 }
 
 /// Discover custom templates from ~/.config/tutti/templates/.
-pub fn discover_custom_templates() -> Vec<(String, ParsedTemplate)> {
+pub(crate) fn discover_custom_templates() -> Vec<(String, ParsedTemplate)> {
     let mut templates = Vec::new();
 
     let home = match std::env::var("HOME") {
@@ -205,7 +205,16 @@ pub fn discover_custom_templates() -> Vec<(String, ParsedTemplate)> {
         match std::fs::read_to_string(&path) {
             Ok(content) => match parse_template(&content) {
                 Ok(parsed) => {
-                    templates.push((parsed.metadata.name.clone(), parsed));
+                    let name = parsed.metadata.name.clone();
+                    if templates.iter().any(|(n, _)| n == &name) {
+                        eprintln!(
+                            "warning: skipped {}: duplicate template name '{}'",
+                            path.display(),
+                            name
+                        );
+                    } else {
+                        templates.push((name, parsed));
+                    }
                 }
                 Err(e) => {
                     eprintln!(
