@@ -108,12 +108,13 @@ pub fn run_with_input_in(
 
     // Interactive L/C/Q loop
     loop {
-        let choice =
-            input.prompt_choice("\n  [L] Launch now  [C] Customize  [Q] Quit", &["L", "C", "Q"]);
+        let choice = input.prompt_choice(
+            "\n  [L] Launch now  [C] Customize  [Q] Quit",
+            &["L", "C", "Q"],
+        );
         match choice.as_str() {
             "L" => {
-                let config_content =
-                    template::generate_config(&parsed, &current_project_name)?;
+                let config_content = template::generate_config(&parsed, &current_project_name)?;
                 write_config_and_register(
                     &config_path,
                     &config_content,
@@ -143,8 +144,7 @@ pub fn run_with_input_in(
                 render_team_preview(&parsed, &current_project_name);
             }
             "Q" => {
-                let config_content =
-                    template::generate_config(&parsed, &current_project_name)?;
+                let config_content = template::generate_config(&parsed, &current_project_name)?;
                 write_config_and_register(
                     &config_path,
                     &config_content,
@@ -260,9 +260,7 @@ fn render_team_preview(parsed: &ParsedTemplate, project_name: &str) {
     table.set_header(vec!["Agent", "Runtime", "Role"]);
 
     // Parse the config body to extract agent info
-    let config_str = parsed
-        .config_body
-        .replace("{{project_name}}", project_name);
+    let config_str = parsed.config_body.replace("{{project_name}}", project_name);
     if let Ok(config) = toml::from_str::<crate::config::TuttiConfig>(&config_str) {
         for agent in &config.agents {
             let runtime = agent
@@ -333,8 +331,8 @@ fn customize_template(
                 let pick = input.prompt_choice("  Which role?", &opt_refs);
                 let idx: usize = pick.parse::<usize>().unwrap_or(1) - 1;
                 if idx < roles.len() {
-                    let new_rt =
-                        input.prompt_text("  New runtime (claude-code, codex, aider)", "claude-code");
+                    let new_rt = input
+                        .prompt_text("  New runtime (claude-code, codex, aider)", "claude-code");
                     // Update both template metadata and config body
                     let role_name = &roles[idx];
                     let old_rt = parsed.metadata.roles[role_name].default_runtime.clone();
@@ -346,14 +344,15 @@ fn customize_template(
                         &format!("{role_name} = \"{old_rt}\""),
                         &format!("{role_name} = \"{new_rt}\""),
                     );
-                    println!("  Changed {} runtime: {} \u{2192} {}", role_name, old_rt, new_rt);
+                    println!(
+                        "  Changed {} runtime: {} \u{2192} {}",
+                        role_name, old_rt, new_rt
+                    );
                 }
             }
             "2" => {
                 // Parse config to get agent list
-                let config_str = parsed
-                    .config_body
-                    .replace("{{project_name}}", project_name);
+                let config_str = parsed.config_body.replace("{{project_name}}", project_name);
                 if let Ok(config) = toml::from_str::<crate::config::TuttiConfig>(&config_str) {
                     let agents: Vec<String> =
                         config.agents.iter().map(|a| a.name.clone()).collect();
@@ -414,12 +413,12 @@ fn remove_agent_from_config_body(config_body: &mut String, agent_name: &str) {
                 .map(|p| block_start + "[[agent]]".len() + p)
                 .unwrap_or(config_body.len());
             // Include any leading newline before the block
-            let trim_start =
-                if block_start > 0 && config_body.as_bytes()[block_start - 1] == b'\n' {
-                    block_start - 1
-                } else {
-                    block_start
-                };
+            let trim_start = if block_start > 0 && config_body.as_bytes()[block_start - 1] == b'\n'
+            {
+                block_start - 1
+            } else {
+                block_start
+            };
             config_body.replace_range(trim_start..block_end, "");
         }
     }

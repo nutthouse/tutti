@@ -1905,10 +1905,8 @@ mod tests {
 
     #[test]
     fn run_telemetry_creates_missing_directory() {
-        let dir = std::env::temp_dir().join(format!(
-            "tutti-test-telemetry-mkdir-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("tutti-test-telemetry-mkdir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         // Intentionally do NOT create the directory — append_run_telemetry should create it.
 
@@ -1916,7 +1914,10 @@ mod tests {
         append_run_telemetry(&dir, &entry);
 
         let path = dir.join(".tutti/state/run-telemetry.jsonl");
-        assert!(path.exists(), "telemetry file should be created even if .tutti/state/ was missing");
+        assert!(
+            path.exists(),
+            "telemetry file should be created even if .tutti/state/ was missing"
+        );
 
         let contents = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();

@@ -114,7 +114,13 @@ impl BuiltinTemplates {
 
     /// List all built-in template names.
     pub fn list() -> &'static [&'static str] {
-        &["gstack-startup", "rust-cli", "node-fullstack", "python-api", "minimal"]
+        &[
+            "gstack-startup",
+            "rust-cli",
+            "node-fullstack",
+            "python-api",
+            "minimal",
+        ]
     }
 }
 

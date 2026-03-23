@@ -3,6 +3,7 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 pub enum TuttiError {
     #[error("tutti.toml already exists in {0}")]
+    #[allow(dead_code)]
     ConfigAlreadyExists(PathBuf),
 
     #[error("tutti.toml not found (searched from {0} to filesystem root)")]

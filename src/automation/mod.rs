@@ -11,9 +11,9 @@ use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, ControlEvent, RunTelemetryEntry, StepTimingEntry, VerifyLastSummary,
     WorkflowStepIntentRecord, WorkflowStepOutcomeRecord, append_automation_run,
-    append_control_event, append_policy_decision, append_run_telemetry,
-    load_workflow_checkpoint, load_workflow_intent, save_verify_last_summary,
-    save_workflow_checkpoint, save_workflow_intent, save_workflow_output,
+    append_control_event, append_policy_decision, append_run_telemetry, load_workflow_checkpoint,
+    load_workflow_intent, save_verify_last_summary, save_workflow_checkpoint, save_workflow_intent,
+    save_workflow_output,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -2585,9 +2585,8 @@ impl<'a> WorkflowExecutor<'a> {
         )?;
 
         // Emit run telemetry (best-effort — failures log a warning but don't fail the run).
-        let duration_secs = ((result.finished_at - result.started_at).num_milliseconds() as f64
-            / 1000.0)
-            .max(0.0);
+        let duration_secs =
+            ((result.finished_at - result.started_at).num_milliseconds() as f64 / 1000.0).max(0.0);
         let step_timings: Vec<StepTimingEntry> = result
             .step_results
             .iter()
