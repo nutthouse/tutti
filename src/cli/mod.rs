@@ -393,6 +393,18 @@ pub enum Commands {
         #[command(subcommand)]
         command: RemoteSubcommand,
     },
+
+    /// Manage templates for tt init
+    Template {
+        #[command(subcommand)]
+        command: TemplateSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TemplateSubcommand {
+    /// List available templates (built-in and custom)
+    List,
 }
 
 #[derive(Subcommand)]
