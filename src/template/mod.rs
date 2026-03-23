@@ -105,6 +105,8 @@ impl BuiltinTemplates {
         match name {
             "gstack-startup" => Some(include_str!("../../templates/gstack-startup.toml")),
             "rust-cli" => Some(include_str!("../../templates/rust-cli.toml")),
+            "node-fullstack" => Some(include_str!("../../templates/node-fullstack.toml")),
+            "python-api" => Some(include_str!("../../templates/python-api.toml")),
             "minimal" => Some(include_str!("../../templates/minimal.toml")),
             _ => None,
         }
@@ -112,7 +114,7 @@ impl BuiltinTemplates {
 
     /// List all built-in template names.
     pub fn list() -> &'static [&'static str] {
-        &["gstack-startup", "rust-cli", "minimal"]
+        &["gstack-startup", "rust-cli", "node-fullstack", "python-api", "minimal"]
     }
 }
 
@@ -128,37 +130,92 @@ pub fn detect_templates(repo_root: &Path) -> Vec<(String, ParsedTemplate, usize)
             continue;
         };
 
-        let mut score = 0;
-        let mut any_match_ok = template.metadata.detect.is_empty();
-        let mut all_match_ok = true;
-
-        // Check any-match detection
-        for file in &template.metadata.detect {
-            if repo_root.join(file).exists() {
-                score += 1;
-                any_match_ok = true;
-            }
-        }
-
-        // Check all-match detection
-        if !template.metadata.detect_all.is_empty() {
-            for file in &template.metadata.detect_all {
-                if repo_root.join(file).exists() {
-                    score += 1;
-                } else {
-                    all_match_ok = false;
-                }
-            }
-        }
-
-        if any_match_ok && all_match_ok && score > 0 {
+        let score = score_template_detection(&template.metadata, repo_root);
+        if score > 0 {
             matches.push((name.to_string(), template, score));
         }
     }
 
-    // Sort by score descending
-    matches.sort_by(|a, b| b.2.cmp(&a.2));
+    // Sort by score descending, then alphabetically on tie
+    matches.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
     matches
+}
+
+/// Score a template's detection rules against a repo root.
+/// Returns 0 if the template doesn't match.
+pub fn score_template_detection(metadata: &TemplateMetadata, repo_root: &Path) -> usize {
+    let mut score = 0;
+    let mut any_match_ok = metadata.detect.is_empty();
+    let mut all_match_ok = true;
+
+    for file in &metadata.detect {
+        if repo_root.join(file).exists() {
+            score += 1;
+            any_match_ok = true;
+        }
+    }
+
+    if !metadata.detect_all.is_empty() {
+        for file in &metadata.detect_all {
+            if repo_root.join(file).exists() {
+                score += 2;
+            } else {
+                all_match_ok = false;
+            }
+        }
+    }
+
+    if any_match_ok && all_match_ok && score > 0 {
+        score
+    } else {
+        0
+    }
+}
+
+/// Discover custom templates from ~/.config/tutti/templates/.
+pub fn discover_custom_templates() -> Vec<(String, ParsedTemplate)> {
+    let mut templates = Vec::new();
+
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return templates,
+    };
+
+    let templates_dir = std::path::PathBuf::from(&home)
+        .join(".config")
+        .join("tutti")
+        .join("templates");
+
+    let entries = match std::fs::read_dir(&templates_dir) {
+        Ok(e) => e,
+        Err(_) => return templates,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => match parse_template(&content) {
+                Ok(parsed) => {
+                    templates.push((parsed.metadata.name.clone(), parsed));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: skipped {}: invalid template format ({})",
+                        path.display(),
+                        e
+                    );
+                }
+            },
+            Err(e) => {
+                eprintln!("warning: could not read {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    templates
 }
 
 /// Load a template from a name or path.
@@ -173,11 +230,23 @@ pub fn load_template(name_or_path: &str) -> Result<(String, ParsedTemplate)> {
         return Ok((name, template));
     }
 
-    // Otherwise look up built-in
-    let content = BuiltinTemplates::get(name_or_path)
-        .ok_or_else(|| TuttiError::TemplateNotFound(name_or_path.to_string()))?;
-    let template = parse_template(content)?;
-    Ok((name_or_path.to_string(), template))
+    // Look up built-in first
+    if let Some(content) = BuiltinTemplates::get(name_or_path) {
+        let template = parse_template(content)?;
+        return Ok((name_or_path.to_string(), template));
+    }
+
+    // Check custom templates directory
+    for (name, parsed) in discover_custom_templates() {
+        if name == name_or_path {
+            return Ok((name, parsed));
+        }
+    }
+
+    Err(TuttiError::TemplateNotFound(format!(
+        "Template '{}' not found. Run `tt template list` to see available templates.",
+        name_or_path
+    )))
 }
 
 #[cfg(test)]
