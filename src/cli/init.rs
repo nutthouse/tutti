@@ -26,11 +26,13 @@ impl InputSource for StdinInput {
             let mut line = String::new();
             match stdin.lock().read_line(&mut line) {
                 Ok(0) => {
-                    // EOF — return first option as default
-                    return options.first().unwrap_or(&"Q").to_uppercase();
+                    // EOF — abort gracefully
+                    println!();
+                    return "Q".to_string();
                 }
                 Err(_) => {
-                    return options.first().unwrap_or(&"Q").to_uppercase();
+                    // Read error — abort gracefully
+                    return "Q".to_string();
                 }
                 Ok(_) => {}
             }
@@ -106,11 +108,11 @@ pub fn run_with_input_in(
     println!();
     render_team_preview(&parsed, &current_project_name);
 
-    // Interactive L/C/Q loop
+    // Interactive L/S/C/Q loop
     loop {
         let choice = input.prompt_choice(
-            "\n  [L] Launch now  [C] Customize  [Q] Quit",
-            &["L", "C", "Q"],
+            "\n  [L] Launch now  [S] Save config only  [C] Customize  [Q] Quit",
+            &["L", "S", "C", "Q"],
         );
         match choice.as_str() {
             "L" => {
@@ -138,12 +140,7 @@ pub fn run_with_input_in(
                 }
                 return Ok(());
             }
-            "C" => {
-                customize_template(&mut parsed, &mut current_project_name, input);
-                println!();
-                render_team_preview(&parsed, &current_project_name);
-            }
-            "Q" => {
+            "S" => {
                 let config_content = template::generate_config(&parsed, &current_project_name)?;
                 write_config_and_register(
                     &config_path,
@@ -153,6 +150,15 @@ pub fn run_with_input_in(
                 )?;
                 println!("Created tutti.toml");
                 println!("\nEdit tutti.toml to configure your agent team, then run: tt up");
+                return Ok(());
+            }
+            "C" => {
+                customize_template(&mut parsed, &mut current_project_name, input);
+                println!();
+                render_team_preview(&parsed, &current_project_name);
+            }
+            "Q" => {
+                println!("Aborted — no files were written.");
                 return Ok(());
             }
             _ => {}
@@ -370,6 +376,19 @@ fn customize_template(
                     let idx: usize = pick.parse::<usize>().unwrap_or(0);
                     if idx >= 1 && idx <= agents.len() {
                         let agent_name = &agents[idx - 1];
+
+                        // Check if any workflow steps reference this agent
+                        let has_wf_refs = config.workflows.iter().any(|wf| {
+                            wf.steps
+                                .iter()
+                                .any(|s| s.agent_name() == Some(agent_name.as_str()))
+                        });
+                        if has_wf_refs {
+                            // Remove workflow steps that reference this agent
+                            remove_workflow_steps_for_agent(&mut parsed.config_body, agent_name);
+                            println!("  Removed workflow steps referencing agent: {}", agent_name);
+                        }
+
                         // Remove the [[agent]] block from config body
                         remove_agent_from_config_body(&mut parsed.config_body, agent_name);
                         // Remove the role from metadata if no other agent uses it
@@ -395,6 +414,35 @@ fn customize_template(
             "D" => break,
             _ => {}
         }
+    }
+}
+
+/// Remove all [[workflow.step]] blocks that reference a given agent.
+fn remove_workflow_steps_for_agent(config_body: &mut String, agent_name: &str) {
+    // Repeatedly remove [[workflow.step]] blocks containing agent = "agent_name"
+    let agent_pattern = format!("agent = \"{}\"", agent_name);
+    loop {
+        let Some(agent_pos) = config_body.find(&agent_pattern) else {
+            break;
+        };
+        // Walk backwards to find the [[workflow.step]] header
+        let before = &config_body[..agent_pos];
+        let Some(block_start) = before.rfind("[[workflow.step]]") else {
+            break;
+        };
+        // Walk forward from block_start to find the next [[ or end
+        let after_header = &config_body[block_start + "[[workflow.step]]".len()..];
+        let block_end = after_header
+            .find("\n[[")
+            .map(|p| block_start + "[[workflow.step]]".len() + p)
+            .unwrap_or(config_body.len());
+        // Include leading newline
+        let trim_start = if block_start > 0 && config_body.as_bytes()[block_start - 1] == b'\n' {
+            block_start - 1
+        } else {
+            block_start
+        };
+        config_body.replace_range(trim_start..block_end, "");
     }
 }
 
@@ -770,7 +818,7 @@ runtime = "aider"
     }
 
     #[test]
-    fn interactive_init_quit_writes_config() {
+    fn interactive_init_quit_does_not_write_config() {
         let dir = std::env::temp_dir().join(format!("tutti-test-iq-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -780,11 +828,8 @@ runtime = "aider"
         let result = run_with_input_in(None, &mut input, &dir);
 
         assert!(result.is_ok());
-        assert!(dir.join("tutti.toml").exists());
-
-        let contents = std::fs::read_to_string(dir.join("tutti.toml")).unwrap();
-        let config: crate::config::TuttiConfig = toml::from_str(&contents).unwrap();
-        assert!(!config.agents.is_empty());
+        // Quit should NOT write any files
+        assert!(!dir.join("tutti.toml").exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -796,7 +841,7 @@ runtime = "aider"
 
         std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
 
-        let mut input = MockInput::new(vec!["C", "3", "my-custom-name", "D", "Q"]);
+        let mut input = MockInput::new(vec!["C", "3", "my-custom-name", "D", "S"]);
         let result = run_with_input_in(None, &mut input, &dir);
 
         assert!(result.is_ok());
@@ -815,7 +860,7 @@ runtime = "aider"
         std::fs::write(dir.join("tutti.toml"), "# old config").unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
 
-        let mut input = MockInput::new(vec!["B", "Q"]);
+        let mut input = MockInput::new(vec!["B", "S"]);
         let result = run_with_input_in(None, &mut input, &dir);
 
         assert!(result.is_ok());

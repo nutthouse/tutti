@@ -72,6 +72,11 @@ type = "ensure_running"
 agent = "planner"
 
 [[workflow.step]]
+id = "ensure_frontend"
+type = "ensure_running"
+agent = "frontend"
+
+[[workflow.step]]
 id = "ensure_backend"
 type = "ensure_running"
 agent = "backend"
@@ -103,14 +108,24 @@ artifact_glob = "~/.gstack/projects/{slug}/*-test-plan-*.md"
 artifact_name = "test_plan"
 
 [[workflow.step]]
-id = "implement_code"
+id = "implement_backend"
 type = "prompt"
 agent = "backend"
-text = "Read the design doc and test plan in your .tutti/artifacts/ directory. Implement the approved design. Commit and push when done."
+text = "Read the design doc and test plan in your .tutti/artifacts/ directory. Implement the approved backend design. Commit and push when done."
 wait_for_idle = true
 wait_timeout_secs = 7200
 startup_grace_secs = 120
 inject_files = ["{{output.design_doc.path}}", "{{output.test_plan.path}}"]
+
+[[workflow.step]]
+id = "implement_frontend"
+type = "prompt"
+agent = "frontend"
+text = "Read the design doc in your .tutti/artifacts/ directory. Implement the approved frontend design. Commit and push when done."
+wait_for_idle = true
+wait_timeout_secs = 7200
+startup_grace_secs = 120
+inject_files = ["{{output.design_doc.path}}"]
 
 [[workflow.step]]
 id = "validate"

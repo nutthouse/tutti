@@ -230,6 +230,20 @@ pub enum WorkflowStepConfig {
     },
 }
 
+impl WorkflowStepConfig {
+    /// Return the agent name referenced by this step, if any.
+    pub fn agent_name(&self) -> Option<&str> {
+        match self {
+            Self::Prompt { agent, .. } => Some(agent),
+            Self::EnsureRunning { agent, .. } => Some(agent),
+            Self::Land { agent, .. } => Some(agent),
+            Self::Review { agent, .. } => Some(agent),
+            Self::Command { agent, .. } => agent.as_deref(),
+            Self::Workflow { agent, .. } => agent.as_deref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowCommandCwd {

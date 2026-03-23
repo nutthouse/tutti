@@ -652,7 +652,7 @@ pub struct RunTelemetryEntry {
 /// Append a run telemetry entry to .tutti/state/run-telemetry.jsonl.
 ///
 /// If the write fails, a warning is printed to stderr but no error is returned.
-pub fn append_run_telemetry(project_root: &Path, entry: &RunTelemetryEntry) {
+pub(crate) fn append_run_telemetry(project_root: &Path, entry: &RunTelemetryEntry) {
     let state_dir = project_root.join(".tutti").join("state");
     if let Err(e) = std::fs::create_dir_all(&state_dir) {
         eprintln!("warn: failed to create telemetry directory: {e}");
