@@ -449,6 +449,14 @@ impl From<&TuttiError> for FailureCategory {
             }
             TuttiError::Ssh(_) | TuttiError::RemoteConnection(_) => FailureCategory::Runtime,
             TuttiError::Io(_) => FailureCategory::Unknown,
+            TuttiError::ProviderNotFound(_) => FailureCategory::Config,
+            TuttiError::PolicyViolation(_) => FailureCategory::Policy,
+            TuttiError::ApiCallFailed(_) => FailureCategory::Provider,
+            TuttiError::ToolNotFound(_) | TuttiError::ToolExecution { .. } => FailureCategory::Tool,
+            TuttiError::MaxIterationsExceeded(_) | TuttiError::BudgetExhausted { .. } => {
+                FailureCategory::Policy
+            }
+            TuttiError::EventLog(_) | TuttiError::Sqlite(_) => FailureCategory::Tool,
         }
     }
 }
@@ -516,6 +524,34 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
         TuttiError::Io(_) => "Check file permissions and disk space".to_string(),
         TuttiError::Json(_) => {
             "State file may be corrupted — inspect the JSON manually".to_string()
+        }
+        TuttiError::ProviderNotFound(name) => {
+            format!("Add [providers.{name}] section to tutti.toml or check spelling")
+        }
+        TuttiError::PolicyViolation(_) => {
+            "Review the step policy in tutti.toml — the model attempted a disallowed action"
+                .to_string()
+        }
+        TuttiError::ApiCallFailed(_) => {
+            "Check API key, endpoint, and network connectivity".to_string()
+        }
+        TuttiError::ToolNotFound(name) => {
+            format!("Tool '{name}' is not registered — check the allowed_tools policy")
+        }
+        TuttiError::ToolExecution { .. } => {
+            "Check the tool's input arguments and working directory".to_string()
+        }
+        TuttiError::MaxIterationsExceeded(_) => {
+            "The agent loop did not terminate — consider increasing max_iterations or reviewing the prompt".to_string()
+        }
+        TuttiError::BudgetExhausted { .. } => {
+            "Increase budget_usd in the step policy or reduce the scope of work".to_string()
+        }
+        TuttiError::EventLog(_) => {
+            "Check .tutti/events.db permissions and disk space".to_string()
+        }
+        TuttiError::Sqlite(_) => {
+            "SQLite error — check .tutti/events.db integrity".to_string()
         }
     };
     FailureAttribution {

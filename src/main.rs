@@ -1,3 +1,4 @@
+mod agent;
 mod automation;
 mod budget;
 mod cli;
@@ -6,11 +7,13 @@ mod dashboard;
 mod error;
 mod health;
 mod permissions;
+mod provider;
 mod runtime;
 mod scheduler;
 mod session;
 mod state;
 mod template;
+mod tools;
 mod usage;
 mod webhook;
 mod worktree;

@@ -34,6 +34,11 @@ tiny_http = "0.12"
 getrandom = "0.4.2"
 rust-embed = "8"
 glob = "0.3"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+ignore = "0.4"
+regex = "1"
 
 [dev-dependencies]
 serial_test = "3"
+tempfile = "3"
