@@ -2650,6 +2650,7 @@ dependencies = [
  "getrandom 0.4.2",
  "glob",
  "ignore",
+ "libc",
  "ratatui",
  "regex",
  "reqwest",

@@ -4,6 +4,8 @@ use super::{Tool, ToolDefinition, ToolOutput};
 use crate::error::{Result, TuttiError};
 use serde::Deserialize;
 use serde_json::json;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -64,18 +66,27 @@ impl Tool for ShellTool {
 
         let timeout = Duration::from_secs(args.timeout_secs.unwrap_or(self.default_timeout_secs));
 
-        let mut child = Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(&args.command)
             .current_dir(workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| TuttiError::ToolExecution {
-                name: "shell".into(),
-                reason: format!("failed to spawn shell: {e}"),
-            })?;
+            .stderr(Stdio::piped());
+
+        // On Unix, put the shell and its descendants in a new process
+        // group so we can signal the whole tree on timeout. Without
+        // this, `sh -c "sleep 10"` leaks the grandchild `sleep`
+        // process when we kill `sh` — it gets reparented to PID 1
+        // and keeps running.
+        #[cfg(unix)]
+        command.process_group(0);
+
+        let mut child = command.spawn().map_err(|e| TuttiError::ToolExecution {
+            name: "shell".into(),
+            reason: format!("failed to spawn shell: {e}"),
+        })?;
 
         let status = match child
             .wait_timeout(timeout)
@@ -85,7 +96,12 @@ impl Tool for ShellTool {
             })? {
             Some(status) => status,
             None => {
-                // Timed out. Kill the child and report.
+                // Timed out. Kill the entire process group on Unix so
+                // grandchildren don't get reparented to PID 1 and keep
+                // running. On non-Unix, fall back to killing the direct
+                // child.
+                #[cfg(unix)]
+                kill_process_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ok(ToolOutput::error(format!(
@@ -110,6 +126,20 @@ impl Tool for ShellTool {
             // fail to execute it.
             is_error: exit_code != 0,
         })
+    }
+}
+
+/// Send SIGKILL to a Unix process group. Used on timeout so that any
+/// grandchildren spawned by `sh -c ...` are killed along with the
+/// shell itself. Silently no-ops on non-Unix platforms.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    // SAFETY: libc::killpg is safe to call with any pgid; if the group
+    // doesn't exist, it returns -1 and sets errno (which we ignore).
+    // We intentionally target the process group, not the process, so
+    // grandchildren get the signal too.
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
     }
 }
 

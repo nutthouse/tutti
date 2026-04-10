@@ -39,6 +39,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 ignore = "0.4"
 regex = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"

@@ -97,15 +97,30 @@ pub(crate) fn resolve_workdir_path(workdir: &Path, raw: &str) -> Result<PathBuf>
     // not-yet-created files (canonicalizes the nearest real parent).
     let canonical = canonicalize_with_new_tail(&joined)?;
 
-    // Best-effort workdir containment check. If workdir can be
-    // canonicalized, ensure the resolved path starts with it.
-    if let Ok(workdir_canonical) = workdir.canonicalize()
-        && !canonical.starts_with(&workdir_canonical)
-    {
-        return Err(crate::error::TuttiError::ToolExecution {
-            name: "<unknown>".into(),
-            reason: format!("path escapes working directory: {raw}"),
-        });
+    // Workdir containment check. If the workdir can't be canonicalized
+    // (e.g., it was deleted after the agent started), we cannot verify
+    // containment — reject absolute paths in that case as a safety
+    // measure. For relative paths, the logical join already guarantees
+    // the result is rooted at the workdir.
+    match workdir.canonicalize() {
+        Ok(workdir_canonical) => {
+            if !canonical.starts_with(&workdir_canonical) {
+                return Err(crate::error::TuttiError::ToolExecution {
+                    name: "<unknown>".into(),
+                    reason: format!("path escapes working directory: {raw}"),
+                });
+            }
+        }
+        Err(_) => {
+            if candidate.is_absolute() {
+                return Err(crate::error::TuttiError::ToolExecution {
+                    name: "<unknown>".into(),
+                    reason: format!(
+                        "cannot verify containment (workdir unreadable) — refusing absolute path: {raw}"
+                    ),
+                });
+            }
+        }
     }
 
     Ok(canonical)

@@ -185,22 +185,18 @@ impl EventLog {
         Ok(run_id)
     }
 
-    /// Mark the current run as completed.
+    /// Mark a specific run as completed. Takes `run_id` explicitly to
+    /// avoid races where a concurrent caller replaces `current_run`
+    /// between the lookup and the update — each caller knows which
+    /// run it owns and passes it in directly.
     pub fn finish_run(
         &self,
+        run_id: &str,
         status: &str,
         total_input_tokens: u64,
         total_output_tokens: u64,
         total_cost_usd: f64,
     ) -> Result<()> {
-        let run_id = self
-            .current_run
-            .lock()
-            .map_err(|_| TuttiError::EventLog("mutex poisoned".into()))?
-            .clone();
-        let Some(run_id) = run_id else {
-            return Ok(());
-        };
         let now = Utc::now();
         let conn = self
             .conn
@@ -476,7 +472,8 @@ mod tests {
     fn finish_run_updates_totals() {
         let (_dir, log) = make_log();
         let run_id = log.start_run("t", "mock", "m").unwrap();
-        log.finish_run("completed", 500, 250, 0.03).unwrap();
+        log.finish_run(&run_id, "completed", 500, 250, 0.03)
+            .unwrap();
         let runs = log.list_runs(10).unwrap();
         let row = runs.iter().find(|r| r.id == run_id).unwrap();
         assert_eq!(row.status, "completed");

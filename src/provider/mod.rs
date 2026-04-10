@@ -170,15 +170,24 @@ pub fn classify_retry(error: &crate::error::TuttiError) -> RetryHint {
         TuttiError::ApiCallFailed(msg) => {
             let lower = msg.to_lowercase();
             // Transient signals: 5xx, 429, timeouts, network resets.
+            // Status codes are anchored with "http " or "apierror: "
+            // prefixes so we don't misclassify errors that happen to
+            // contain "500" as a substring of something else.
             if lower.contains("timeout")
                 || lower.contains("rate limit")
-                || lower.contains("429")
-                || lower.contains("500")
-                || lower.contains("502")
-                || lower.contains("503")
-                || lower.contains("504")
+                || lower.contains("http 429")
+                || lower.contains("apierror: 429")
+                || lower.contains("http 500")
+                || lower.contains("apierror: 500")
+                || lower.contains("http 502")
+                || lower.contains("apierror: 502")
+                || lower.contains("http 503")
+                || lower.contains("apierror: 503")
+                || lower.contains("http 504")
+                || lower.contains("apierror: 504")
                 || lower.contains("connection reset")
                 || lower.contains("temporarily unavailable")
+                || lower.contains("service unavailable")
             {
                 RetryHint::Transient
             } else {

@@ -3,7 +3,7 @@
 //! Respects .gitignore and similar via the `ignore` crate. Results are
 //! capped to prevent runaway output.
 
-use super::{Tool, ToolDefinition, ToolOutput};
+use super::{Tool, ToolDefinition, ToolOutput, resolve_workdir_path};
 use crate::error::{Result, TuttiError};
 use ignore::WalkBuilder;
 use serde::Deserialize;
@@ -71,7 +71,13 @@ impl Tool for GrepGlobTool {
         }
 
         let search_root = match args.path.as_deref() {
-            Some(p) => workdir.join(p),
+            Some(p) => resolve_workdir_path(workdir, p).map_err(|e| match e {
+                TuttiError::ToolExecution { reason, .. } => TuttiError::ToolExecution {
+                    name: "grep_glob".into(),
+                    reason,
+                },
+                other => other,
+            })?,
             None => workdir.to_path_buf(),
         };
         if !search_root.exists() {
