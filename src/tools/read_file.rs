@@ -60,11 +60,27 @@ impl Tool for ReadFileTool {
             other => other,
         })?;
 
-        if !path.exists() {
-            return Ok(ToolOutput::error(format!("file not found: {}", args.path)));
-        }
-
-        let metadata = std::fs::metadata(&path)?;
+        // Open-then-metadata-then-read pattern eliminates TOCTOU:
+        // the size check and the read happen on the same fd. `take()`
+        // enforces the byte cap regardless of racing writers.
+        use std::io::Read;
+        let file = std::fs::File::open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                TuttiError::ToolExecution {
+                    name: "read_file".into(),
+                    reason: format!("file not found: {}", args.path),
+                }
+            } else {
+                TuttiError::ToolExecution {
+                    name: "read_file".into(),
+                    reason: format!("failed to open {}: {e}", args.path),
+                }
+            }
+        })?;
+        let metadata = file.metadata().map_err(|e| TuttiError::ToolExecution {
+            name: "read_file".into(),
+            reason: format!("failed to stat {}: {e}", args.path),
+        })?;
         if metadata.len() > MAX_BYTES {
             return Ok(ToolOutput::error(format!(
                 "file exceeds 2MB limit: {} is {} bytes",
@@ -72,11 +88,22 @@ impl Tool for ReadFileTool {
                 metadata.len()
             )));
         }
+        let mut contents = String::new();
+        file.take(MAX_BYTES + 1)
+            .read_to_string(&mut contents)
+            .map_err(|e| TuttiError::ToolExecution {
+                name: "read_file".into(),
+                reason: format!("failed to read {} (non-UTF-8?): {e}", args.path),
+            })?;
 
-        let contents = std::fs::read_to_string(&path).map_err(|e| TuttiError::ToolExecution {
-            name: "read_file".into(),
-            reason: format!("failed to read {}: {e}", args.path),
-        })?;
+        // Validate line range: start_line must be <= end_line.
+        if let (Some(start), Some(end)) = (args.start_line, args.end_line)
+            && end < start
+        {
+            return Ok(ToolOutput::error(format!(
+                "end_line ({end}) is less than start_line ({start})"
+            )));
+        }
 
         let output = match (args.start_line, args.end_line) {
             (None, None) => format_with_line_numbers(&contents, 1, None),
@@ -136,11 +163,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_returns_error_output() {
+    fn missing_file_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = run(json!({"path": "nope.txt"}), tmp.path()).unwrap();
-        assert!(out.is_error);
-        assert!(out.content.contains("file not found"));
+        let result = run(json!({"path": "nope.txt"}), tmp.path());
+        // Now returns Err (ToolExecution) instead of Ok with is_error.
+        assert!(result.is_err());
     }
 
     #[test]

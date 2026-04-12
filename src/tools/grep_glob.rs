@@ -112,13 +112,26 @@ impl Tool for GrepGlobTool {
         let mut results: Vec<String> = Vec::new();
         let mut matches_found = 0usize;
 
-        let walker = WalkBuilder::new(&search_root)
+        // Canonicalize the search root and workdir so strip_prefix
+        // works on macOS where /tmp → /private/tmp. If canonicalize
+        // fails, use the raw paths.
+        let canon_root = search_root
+            .canonicalize()
+            .unwrap_or_else(|_| search_root.clone());
+        let canon_workdir = workdir
+            .canonicalize()
+            .unwrap_or_else(|_| workdir.to_path_buf());
+
+        let walker = WalkBuilder::new(&canon_root)
             .hidden(false)
             .git_ignore(true)
             .build();
 
         for entry in walker {
-            if files_scanned >= MAX_FILES_SCANNED || matches_found >= MAX_MATCHES {
+            // Cap on matches found (not files scanned). This ensures
+            // we don't stop scanning before glob filtering, which
+            // would cause false-negative "no matches" results.
+            if matches_found >= MAX_MATCHES {
                 break;
             }
             let entry = match entry {
@@ -129,9 +142,13 @@ impl Tool for GrepGlobTool {
                 continue;
             }
             files_scanned += 1;
+            // Safety cap to prevent scanning the entire filesystem.
+            if files_scanned >= MAX_FILES_SCANNED {
+                break;
+            }
 
             let path = entry.path();
-            let rel = path.strip_prefix(workdir).unwrap_or(path);
+            let rel = path.strip_prefix(&canon_workdir).unwrap_or(path);
             let rel_str = rel.display().to_string();
 
             if let Some(g) = &glob_matcher

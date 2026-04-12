@@ -44,4 +44,6 @@ libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3"
-tempfile = "3"
+
+[dependencies.tempfile]
+version = "3"

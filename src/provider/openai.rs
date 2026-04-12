@@ -199,8 +199,21 @@ impl ModelProvider for OpenAIProvider {
             )));
         }
 
-        let wire_response: WireResponse = response
-            .json()
+        // Cap response body size to 16 MB to prevent OOM on malicious
+        // or broken provider responses. reqwest::blocking::Response::json()
+        // would read unbounded, so we read bytes first.
+        const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+        let body_bytes = response
+            .bytes()
+            .map_err(|e| TuttiError::ApiCallFailed(format!("failed to read response body: {e}")))?;
+        if body_bytes.len() > MAX_RESPONSE_BYTES {
+            return Err(TuttiError::ApiCallFailed(format!(
+                "response body too large: {} bytes (max {})",
+                body_bytes.len(),
+                MAX_RESPONSE_BYTES
+            )));
+        }
+        let wire_response: WireResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| TuttiError::ApiCallFailed(format!("invalid JSON response: {e}")))?;
 
         parse_wire_response(wire_response)

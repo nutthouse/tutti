@@ -22,7 +22,7 @@ use crate::provider::{
 };
 use crate::tools::{Tool, ToolOutput};
 use event::{Event, EventLog};
-use policy::{PolicyViolation, StepPolicy};
+use policy::StepPolicy;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -73,10 +73,14 @@ pub struct AgentResult {
     pub messages: Vec<Message>,
     pub iterations: u32,
     pub cumulative_cost_usd: f64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
     pub final_stop_reason: StopReason,
 }
 
-/// Run an agent loop for a single task.
+/// Run an agent loop for a single task. Manages the full run
+/// lifecycle: calls `start_run`, emits events via the returned
+/// `run_id`, and calls `finish_run` on every exit path.
 #[allow(clippy::too_many_arguments)]
 pub fn run_agent(
     provider: &dyn ModelProvider,
@@ -87,68 +91,134 @@ pub fn run_agent(
     inference: &InferenceConfig,
     config: &RunConfig,
     event_log: &EventLog,
+    arrangement: &str,
     workdir: &Path,
 ) -> Result<AgentResult> {
-    event_log.emit(Event::RunStarted {
-        provider: provider.name().to_string(),
-        model: inference.model.clone(),
-    })?;
+    let run_id = event_log.start_run(arrangement, provider.name(), &inference.model)?;
+    event_log.emit(
+        &run_id,
+        Event::RunStarted {
+            provider: provider.name().to_string(),
+            model: inference.model.clone(),
+        },
+    )?;
 
+    match run_agent_inner(
+        provider,
+        tools,
+        policy,
+        system_prompt,
+        user_prompt,
+        inference,
+        config,
+        event_log,
+        &run_id,
+        workdir,
+    ) {
+        Ok(result) => {
+            let _ = event_log.finish_run(
+                &run_id,
+                "completed",
+                result.total_input_tokens,
+                result.total_output_tokens,
+                result.cumulative_cost_usd,
+            );
+            Ok(result)
+        }
+        Err(e) => {
+            let _ = event_log.finish_run(&run_id, "failed", 0, 0, 0.0);
+            Err(e)
+        }
+    }
+}
+
+/// Inner loop extracted so `run_agent` can guarantee `finish_run` on
+/// every exit path without duplicating cleanup at each return site.
+#[allow(clippy::too_many_arguments)]
+fn run_agent_inner(
+    provider: &dyn ModelProvider,
+    tools: &[Box<dyn Tool>],
+    policy: &StepPolicy,
+    system_prompt: &str,
+    user_prompt: &str,
+    inference: &InferenceConfig,
+    config: &RunConfig,
+    event_log: &EventLog,
+    run_id: &str,
+    workdir: &Path,
+) -> Result<AgentResult> {
     let mut messages = vec![Message::system(system_prompt), Message::user(user_prompt)];
     let tool_defs: Vec<_> = tools.iter().map(|t| t.definition()).collect();
     let mut iterations: u32 = 0;
     let mut cumulative_cost = 0.0f64;
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
 
     loop {
         iterations += 1;
         if iterations > config.max_iterations {
-            event_log.emit(Event::RunFailed {
-                reason: format!("max iterations exceeded ({})", config.max_iterations),
-            })?;
+            event_log.emit(
+                run_id,
+                Event::RunFailed {
+                    reason: format!("max iterations exceeded ({})", config.max_iterations),
+                },
+            )?;
             return Err(TuttiError::MaxIterationsExceeded(config.max_iterations));
         }
 
-        // Budget check before each model call.
         if let Some(budget) = policy.budget_usd
             && cumulative_cost >= budget
         {
-            event_log.emit(Event::RunFailed {
-                reason: format!(
-                    "budget exhausted: spent ${cumulative_cost:.4}, limit ${budget:.4}"
-                ),
-            })?;
+            event_log.emit(
+                run_id,
+                Event::RunFailed {
+                    reason: format!(
+                        "budget exhausted: spent ${cumulative_cost:.4}, limit ${budget:.4}"
+                    ),
+                },
+            )?;
             return Err(TuttiError::BudgetExhausted {
                 spent: cumulative_cost,
                 limit: budget,
             });
         }
 
-        event_log.emit(Event::ModelCalled {
-            iteration: iterations,
-            message_count: messages.len(),
-        })?;
+        event_log.emit(
+            run_id,
+            Event::ModelCalled {
+                iteration: iterations,
+                message_count: messages.len(),
+            },
+        )?;
 
         let response = call_with_retry(provider, &messages, &tool_defs, inference, &config.retry)
             .inspect_err(|e| {
-            let _ = event_log.emit(Event::ModelError {
-                error: e.to_string(),
-            });
+            let _ = event_log.emit(
+                run_id,
+                Event::ModelError {
+                    error: e.to_string(),
+                },
+            );
         })?;
 
+        total_input_tokens += response.usage.input_tokens;
+        total_output_tokens += response.usage.output_tokens;
         let call_cost = (response.usage.input_tokens as f64 * provider.cost_per_input_token())
             + (response.usage.output_tokens as f64 * provider.cost_per_output_token());
         cumulative_cost += call_cost;
 
-        event_log.emit(Event::ModelResponded {
-            iteration: iterations,
-            input_tokens: response.usage.input_tokens,
-            output_tokens: response.usage.output_tokens,
-            cost_usd: call_cost,
-            cumulative_cost_usd: cumulative_cost,
-            stop_reason: response.stop_reason,
-        })?;
+        event_log.emit(
+            run_id,
+            Event::ModelResponded {
+                iteration: iterations,
+                input_tokens: response.usage.input_tokens,
+                output_tokens: response.usage.output_tokens,
+                cost_usd: call_cost,
+                cumulative_cost_usd: cumulative_cost,
+                stop_reason: response.stop_reason,
+            },
+        )?;
 
-        // Append the assistant message (mixed text + tool_use blocks).
         messages.push(Message {
             role: Role::Assistant,
             content: response.content.clone(),
@@ -156,24 +226,32 @@ pub fn run_agent(
 
         let final_stop_reason = match response.stop_reason {
             StopReason::EndTurn | StopReason::MaxTokens | StopReason::Other => {
-                event_log.emit(Event::RunFinished {
-                    iterations,
-                    cumulative_cost_usd: cumulative_cost,
-                })?;
+                event_log.emit(
+                    run_id,
+                    Event::RunFinished {
+                        iterations,
+                        cumulative_cost_usd: cumulative_cost,
+                    },
+                )?;
                 response.stop_reason
             }
             StopReason::ToolUse => {
-                // Execute every tool_use block the model emitted. Results
-                // go in a single tool-role message.
-                let tool_results =
-                    execute_tool_calls(&response.content, tools, policy, event_log, workdir)?;
+                let tool_results = execute_tool_calls(
+                    &response.content,
+                    tools,
+                    policy,
+                    event_log,
+                    run_id,
+                    workdir,
+                )?;
                 if tool_results.is_empty() {
-                    // Model said ToolUse but didn't emit any tool_use blocks.
-                    // Treat as end of conversation to avoid spinning.
-                    event_log.emit(Event::RunFinished {
-                        iterations,
-                        cumulative_cost_usd: cumulative_cost,
-                    })?;
+                    event_log.emit(
+                        run_id,
+                        Event::RunFinished {
+                            iterations,
+                            cumulative_cost_usd: cumulative_cost,
+                        },
+                    )?;
                     StopReason::EndTurn
                 } else {
                     messages.push(Message {
@@ -189,6 +267,8 @@ pub fn run_agent(
             messages,
             iterations,
             cumulative_cost_usd: cumulative_cost,
+            total_input_tokens,
+            total_output_tokens,
             final_stop_reason,
         });
     }
@@ -231,22 +311,21 @@ fn execute_tool_calls(
     tools: &[Box<dyn Tool>],
     policy: &StepPolicy,
     event_log: &EventLog,
+    run_id: &str,
     workdir: &Path,
 ) -> Result<Vec<ContentBlock>> {
     let mut results = Vec::new();
     for block in assistant_content {
         if let ContentBlock::ToolUse { id, name, input } = block {
-            // Policy gate first. If denied, send a synthetic tool_result
-            // to the model instead of executing.
             if let Err(violation) = policy.check_tool_call(name, input) {
-                let reason = match &violation {
-                    PolicyViolation::ToolNotAllowed(_) => format!("{}", violation),
-                    PolicyViolation::NetworkBoundary { .. } => format!("{}", violation),
-                };
-                event_log.emit(Event::ToolDenied {
-                    tool: name.clone(),
-                    reason: reason.clone(),
-                })?;
+                let reason = violation.to_string();
+                event_log.emit(
+                    run_id,
+                    Event::ToolDenied {
+                        tool: name.clone(),
+                        reason: reason.clone(),
+                    },
+                )?;
                 results.push(ContentBlock::ToolResult {
                     tool_use_id: id.clone(),
                     content: format!("POLICY DENIED: {reason}"),
@@ -255,37 +334,46 @@ fn execute_tool_calls(
                 continue;
             }
 
-            event_log.emit(Event::ToolApproved { tool: name.clone() })?;
+            event_log.emit(run_id, Event::ToolApproved { tool: name.clone() })?;
 
             let tool = tools.iter().find(|t| t.definition().name == *name);
             let output = match tool {
                 None => {
-                    event_log.emit(Event::ToolFailed {
-                        tool: name.clone(),
-                        error: "tool not registered".into(),
-                    })?;
+                    event_log.emit(
+                        run_id,
+                        Event::ToolFailed {
+                            tool: name.clone(),
+                            error: "tool not registered".into(),
+                        },
+                    )?;
                     ToolOutput::error(format!("tool '{name}' is not registered"))
                 }
                 Some(tool) => match tool.execute(input, workdir) {
                     Ok(output) => {
-                        event_log.emit(Event::ToolExecuted {
-                            tool: name.clone(),
-                            output_len: output.content.len(),
-                            files_modified: output
-                                .files_modified
-                                .iter()
-                                .map(|p| p.display().to_string())
-                                .collect(),
-                            is_error: output.is_error,
-                        })?;
+                        event_log.emit(
+                            run_id,
+                            Event::ToolExecuted {
+                                tool: name.clone(),
+                                output_len: output.content.len(),
+                                files_modified: output
+                                    .files_modified
+                                    .iter()
+                                    .map(|p| p.display().to_string())
+                                    .collect(),
+                                is_error: output.is_error,
+                            },
+                        )?;
                         output
                     }
                     Err(e) => {
                         let error_msg = e.to_string();
-                        event_log.emit(Event::ToolFailed {
-                            tool: name.clone(),
-                            error: error_msg.clone(),
-                        })?;
+                        event_log.emit(
+                            run_id,
+                            Event::ToolFailed {
+                                tool: name.clone(),
+                                error: error_msg.clone(),
+                            },
+                        )?;
                         ToolOutput::error(format!("tool execution failed: {error_msg}"))
                     }
                 },
@@ -432,7 +520,9 @@ mod tests {
     fn make_event_log() -> (tempfile::TempDir, EventLog) {
         let tmp = tempfile::tempdir().unwrap();
         let log = EventLog::new(tmp.path().join("events.db")).unwrap();
-        let _run_id = log.start_run("test_run", "mock", "test-model").unwrap();
+        // Note: we don't pre-start a run here. run_agent now calls
+        // start_run itself. Tests that call run_agent don't need it.
+        // Tests that use emit directly must call start_run first.
         (tmp, log)
     }
 
@@ -460,6 +550,7 @@ mod tests {
             &inference(),
             &RunConfig::default(),
             &log,
+            "test",
             tmp.path(),
         )
         .unwrap();
@@ -506,6 +597,7 @@ mod tests {
             &inference(),
             &RunConfig::default(),
             &log,
+            "test",
             tmp.path(),
         )
         .unwrap();
@@ -550,6 +642,7 @@ mod tests {
             &inference(),
             &RunConfig::default(),
             &log,
+            "test",
             tmp.path(),
         )
         .unwrap();
@@ -598,6 +691,7 @@ mod tests {
             &inference(),
             &RunConfig::default(),
             &log,
+            "test",
             tmp.path(),
         );
         // Either budget is exhausted OR the loop breaks because ToolUse
@@ -643,6 +737,7 @@ mod tests {
             &inference(),
             &config,
             &log,
+            "test",
             tmp.path(),
         );
         assert!(matches!(result, Err(TuttiError::MaxIterationsExceeded(3))));
@@ -678,6 +773,7 @@ mod tests {
             &inference(),
             &config,
             &log,
+            "test",
             tmp.path(),
         )
         .unwrap();
@@ -721,6 +817,7 @@ mod tests {
             &inference(),
             &RunConfig::default(),
             &log,
+            "test",
             tmp.path(),
         );
         assert!(matches!(result, Err(TuttiError::ApiCallFailed(_))));

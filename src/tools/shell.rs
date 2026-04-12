@@ -1,4 +1,9 @@
 //! shell tool — execute arbitrary shell commands with a timeout.
+//!
+//! Stdout/stderr are redirected to temp files (not pipes) so we
+//! never deadlock when the child produces more than 64KB of output.
+//! After the child exits or times out, we read the temp files with
+//! a hard byte cap to prevent OOM on chatty commands.
 
 use super::{Tool, ToolDefinition, ToolOutput};
 use crate::error::{Result, TuttiError};
@@ -12,7 +17,11 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const MAX_OUTPUT_BYTES: usize = 100 * 1024; // 100KB of captured output per stream
+/// Hard upper bound — the model cannot set timeout_secs beyond this.
+const MAX_TIMEOUT_SECS: u64 = 600;
+/// Maximum bytes we'll read from stdout or stderr. Anything beyond
+/// this is discarded (never loaded into memory).
+const MAX_OUTPUT_BYTES: u64 = 100 * 1024; // 100KB per stream
 
 pub struct ShellTool {
     default_timeout_secs: u64,
@@ -38,18 +47,20 @@ impl Tool for ShellTool {
         ToolDefinition {
             name: "shell".into(),
             description: format!(
-                "Execute a shell command in the working directory. Default timeout is {DEFAULT_TIMEOUT_SECS}s (configurable via timeout_secs). Captures stdout and stderr. Returns exit code and captured output."
+                "Execute a shell command in the working directory. Default timeout is {DEFAULT_TIMEOUT_SECS}s \
+                 (configurable via timeout_secs, max {MAX_TIMEOUT_SECS}s). Captures stdout and stderr. \
+                 Returns exit code and captured output."
             ),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Shell command to execute (passed to `sh -c`)"
+                        "description": "Shell command to execute (passed to `/bin/sh -c`)"
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Override the default timeout in seconds"
+                        "description": format!("Override the default timeout in seconds (max {MAX_TIMEOUT_SECS})")
                     }
                 },
                 "required": ["command"]
@@ -64,22 +75,49 @@ impl Tool for ShellTool {
                 reason: format!("invalid arguments: {e}"),
             })?;
 
-        let timeout = Duration::from_secs(args.timeout_secs.unwrap_or(self.default_timeout_secs));
+        // Clamp timeout — model cannot exceed MAX_TIMEOUT_SECS.
+        let timeout_secs = args
+            .timeout_secs
+            .unwrap_or(self.default_timeout_secs)
+            .min(MAX_TIMEOUT_SECS);
+        let timeout = Duration::from_secs(timeout_secs);
 
-        let mut command = Command::new("sh");
+        // Redirect stdout/stderr to temp files so the child never
+        // blocks on a pipe write. This eliminates the deadlock that
+        // occurs with piped stdout/stderr when output exceeds the
+        // OS pipe buffer (~64KB).
+        let stdout_file = tempfile::tempfile().map_err(|e| TuttiError::ToolExecution {
+            name: "shell".into(),
+            reason: format!("failed to create stdout temp file: {e}"),
+        })?;
+        let stderr_file = tempfile::tempfile().map_err(|e| TuttiError::ToolExecution {
+            name: "shell".into(),
+            reason: format!("failed to create stderr temp file: {e}"),
+        })?;
+
+        // Use /bin/sh explicitly to avoid picking up a malicious sh
+        // earlier on PATH.
+        let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
             .arg(&args.command)
             .current_dir(workdir)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::from(stdout_file.try_clone().map_err(|e| {
+                TuttiError::ToolExecution {
+                    name: "shell".into(),
+                    reason: format!("failed to clone stdout fd: {e}"),
+                }
+            })?))
+            .stderr(Stdio::from(stderr_file.try_clone().map_err(|e| {
+                TuttiError::ToolExecution {
+                    name: "shell".into(),
+                    reason: format!("failed to clone stderr fd: {e}"),
+                }
+            })?));
 
         // On Unix, put the shell and its descendants in a new process
-        // group so we can signal the whole tree on timeout. Without
-        // this, `sh -c "sleep 10"` leaks the grandchild `sleep`
-        // process when we kill `sh` — it gets reparented to PID 1
-        // and keeps running.
+        // group so we can signal the whole tree on timeout.
         #[cfg(unix)]
         command.process_group(0);
 
@@ -96,24 +134,22 @@ impl Tool for ShellTool {
             })? {
             Some(status) => status,
             None => {
-                // Timed out. Kill the entire process group on Unix so
-                // grandchildren don't get reparented to PID 1 and keep
-                // running. On non-Unix, fall back to killing the direct
-                // child.
                 #[cfg(unix)]
                 kill_process_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 return Ok(ToolOutput::error(format!(
-                    "command timed out after {}s: {}",
-                    timeout.as_secs(),
+                    "command timed out after {timeout_secs}s: {}",
                     args.command
                 )));
             }
         };
 
-        let stdout = child.stdout.take().map(read_capped).unwrap_or_default();
-        let stderr = child.stderr.take().map(read_capped).unwrap_or_default();
+        // Read temp files with a hard byte cap. `take()` means we
+        // never allocate more than MAX_OUTPUT_BYTES + 1 regardless
+        // of how much output the command produced.
+        let stdout = read_capped(stdout_file);
+        let stderr = read_capped(stderr_file);
 
         let exit_code = status.code().unwrap_or(-1);
         let output = format_output(exit_code, &stdout, &stderr);
@@ -121,42 +157,40 @@ impl Tool for ShellTool {
         Ok(ToolOutput {
             content: output,
             files_modified: Vec::new(),
-            // A non-zero exit is surfaced as is_error so the model can
-            // see the command failed, even though tutti itself didn't
-            // fail to execute it.
             is_error: exit_code != 0,
         })
     }
 }
 
-/// Send SIGKILL to a Unix process group. Used on timeout so that any
-/// grandchildren spawned by `sh -c ...` are killed along with the
-/// shell itself. Silently no-ops on non-Unix platforms.
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
-    // SAFETY: libc::killpg is safe to call with any pgid; if the group
-    // doesn't exist, it returns -1 and sets errno (which we ignore).
-    // We intentionally target the process group, not the process, so
-    // grandchildren get the signal too.
     unsafe {
         libc::killpg(pid as libc::pid_t, libc::SIGKILL);
     }
 }
 
-fn read_capped<R: std::io::Read>(mut reader: R) -> String {
-    let mut buf = Vec::with_capacity(4096);
-    let _ = reader.read_to_end(&mut buf);
-    if buf.len() > MAX_OUTPUT_BYTES {
-        let truncated = &buf[..MAX_OUTPUT_BYTES];
-        let mut s = String::from_utf8_lossy(truncated).into_owned();
-        s.push_str(&format!(
-            "\n...[truncated {} bytes]",
-            buf.len() - MAX_OUTPUT_BYTES
-        ));
-        s
-    } else {
-        String::from_utf8_lossy(&buf).into_owned()
+/// Read up to MAX_OUTPUT_BYTES from a file, seeking to the start first.
+/// Never allocates more than MAX_OUTPUT_BYTES + 1.
+fn read_capped(mut file: std::fs::File) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return String::new();
     }
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut buf = Vec::with_capacity((file_len.min(MAX_OUTPUT_BYTES + 1)) as usize);
+    let _ = file.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut buf);
+    let truncated = buf.len() as u64 > MAX_OUTPUT_BYTES;
+    if truncated {
+        buf.truncate(MAX_OUTPUT_BYTES as usize);
+    }
+    let mut s = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        s.push_str(&format!(
+            "\n...[truncated, showing first {} bytes]",
+            MAX_OUTPUT_BYTES
+        ));
+    }
+    s
 }
 
 fn format_output(exit_code: i32, stdout: &str, stderr: &str) -> String {
@@ -229,5 +263,43 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let result = ShellTool::default().execute(&json!({}), tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn timeout_clamped_to_max() {
+        // Model passes u64::MAX — should be clamped to MAX_TIMEOUT_SECS.
+        // We can't easily test the actual timeout, but we verify the
+        // command still works (doesn't panic or overflow).
+        let out = run(json!({"command": "echo ok", "timeout_secs": 999999})).unwrap();
+        assert!(!out.is_error);
+        assert!(out.content.contains("ok"));
+    }
+
+    #[test]
+    fn large_output_does_not_deadlock() {
+        // Generate >64KB of output. With piped stdout this would
+        // deadlock because wait_timeout blocks before draining.
+        // With temp-file redirection it completes normally.
+        let out = run(json!({
+            "command": "dd if=/dev/zero bs=1024 count=128 2>/dev/null | base64",
+            "timeout_secs": 10
+        }))
+        .unwrap();
+        assert!(!out.is_error, "should not deadlock: {}", out.content);
+        assert!(out.content.contains("exit_code: 0"));
+    }
+
+    #[test]
+    fn output_capped_at_max_bytes() {
+        // Generate ~200KB of output, verify we get the truncation notice.
+        let out = run(json!({
+            "command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | base64",
+            "timeout_secs": 10
+        }))
+        .unwrap();
+        assert!(
+            out.content.contains("truncated"),
+            "expected truncation notice for large output"
+        );
     }
 }
