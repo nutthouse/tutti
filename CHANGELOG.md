@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.10.0.0] - 2026-04-13
+
+### Added
+- **Agentic framework spine**: tutti can now call model APIs directly instead of
+  wrapping CLI tools. New `ModelProvider` trait with an OpenAI-compatible adapter
+  covering OpenAI, Azure OpenAI, Ollama, vLLM, Together, and Groq from a single
+  adapter. One binary, any model.
+- **Built-in tool executor**: five tools implemented in Rust: `read_file` (with
+  line range support, 2MB cap), `write_file` (auto-creates parent dirs),
+  `apply_patch` (old_string to new_string, fails on ambiguous matches), `shell`
+  (60s default timeout, 600s max, process-group kill on timeout), and `grep_glob`
+  (respects .gitignore via the `ignore` crate).
+- **Agent loop**: sync agent loop that calls model, parses tool_use blocks,
+  runs policy gate, executes tools, and repeats until done. Enforces
+  max_iterations (default 100) and per-step budget_usd. Model-aware retry
+  only retries the API call on transient failures (429, 5xx), never
+  re-executes tools that have already run.
+- **Policy gate**: per-step policy with `allowed_tools`, `data_classification`,
+  `network_boundary` (best-effort blocklist for shell), and `budget_usd`.
+  Violations return denial messages to the model so it can adapt.
+- **SQLite event log**: every model call, tool invocation, policy decision, and
+  error recorded to `.tutti/events.db`. Strict mode (default) aborts on write
+  failure; BestEffort mode logs to stderr and continues. WAL mode with
+  busy_timeout for concurrent readers.
+- **80 new tests**: 35 tool tests (including large-output deadlock, output
+  capping, CRLF normalization, .gitignore respect), 17 provider tests (wire
+  format, Azure URL branching, retry classification), 28 agent tests (mock
+  provider, policy denial, budget exhaustion, max iterations, transient retry,
+  concurrent run isolation).
+
+### Fixed
+- Shell tool no longer deadlocks on commands producing >64KB output (redirects
+  to temp files instead of pipes).
+- Shell tool caps output reads at 100KB via `take()` (no unbounded memory
+  allocation).
+- EventLog uses explicit run_id threading (no ambient state race on concurrent
+  runs).
+- HTTP response body capped at 16MB before JSON deserialization.
+- Path containment rejects absolute paths when workdir can't be canonicalized.
+- grep_glob canonicalizes workdir for strip_prefix (fixes silent zero-results
+  on macOS).
+
 ## [0.9.0] - 2026-03-23
 
 ### Added
