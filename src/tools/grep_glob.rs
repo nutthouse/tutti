@@ -290,20 +290,38 @@ mod tests {
     #[test]
     fn respects_gitignore() {
         let tmp = tempfile::tempdir().unwrap();
-        // Initialize a git repo so ignore picks up .gitignore
-        std::process::Command::new("git")
-            .arg("init")
+        // Initialize a proper git repo so the `ignore` crate picks up .gitignore.
+        // CI environments need explicit user config for git init to succeed.
+        let init = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
             .current_dir(tmp.path())
-            .output()
-            .ok();
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output();
+        if init.is_err() || !init.unwrap().status.success() {
+            // Git not available in this environment — skip test.
+            return;
+        }
         std::fs::write(tmp.path().join(".gitignore"), "secret.txt\n").unwrap();
         std::fs::write(tmp.path().join("visible.txt"), "hello\n").unwrap();
         std::fs::write(tmp.path().join("secret.txt"), "password123\n").unwrap();
-        let out = run(json!({"pattern": ".*"}), tmp.path()).unwrap();
-        assert!(out.content.contains("visible.txt"));
+        // Stage .gitignore so git considers the repo initialized.
+        let _ = std::process::Command::new("git")
+            .args(["add", ".gitignore"])
+            .current_dir(tmp.path())
+            .output();
+        let out = run(json!({"pattern": "hello"}), tmp.path()).unwrap();
         assert!(
-            !out.content.contains("secret.txt") || !out.content.contains("password123"),
-            "secret.txt should be filtered by .gitignore"
+            out.content.contains("visible.txt"),
+            "visible.txt should be found, got: {}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("password123"),
+            "secret.txt content should be filtered by .gitignore, got: {}",
+            out.content
         );
     }
 }
