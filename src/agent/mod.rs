@@ -116,17 +116,21 @@ pub fn run_agent(
         workdir,
     ) {
         Ok(result) => {
-            let _ = event_log.finish_run(
+            if let Err(log_err) = event_log.finish_run(
                 &run_id,
                 "completed",
                 result.total_input_tokens,
                 result.total_output_tokens,
                 result.cumulative_cost_usd,
-            );
+            ) {
+                eprintln!("tutti: failed to finalize run {run_id}: {log_err}");
+            }
             Ok(result)
         }
         Err(e) => {
-            let _ = event_log.finish_run(&run_id, "failed", 0, 0, 0.0);
+            if let Err(log_err) = event_log.finish_run(&run_id, "failed", 0, 0, 0.0) {
+                eprintln!("tutti: failed to finalize run {run_id}: {log_err}");
+            }
             Err(e)
         }
     }

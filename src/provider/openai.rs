@@ -199,18 +199,27 @@ impl ModelProvider for OpenAIProvider {
             )));
         }
 
-        // Cap response body size to 16 MB to prevent OOM on malicious
-        // or broken provider responses. reqwest::blocking::Response::json()
-        // would read unbounded, so we read bytes first.
-        const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-        let body_bytes = response
-            .bytes()
-            .map_err(|e| TuttiError::ApiCallFailed(format!("failed to read response body: {e}")))?;
-        if body_bytes.len() > MAX_RESPONSE_BYTES {
+        // Cap response body at 16 MB. Check Content-Length first for
+        // an early reject, then stream-read with take() so we never
+        // allocate more than the cap even without Content-Length.
+        const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+        if let Some(len) = response.content_length()
+            && len > MAX_RESPONSE_BYTES
+        {
             return Err(TuttiError::ApiCallFailed(format!(
-                "response body too large: {} bytes (max {})",
-                body_bytes.len(),
-                MAX_RESPONSE_BYTES
+                "response Content-Length too large: {len} bytes (max {MAX_RESPONSE_BYTES})"
+            )));
+        }
+        let mut body_bytes = Vec::new();
+        use std::io::Read;
+        response
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body_bytes)
+            .map_err(|e| TuttiError::ApiCallFailed(format!("failed to read response body: {e}")))?;
+        if body_bytes.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err(TuttiError::ApiCallFailed(format!(
+                "response body too large: {} bytes (max {MAX_RESPONSE_BYTES})",
+                body_bytes.len()
             )));
         }
         let wire_response: WireResponse = serde_json::from_slice(&body_bytes)
@@ -351,7 +360,12 @@ fn parse_wire_response(response: WireResponse) -> Result<ModelResponse> {
     if let Some(tool_calls) = first_choice.message.tool_calls {
         for call in tool_calls {
             let input = serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                .unwrap_or_else(|_| serde_json::json!({}));
+                .map_err(|e| {
+                    TuttiError::ApiCallFailed(format!(
+                        "tool call '{}' has malformed arguments: {e}",
+                        call.function.name
+                    ))
+                })?;
             blocks.push(ContentBlock::ToolUse {
                 id: call.id,
                 name: call.function.name,

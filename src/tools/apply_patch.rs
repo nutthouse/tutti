@@ -72,18 +72,35 @@ impl Tool for ApplyPatchTool {
             other => other,
         })?;
 
-        if !path.exists() {
-            return Ok(ToolOutput::error(format!("file not found: {}", args.path)));
-        }
+        // Open the file once for read+write to eliminate TOCTOU:
+        // if the path is swapped for a symlink between read and write,
+        // we still write through the same fd we read from.
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    TuttiError::ToolExecution {
+                        name: "apply_patch".into(),
+                        reason: format!("file not found: {}", args.path),
+                    }
+                } else {
+                    TuttiError::ToolExecution {
+                        name: "apply_patch".into(),
+                        reason: format!("failed to open {}: {e}", args.path),
+                    }
+                }
+            })?;
 
-        let contents = std::fs::read_to_string(&path).map_err(|e| TuttiError::ToolExecution {
-            name: "apply_patch".into(),
-            reason: format!("failed to read {}: {e}", args.path),
-        })?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .map_err(|e| TuttiError::ToolExecution {
+                name: "apply_patch".into(),
+                reason: format!("failed to read {}: {e}", args.path),
+            })?;
 
-        // Normalize the model's old_string against the file's line ending
-        // style before comparing — models often emit LF even when the file
-        // is CRLF.
         let (file_contents, normalized_old, normalized_new) =
             normalize_line_endings(&contents, &args.old_string, &args.new_string);
 
@@ -95,12 +112,21 @@ impl Tool for ApplyPatchTool {
             ))),
             1 => {
                 let replaced = file_contents.replacen(&normalized_old, &normalized_new, 1);
-                std::fs::write(&path, replaced.as_bytes()).map_err(|e| {
-                    TuttiError::ToolExecution {
+                // Write through the same fd: seek to start, truncate, write.
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| TuttiError::ToolExecution {
+                        name: "apply_patch".into(),
+                        reason: format!("failed to seek {}: {e}", args.path),
+                    })?;
+                file.set_len(0).map_err(|e| TuttiError::ToolExecution {
+                    name: "apply_patch".into(),
+                    reason: format!("failed to truncate {}: {e}", args.path),
+                })?;
+                file.write_all(replaced.as_bytes())
+                    .map_err(|e| TuttiError::ToolExecution {
                         name: "apply_patch".into(),
                         reason: format!("failed to write {}: {e}", args.path),
-                    }
-                })?;
+                    })?;
                 Ok(ToolOutput::text(format!(
                     "Applied patch to {} (replaced {} chars with {} chars)",
                     args.path,
@@ -257,16 +283,14 @@ mod tests {
     #[test]
     fn fails_on_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = run(
+        let result = run(
             json!({
                 "path": "nope.txt",
                 "old_string": "x",
                 "new_string": "y"
             }),
             tmp.path(),
-        )
-        .unwrap();
-        assert!(out.is_error);
-        assert!(out.content.contains("file not found"));
+        );
+        assert!(result.is_err());
     }
 }

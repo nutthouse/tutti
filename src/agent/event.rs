@@ -145,6 +145,7 @@ impl EventLog {
         }
         let conn = Connection::open(&path)?;
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.pragma_update(None, "foreign_keys", "ON");
         conn.busy_timeout(Duration::from_secs(5))?;
         init_schema(&conn)?;
         Ok(Self {
@@ -190,7 +191,7 @@ impl EventLog {
             .conn
             .lock()
             .map_err(|_| TuttiError::EventLog("mutex poisoned".into()))?;
-        conn.execute(
+        let rows = conn.execute(
             "UPDATE runs SET completed_at = ?1, status = ?2, total_input_tokens = ?3, \
              total_output_tokens = ?4, total_cost_usd = ?5 WHERE id = ?6",
             params![
@@ -202,6 +203,11 @@ impl EventLog {
                 run_id
             ],
         )?;
+        if rows == 0 {
+            return Err(TuttiError::EventLog(format!(
+                "finish_run: no run found with id '{run_id}'"
+            )));
+        }
         Ok(())
     }
 

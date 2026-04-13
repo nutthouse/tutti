@@ -126,23 +126,31 @@ impl Tool for ShellTool {
             reason: format!("failed to spawn shell: {e}"),
         })?;
 
-        let status = match child
-            .wait_timeout(timeout)
-            .map_err(|e| TuttiError::ToolExecution {
-                name: "shell".into(),
-                reason: format!("wait_timeout failed: {e}"),
-            })? {
-            Some(status) => status,
-            None => {
+        let status = match child.wait_timeout(timeout) {
+            Err(e) => {
+                // Clean up child on wait failure (don't leave it running).
                 #[cfg(unix)]
                 kill_process_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
-                return Ok(ToolOutput::error(format!(
-                    "command timed out after {timeout_secs}s: {}",
-                    args.command
-                )));
+                return Err(TuttiError::ToolExecution {
+                    name: "shell".into(),
+                    reason: format!("wait_timeout failed: {e}"),
+                });
             }
+            Ok(maybe_status) => match maybe_status {
+                Some(status) => status,
+                None => {
+                    #[cfg(unix)]
+                    kill_process_group(child.id());
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(ToolOutput::error(format!(
+                        "command timed out after {timeout_secs}s: {}",
+                        args.command
+                    )));
+                }
+            },
         };
 
         // Read temp files with a hard byte cap. `take()` means we
