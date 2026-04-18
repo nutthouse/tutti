@@ -1,6 +1,6 @@
 [package]
 name = "tutti"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024" # intentional: codebase uses Rust 2024 let-chain syntax
 description = "Multi-agent orchestration CLI — your agents, all together"
 license = "MIT"
@@ -34,6 +34,16 @@ tiny_http = "0.12"
 getrandom = "0.4.2"
 rust-embed = "8"
 glob = "0.3"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+ignore = "0.4"
+regex = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3"
+
+[dependencies.tempfile]
+version = "3"

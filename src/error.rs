@@ -69,6 +69,36 @@ pub enum TuttiError {
 
     #[error("remote connectivity error: {0}")]
     RemoteConnection(String),
+
+    #[error("provider '{0}' not found or misconfigured")]
+    #[allow(dead_code)]
+    ProviderNotFound(String),
+
+    #[error("policy violation: {0}")]
+    #[allow(dead_code)]
+    PolicyViolation(String),
+
+    #[error("model API call failed: {0}")]
+    ApiCallFailed(String),
+
+    #[error("tool '{0}' not found")]
+    #[allow(dead_code)]
+    ToolNotFound(String),
+
+    #[error("tool '{name}' execution failed: {reason}")]
+    ToolExecution { name: String, reason: String },
+
+    #[error("max iterations exceeded ({0})")]
+    MaxIterationsExceeded(u32),
+
+    #[error("budget exhausted: spent ${spent:.4}, limit ${limit:.4}")]
+    BudgetExhausted { spent: f64, limit: f64 },
+
+    #[error("event log error: {0}")]
+    EventLog(String),
+
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 pub type Result<T> = std::result::Result<T, TuttiError>;
