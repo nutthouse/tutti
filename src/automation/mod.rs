@@ -1714,10 +1714,34 @@ impl<'a> WorkflowExecutor<'a> {
                         if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                             (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
                         {
-                            // Brief settle time for filesystem I/O
-                            std::thread::sleep(Duration::from_secs(2));
+                            // Poll for the artifact to materialize. wait_for_agent_idle
+                            // can return as soon as the runtime emits a completion signal,
+                            // which may be before the agent's file write is flushed to disk.
+                            // Use a short bounded poll window proportional to wait_timeout_secs
+                            // (capped at 60s) so that fast steps stay fast and slow flushes
+                            // don't false-fail.
+                            // See https://github.com/nutthouse/tutti/issues/120
+                            let post_idle_poll_secs = std::cmp::min(
+                                std::cmp::max(*step_wait_timeout / 30, 5),
+                                60,
+                            );
+                            let poll_interval = Duration::from_secs(1);
+                            let poll_deadline = Duration::from_secs(post_idle_poll_secs);
+                            let poll_start = std::time::Instant::now();
 
-                            match capture_artifact(pre_snap, expanded_pattern, art_name) {
+                            let capture_result = loop {
+                                match capture_artifact(pre_snap, expanded_pattern, art_name) {
+                                    Ok(p) => break Ok(p),
+                                    Err(e) => {
+                                        if poll_start.elapsed() >= poll_deadline {
+                                            break Err(e);
+                                        }
+                                        std::thread::sleep(poll_interval);
+                                    }
+                                }
+                            };
+
+                            match capture_result {
                                 Ok(artifact_path) => {
                                     match store_artifact_output(
                                         self.project_root,
