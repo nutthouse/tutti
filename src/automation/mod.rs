@@ -1035,6 +1035,7 @@ impl<'a> WorkflowExecutor<'a> {
                         } else {
                             None
                         };
+                        let post_idle_poll_secs = post_idle_artifact_poll_secs(*step_wait_timeout);
 
                         let baseline_pane_hash =
                             TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)
@@ -1563,23 +1564,25 @@ impl<'a> WorkflowExecutor<'a> {
                                 // Run artifact capture before early success exit
                                 if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                                     (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                                    && let Ok(artifact_path) = capture_artifact_with_poll(
+                                        pre_snap,
+                                        expanded_pattern,
+                                        art_name,
+                                        post_idle_poll_secs,
+                                        Duration::from_secs(1),
+                                    )
+                                    && let Ok(result) = store_artifact_output(
+                                        self.project_root,
+                                        &run_id,
+                                        art_name,
+                                        &artifact_path,
+                                    )
                                 {
-                                    std::thread::sleep(Duration::from_secs(2));
-                                    if let Ok(artifact_path) =
-                                        capture_artifact(pre_snap, expanded_pattern, art_name)
-                                        && let Ok(result) = store_artifact_output(
-                                            self.project_root,
-                                            &run_id,
-                                            art_name,
-                                            &artifact_path,
-                                        )
-                                    {
-                                        output_files.insert(
-                                            art_name.to_string(),
-                                            result.json_path.display().to_string(),
-                                        );
-                                        outputs.insert(art_name.to_string(), result.value);
-                                    }
+                                    output_files.insert(
+                                        art_name.to_string(),
+                                        result.json_path.display().to_string(),
+                                    );
+                                    outputs.insert(art_name.to_string(), result.value);
                                 }
                                 step_results.push(StepResult {
                                     index: step_index,
@@ -1627,23 +1630,25 @@ impl<'a> WorkflowExecutor<'a> {
                                     // Run artifact capture before early success exit
                                     if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                                         (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
+                                        && let Ok(artifact_path) = capture_artifact_with_poll(
+                                            pre_snap,
+                                            expanded_pattern,
+                                            art_name,
+                                            post_idle_poll_secs,
+                                            Duration::from_secs(1),
+                                        )
+                                        && let Ok(result) = store_artifact_output(
+                                            self.project_root,
+                                            &run_id,
+                                            art_name,
+                                            &artifact_path,
+                                        )
                                     {
-                                        std::thread::sleep(Duration::from_secs(2));
-                                        if let Ok(artifact_path) =
-                                            capture_artifact(pre_snap, expanded_pattern, art_name)
-                                            && let Ok(result) = store_artifact_output(
-                                                self.project_root,
-                                                &run_id,
-                                                art_name,
-                                                &artifact_path,
-                                            )
-                                        {
-                                            output_files.insert(
-                                                art_name.to_string(),
-                                                result.json_path.display().to_string(),
-                                            );
-                                            outputs.insert(art_name.to_string(), result.value);
-                                        }
+                                        output_files.insert(
+                                            art_name.to_string(),
+                                            result.json_path.display().to_string(),
+                                        );
+                                        outputs.insert(art_name.to_string(), result.value);
                                     }
                                     step_results.push(StepResult {
                                         index: step_index,
@@ -1721,25 +1726,13 @@ impl<'a> WorkflowExecutor<'a> {
                             // (capped at 60s) so that fast steps stay fast and slow flushes
                             // don't false-fail.
                             // See https://github.com/nutthouse/tutti/issues/120
-                            let post_idle_poll_secs = std::cmp::min(
-                                std::cmp::max(*step_wait_timeout / 30, 5),
-                                60,
+                            let capture_result = capture_artifact_with_poll(
+                                pre_snap,
+                                expanded_pattern,
+                                art_name,
+                                post_idle_poll_secs,
+                                Duration::from_secs(1),
                             );
-                            let poll_interval = Duration::from_secs(1);
-                            let poll_deadline = Duration::from_secs(post_idle_poll_secs);
-                            let poll_start = std::time::Instant::now();
-
-                            let capture_result = loop {
-                                match capture_artifact(pre_snap, expanded_pattern, art_name) {
-                                    Ok(p) => break Ok(p),
-                                    Err(e) => {
-                                        if poll_start.elapsed() >= poll_deadline {
-                                            break Err(e);
-                                        }
-                                        std::thread::sleep(poll_interval);
-                                    }
-                                }
-                            };
 
                             match capture_result {
                                 Ok(artifact_path) => {
@@ -2801,6 +2794,33 @@ fn snapshot_artifact_glob(pattern: &str) -> Result<HashSet<PathBuf>> {
         TuttiError::ConfigValidation(format!("invalid artifact_glob pattern '{}': {e}", pattern))
     })?;
     Ok(paths.filter_map(|p| p.ok()).collect())
+}
+
+fn post_idle_artifact_poll_secs(wait_timeout_secs: u64) -> u64 {
+    (wait_timeout_secs / 30).clamp(5, 60)
+}
+
+fn capture_artifact_with_poll(
+    pre_snapshot: &HashSet<PathBuf>,
+    pattern: &str,
+    artifact_name: &str,
+    poll_secs: u64,
+    poll_interval: Duration,
+) -> Result<PathBuf> {
+    let poll_deadline = Duration::from_secs(poll_secs);
+    let poll_start = std::time::Instant::now();
+
+    loop {
+        match capture_artifact(pre_snapshot, pattern, artifact_name) {
+            Ok(path) => break Ok(path),
+            Err(err) => {
+                if poll_start.elapsed() >= poll_deadline {
+                    break Err(err);
+                }
+                std::thread::sleep(poll_interval);
+            }
+        }
+    }
 }
 
 /// After a step completes, capture the newest artifact that appeared since the pre-step snapshot.
@@ -6339,6 +6359,43 @@ mod tests {
         assert!(err.to_string().contains("matched no new files"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_with_poll_waits_for_late_file() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-poll");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+        let late_file = dir.join("design-late.md");
+        let writer_path = late_file.clone();
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            std::fs::write(&writer_path, "late artifact").unwrap();
+        });
+
+        let result = capture_artifact_with_poll(
+            &pre_snapshot,
+            &pattern,
+            "design_doc",
+            1,
+            std::time::Duration::from_millis(5),
+        )
+        .unwrap();
+        writer.join().unwrap();
+        assert_eq!(result, late_file);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_idle_artifact_poll_secs_is_bounded() {
+        assert_eq!(post_idle_artifact_poll_secs(30), 5);
+        assert_eq!(post_idle_artifact_poll_secs(1800), 60);
+        assert_eq!(post_idle_artifact_poll_secs(3600), 60);
     }
 
     #[test]
