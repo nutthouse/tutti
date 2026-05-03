@@ -925,7 +925,7 @@ pub fn load_active_runs(project_root: &Path) -> Result<Vec<SdlcRunLedgerRecord>>
             records.push(record);
         }
     }
-    records.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    records.sort_by_key(|record| std::cmp::Reverse(record.updated_at));
     Ok(records)
 }
 
