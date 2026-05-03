@@ -74,14 +74,10 @@ pub fn run() -> Result<()> {
 
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K')
-                    if !filtered.is_empty() =>
-                {
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') if !filtered.is_empty() => {
                     selected = selected.checked_sub(1).unwrap_or(filtered.len() - 1);
                 }
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J')
-                    if !filtered.is_empty() =>
-                {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') if !filtered.is_empty() => {
                     selected = (selected + 1) % filtered.len();
                 }
                 KeyCode::Backspace => {
