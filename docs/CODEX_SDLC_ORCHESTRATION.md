@@ -1,15 +1,27 @@
-# Codex SDLC Orchestration (Tutti-for-Tutti)
+# SDLC Orchestration (Tutti-for-Tutti)
 
-This framework automates the SDLC loop for Tutti using Codex agents:
+This framework automates the SDLC loop for Tutti. The current concrete path uses GitHub issue intake, Codex-heavy execution, Claude planning, and CodeRabbit review, but those are adapters. The durable shape is intake -> execution -> review -> gate -> record.
 
-1. Select issue from GitHub
+1. Select work from an intake adapter
 2. Create issue branch
 3. Implement with specialized agents (implementation, testing, docs/release)
 4. Validate locally
 5. Open PR
-6. Wait for CodeRabbit review
+6. Wait for configured review feedback
 7. Apply review fixes
 8. Re-validate and update PR
+
+## Adapter boundaries
+
+The built-in Tutti-for-Tutti setup uses:
+
+- **Intake:** GitHub issue claim leases
+- **Execution:** Claude Code planner plus Codex/Claude implementation agents
+- **Review:** CodeRabbit feedback and a Codex reviewer packet
+- **Gate:** GitHub required checks plus resolved PR review threads
+- **Record:** `.tutti/state/` run ledgers, outputs, logs, and dashboard events
+
+Future adapters should fit the same slots: Linear/Jira for intake, Claude or human reviewers for review, different CI/policy engines for gates, and additional run stores for records.
 
 ## Specialized agent topology (recommended)
 
@@ -51,6 +63,8 @@ Use `docs/examples/tutti-codex-sdlc.toml` as a starting point.
 - `scripts/automation/create_issue_branch.sh`
 - `scripts/automation/wait_coderabbit.sh`
 - `scripts/automation/collect_coderabbit_feedback.sh`
+
+These scripts are GitHub/CodeRabbit adapter scripts, not the whole SDLC model. Keep new integrations isolated behind the same intake/review/gate slots instead of baking a new tracker or reviewer into the orchestration core.
 
 ## Operational notes
 
