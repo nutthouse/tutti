@@ -2899,7 +2899,10 @@ fn capture_artifact_with_poll(
             Ok(path) => break Ok(path),
             Err(err) => {
                 if poll_start.elapsed() >= poll_deadline {
-                    break Err(err);
+                    break Err(TuttiError::ConfigValidation(format!(
+                        "artifact '{}' did not appear within {}s after completion; verify artifact_glob '{}' or increase wait_timeout_secs. Last capture error: {err}",
+                        artifact_name, poll_secs, pattern
+                    )));
                 }
                 std::thread::sleep(poll_interval);
             }
@@ -6471,6 +6474,33 @@ mod tests {
         .unwrap();
         writer.join().unwrap();
         assert_eq!(result, late_file);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_with_poll_timeout_is_actionable() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-poll-timeout");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+
+        let err = capture_artifact_with_poll(
+            &pre_snapshot,
+            &pattern,
+            "design_doc",
+            0,
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("did not appear within 0s after completion"));
+        assert!(err.contains("verify artifact_glob"));
+        assert!(err.contains("increase wait_timeout_secs"));
+        assert!(err.contains("matched no new files"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
