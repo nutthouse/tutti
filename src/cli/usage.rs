@@ -237,7 +237,7 @@ fn print_workspace_breakdown(workspaces: &[WorkspaceUsage]) {
 
         // Agent sub-rows
         let mut agents: Vec<_> = ws.by_agent.iter().collect();
-        agents.sort_by(|(a, _), (b, _)| a.cmp(b));
+        agents.sort_by_key(|(agent, _)| *agent);
         for (agent_name, agent_usage) in agents {
             table.add_row(vec![
                 format!("  ↳ {agent_name}"),
