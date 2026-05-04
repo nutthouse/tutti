@@ -1411,13 +1411,14 @@ fn ops_review_state(
     state: &state::SdlcRunState,
     steps: &[state::WorkflowStepIntentRecord],
 ) -> Value {
-    let failed = steps.iter().any(|step| {
+    let latest_steps = latest_step_attempts(steps);
+    let failed = latest_steps.iter().any(|step| {
         step.step_type == "review" && step.outcome.as_ref().is_some_and(|o| !o.success)
     });
-    let pending = steps
+    let pending = latest_steps
         .iter()
         .any(|step| step.step_type == "review" && step.outcome.is_none());
-    let complete = steps
+    let complete = latest_steps
         .iter()
         .any(|step| step.step_type == "review" && step.outcome.as_ref().is_some_and(|o| o.success));
 
@@ -1445,13 +1446,14 @@ fn ops_review_state(
 }
 
 fn ops_gate_state(state: &state::SdlcRunState, steps: &[state::WorkflowStepIntentRecord]) -> Value {
-    let failed = steps
+    let latest_steps = latest_step_attempts(steps);
+    let failed = latest_steps
         .iter()
         .any(|step| step.step_type == "land" && step.outcome.as_ref().is_some_and(|o| !o.success));
-    let pending = steps
+    let pending = latest_steps
         .iter()
         .any(|step| step.step_type == "land" && step.outcome.is_none());
-    let complete = steps
+    let complete = latest_steps
         .iter()
         .any(|step| step.step_type == "land" && step.outcome.as_ref().is_some_and(|o| o.success));
 
@@ -1477,7 +1479,8 @@ fn ops_blocker(
     ledger: &state::SdlcRunLedgerRecord,
     steps: &[state::WorkflowStepIntentRecord],
 ) -> Option<Value> {
-    if let Some(step) = steps.iter().find(|step| {
+    let latest_steps = latest_step_attempts(steps);
+    if let Some(step) = latest_steps.iter().find(|step| {
         step.outcome
             .as_ref()
             .is_some_and(|outcome| !outcome.success)
@@ -1504,29 +1507,33 @@ fn ops_blocker(
 }
 
 fn ops_latest_artifact(steps: &[state::WorkflowStepIntentRecord]) -> Option<Value> {
-    steps.iter().rev().find_map(|step| {
-        step.intent
-            .get("artifact_name")
-            .and_then(Value::as_str)
-            .map(|name| {
-                json!({
-                    "name": name,
-                    "step": step.step_id,
-                    "status": step
-                        .outcome
-                        .as_ref()
-                        .map(|outcome| if outcome.success { "captured" } else { "failed" })
-                        .unwrap_or("pending"),
+    latest_step_attempts(steps)
+        .into_iter()
+        .rev()
+        .find_map(|step| {
+            step.intent
+                .get("artifact_name")
+                .and_then(Value::as_str)
+                .map(|name| {
+                    json!({
+                        "name": name,
+                        "step": step.step_id,
+                        "status": step
+                            .outcome
+                            .as_ref()
+                            .map(|outcome| if outcome.success { "captured" } else { "failed" })
+                            .unwrap_or("pending"),
+                    })
                 })
-            })
-    })
+        })
 }
 
 fn ops_next_action(
     ledger: &state::SdlcRunLedgerRecord,
     steps: &[state::WorkflowStepIntentRecord],
 ) -> String {
-    if let Some(step) = steps.iter().find(|step| {
+    let latest_steps = latest_step_attempts(steps);
+    if let Some(step) = latest_steps.iter().find(|step| {
         step.outcome
             .as_ref()
             .is_some_and(|outcome| !outcome.success)
@@ -1546,7 +1553,7 @@ fn ops_next_action(
         return format!("Run tt run --resume {}", ledger.run_id);
     }
 
-    if steps.iter().any(|step| step.outcome.is_none()) {
+    if latest_steps.iter().any(|step| step.outcome.is_none()) {
         return "Wait for pending workflow steps".to_string();
     }
 
@@ -1557,6 +1564,27 @@ fn ops_next_action(
         state::SdlcRunState::Merged => "No action required".to_string(),
         _ => "Continue the workflow".to_string(),
     }
+}
+
+fn latest_step_attempts(
+    steps: &[state::WorkflowStepIntentRecord],
+) -> Vec<&state::WorkflowStepIntentRecord> {
+    let mut latest = HashMap::<&str, &state::WorkflowStepIntentRecord>::new();
+    for step in steps {
+        latest
+            .entry(step.step_id.as_str())
+            .and_modify(|current| {
+                if step.attempt > current.attempt
+                    || (step.attempt == current.attempt && step.planned_at > current.planned_at)
+                {
+                    *current = step;
+                }
+            })
+            .or_insert(step);
+    }
+    let mut rows = latest.into_values().collect::<Vec<_>>();
+    rows.sort_by_key(|step| step.step_index);
+    rows
 }
 
 /// List log files with metadata from all served workspaces
@@ -2308,6 +2336,107 @@ auth = "bearer"
                 .and_then(Value::as_str),
             Some("blocked")
         );
+    }
+
+    #[test]
+    fn ops_state_ignores_failed_superseded_attempts() {
+        let ledger = state::SdlcRunLedgerRecord {
+            run_id: "run-ops-retry".to_string(),
+            issue_number: 42,
+            issue_title: Some("Retry review loop".to_string()),
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "sdlc".to_string(),
+            state: state::SdlcRunState::Reviewed,
+            updated_at: Utc::now(),
+            actor: "tester".to_string(),
+            branch: Some("issue-42".to_string()),
+            failure_message: None,
+            failure_class: None,
+            current_step_id: Some("land-4".to_string()),
+            last_successful_step_id: Some("land-4".to_string()),
+            resume_eligible: false,
+            active_agents: vec!["reviewer".to_string()],
+            transitions: vec![],
+        };
+        let failed = state::WorkflowStepOutcomeRecord {
+            completed_at: Utc::now(),
+            status: "failed".to_string(),
+            success: false,
+            exit_code: Some(1),
+            timed_out: false,
+            message: Some("stale failed attempt".to_string()),
+            side_effects: None,
+        };
+        let succeeded = state::WorkflowStepOutcomeRecord {
+            completed_at: Utc::now(),
+            status: "completed".to_string(),
+            success: true,
+            exit_code: Some(0),
+            timed_out: false,
+            message: None,
+            side_effects: None,
+        };
+        let steps = vec![
+            state::WorkflowStepIntentRecord {
+                run_id: "run-ops-retry".to_string(),
+                workflow_name: "sdlc".to_string(),
+                step_index: 3,
+                step_id: "review-3".to_string(),
+                step_type: "review".to_string(),
+                planned_at: Utc::now(),
+                intent: json!({"agent": "reviewer"}),
+                attempt: 1,
+                outcome: Some(failed.clone()),
+            },
+            state::WorkflowStepIntentRecord {
+                run_id: "run-ops-retry".to_string(),
+                workflow_name: "sdlc".to_string(),
+                step_index: 3,
+                step_id: "review-3".to_string(),
+                step_type: "review".to_string(),
+                planned_at: Utc::now(),
+                intent: json!({"agent": "reviewer"}),
+                attempt: 2,
+                outcome: Some(succeeded.clone()),
+            },
+            state::WorkflowStepIntentRecord {
+                run_id: "run-ops-retry".to_string(),
+                workflow_name: "sdlc".to_string(),
+                step_index: 4,
+                step_id: "land-4".to_string(),
+                step_type: "land".to_string(),
+                planned_at: Utc::now(),
+                intent: json!({"agent": "implementer"}),
+                attempt: 1,
+                outcome: Some(failed),
+            },
+            state::WorkflowStepIntentRecord {
+                run_id: "run-ops-retry".to_string(),
+                workflow_name: "sdlc".to_string(),
+                step_index: 4,
+                step_id: "land-4".to_string(),
+                step_type: "land".to_string(),
+                planned_at: Utc::now(),
+                intent: json!({"agent": "implementer"}),
+                attempt: 2,
+                outcome: Some(succeeded),
+            },
+        ];
+
+        assert_eq!(
+            ops_review_state(&ledger.state, &steps)
+                .pointer("/state")
+                .and_then(Value::as_str),
+            Some("approved")
+        );
+        assert_eq!(
+            ops_gate_state(&ledger.state, &steps)
+                .pointer("/state")
+                .and_then(Value::as_str),
+            Some("merged")
+        );
+        assert!(ops_blocker(&ledger, &steps).is_none());
+        assert_eq!(ops_next_action(&ledger, &steps), "Run the merge gate");
     }
 
     #[test]

@@ -23,6 +23,7 @@ var appState = {
   selectedRun: null,   // correlation_id of currently selected run
   runs: {},        // correlation_id -> run state { stage, status, steps, workflow_name }
   ops: null,       // /v1/ops summary for the operator console
+  opsError: null,  // last /v1/ops fetch failure for explicit operator feedback
 };
 
 // ── Run tracking ──
@@ -549,11 +550,12 @@ function fetchOps() {
     if (!res.ok) throw new Error("ops endpoint returned " + res.status);
     return res.json();
   }).then(function(json) {
+    appState.opsError = null;
     appState.ops = json.data || null;
     renderOperatorConsole();
   }).catch(function(e) {
     console.warn("ops fetch failed:", e);
-    appState.ops = null;
+    appState.opsError = e;
     renderOperatorConsole();
   });
 }
@@ -564,6 +566,11 @@ function renderOperatorConsole() {
   while ($opsSummary.firstChild) $opsSummary.removeChild($opsSummary.firstChild);
   while ($opsRuns.firstChild) $opsRuns.removeChild($opsRuns.firstChild);
   while ($opsEvents.firstChild) $opsEvents.removeChild($opsEvents.firstChild);
+
+  if (appState.opsError) {
+    $opsRuns.appendChild(el("div", "ops-empty ops-error", opsErrorMessage(appState.opsError)));
+    return;
+  }
 
   if (!ops) {
     $opsRuns.appendChild(el("div", "ops-empty", "loading…"));
@@ -593,6 +600,8 @@ function renderOperatorConsole() {
       var evt = events[j];
       var li = document.createElement("li");
       li.appendChild(el("span", "evt-type", evt.event || "event"));
+      li.appendChild(document.createTextNode(" "));
+      li.appendChild(el("span", "evt-workspace", evt.workspace || "workspace"));
       if (evt.agent) {
         li.appendChild(document.createTextNode(" "));
         li.appendChild(el("span", "evt-agent", evt.agent));
@@ -610,6 +619,14 @@ function opsChip(label, value, className) {
   return chip;
 }
 
+function opsErrorMessage(err) {
+  var message = err && err.message ? err.message : "ops endpoint unavailable";
+  if (message.indexOf("401") !== -1 || message.indexOf("403") !== -1) {
+    return "ops endpoint unauthorized";
+  }
+  return "ops endpoint unavailable: " + message;
+}
+
 function renderOpsRun(run) {
   var card = el("article", "ops-run " + opsRunClass(run));
   var top = el("div", "ops-run-top");
@@ -621,6 +638,7 @@ function renderOpsRun(run) {
   card.appendChild(top);
 
   var meta = el("div", "ops-run-meta");
+  meta.appendChild(el("span", "run-workspace", run.workspace || "workspace"));
   meta.appendChild(el("span", null, run.workflow || "workflow"));
   if (run.branch) meta.appendChild(el("span", null, run.branch));
   if (run.updated_at) meta.appendChild(el("span", null, timeAgo(run.updated_at)));

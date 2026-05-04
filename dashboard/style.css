@@ -447,6 +447,9 @@ main#factory {
   font-size: 0.75rem;
   padding: 10px 0;
 }
+.ops-error {
+  color: var(--blocked);
+}
 .ops-events {
   min-width: 0;
   border-left: 1px solid var(--border);
@@ -468,6 +471,10 @@ main#factory {
 }
 .ops-events li:last-child { border-bottom: none; }
 .ops-events .evt-type { color: var(--text-secondary); font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.ops-events .evt-workspace,
+.ops-run-meta .run-workspace {
+  color: var(--accent);
+}
 .ops-events .evt-agent { color: var(--working); }
 .ops-events .evt-time { margin-left: auto; font-size: 0.5625rem; flex-shrink: 0; }
 
