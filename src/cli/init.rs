@@ -421,10 +421,7 @@ fn customize_template(
 fn remove_workflow_steps_for_agent(config_body: &mut String, agent_name: &str) {
     // Repeatedly remove [[workflow.step]] blocks containing agent = "agent_name"
     let agent_pattern = format!("agent = \"{}\"", agent_name);
-    loop {
-        let Some(agent_pos) = config_body.find(&agent_pattern) else {
-            break;
-        };
+    while let Some(agent_pos) = config_body.find(&agent_pattern) {
         // Walk backwards to find the [[workflow.step]] header
         let before = &config_body[..agent_pos];
         let Some(block_start) = before.rfind("[[workflow.step]]") else {

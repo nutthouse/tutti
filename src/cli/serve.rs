@@ -1343,7 +1343,7 @@ fn policy_decisions_data(targets: &[WorkspaceTarget], workspace: Option<&str>) -
         let records = state::load_policy_decisions(&target.project_root)?;
         rows.extend(records);
     }
-    rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.timestamp));
     Ok(json!(rows))
 }
 
