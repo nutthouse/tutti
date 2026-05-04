@@ -1289,7 +1289,6 @@ fn ops_data(targets: &[WorkspaceTarget]) -> Result<Value> {
                 "agent": event.agent,
                 "timestamp": event.timestamp,
                 "correlation_id": event.correlation_id,
-                "data": event.data,
             }));
         }
     }
@@ -1379,46 +1378,7 @@ fn ops_run_row(
         "blocker": blocker,
         "resume_eligible": ledger.resume_eligible,
         "next_action": ops_next_action(ledger, steps),
-        "steps": ops_step_rows(steps),
     })
-}
-
-fn ops_step_rows(steps: &[state::WorkflowStepIntentRecord]) -> Vec<Value> {
-    steps
-        .iter()
-        .map(|step| {
-            let (status, duration_ms, message) = match &step.outcome {
-                Some(outcome) => (
-                    if outcome.timed_out {
-                        "timed_out".to_string()
-                    } else if outcome.success {
-                        "success".to_string()
-                    } else {
-                        "failed".to_string()
-                    },
-                    Some(
-                        outcome
-                            .completed_at
-                            .signed_duration_since(step.planned_at)
-                            .num_milliseconds()
-                            .max(0),
-                    ),
-                    outcome.message.clone(),
-                ),
-                None => ("pending".to_string(), None, None),
-            };
-            json!({
-                "index": step.step_index,
-                "id": step.step_id,
-                "type": step.step_type,
-                "status": status,
-                "duration_ms": duration_ms,
-                "agent": step.intent.get("agent").or_else(|| step.intent.get("agent_scope")),
-                "artifact_name": step.intent.get("artifact_name"),
-                "message": message,
-            })
-        })
-        .collect()
 }
 
 fn format_sdlc_state(state: &state::SdlcRunState) -> &'static str {

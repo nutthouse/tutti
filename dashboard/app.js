@@ -546,12 +546,15 @@ function renderTimeline() {
 function fetchOps() {
   if (!$opsConsole) return Promise.resolve();
   return fetch("/v1/ops").then(function(res) {
+    if (!res.ok) throw new Error("ops endpoint returned " + res.status);
     return res.json();
   }).then(function(json) {
     appState.ops = json.data || null;
     renderOperatorConsole();
   }).catch(function(e) {
     console.warn("ops fetch failed:", e);
+    appState.ops = null;
+    renderOperatorConsole();
   });
 }
 
