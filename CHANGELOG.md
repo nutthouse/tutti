@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.1] - 2026-05-05
+
+### Added
+- **Release automation**: pushing a `vX.Y.Z` tag now validates `Cargo.toml`
+  and `VERSION`, runs the Rust checks, builds Linux and macOS `tt` archives,
+  publishes a GitHub Release with checksums, and publishes to crates.io when
+  `CARGO_REGISTRY_TOKEN` is configured.
+- **Release operator playbook**: `VERSIONING.md` now describes the exact
+  merge, tag, verification, and crates.io fallback loop so release work is a
+  repeatable gate instead of a remembered ritual.
+
+### Changed
+- **v0.10 release train notes** now cover the post-`v0.9.0` tranche: the
+  API-direct agent spine, operator-console positioning, CodeRabbit review loop
+  hardening, artifact polling fix, Rust 1.95 compatibility, and dependency
+  security updates.
+
 ## [0.10.0.0] - 2026-04-13
 
 ### Added

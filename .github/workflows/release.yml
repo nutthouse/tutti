@@ -1,0 +1,211 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, for example v0.10.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Validate tag and versions
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH, got: $tag" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tutti") | .version')"
+          file_version="$(tr -d '\r\n[:space:]' < VERSION)"
+
+          if [ "$cargo_version" != "$version" ]; then
+            echo "Cargo.toml version ($cargo_version) must match tag ($version)." >&2
+            exit 1
+          fi
+
+          if [ "$file_version" != "$version" ] && [ "$file_version" != "$version.0" ]; then
+            echo "VERSION ($file_version) must match tag ($version) or ${version}.0." >&2
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          awk -v version="$version" '
+            BEGIN { capture = 0; found = 0 }
+            /^## / {
+              if (capture) exit
+              if ($0 ~ "\\[" version "\\]" || $0 ~ "\\[" version "\\.0\\]" || $0 ~ "^## " version "([[:space:]-]|$)") {
+                capture = 1
+                found = 1
+                print
+                next
+              }
+            }
+            capture { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md || {
+            {
+              echo "## Tutti v$version"
+              echo
+              echo "See CHANGELOG.md for release details."
+            } > release-notes.md
+          }
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Check
+        run: cargo check --locked
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Package dry run
+        run: cargo package --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Package archive
+        shell: bash
+        run: |
+          archive="tutti-${{ needs.validate.outputs.version }}-${{ matrix.name }}"
+          mkdir -p "dist/$archive"
+          cp "target/${{ matrix.target }}/release/tt" "dist/$archive/tt"
+          cp README.md CHANGELOG.md LICENSE "dist/$archive/"
+          tar -czf "dist/$archive.tar.gz" -C dist "$archive"
+          shasum -a 256 "dist/$archive.tar.gz" > "dist/$archive.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  github-release:
+    name: Publish GitHub release
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: Tutti v${{ needs.validate.outputs.version }}
+          body_path: notes/release-notes.md
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          fail_on_unmatched_files: true
+          make_latest: true
+
+  crates:
+    name: Publish crates.io package
+    needs:
+      - validate
+      - build
+      - github-release
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Skip crates.io publish when token is absent
+        if: ${{ env.CARGO_REGISTRY_TOKEN == '' }}
+        run: echo "CARGO_REGISTRY_TOKEN is not configured; GitHub release will still be published."
+
+      - name: Publish to crates.io
+        if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
+        run: cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"

@@ -187,7 +187,7 @@ source ~/.zshrc
 - OpenClaw skill starter: `skills/openclaw/SKILL.md`
 - OpenClaw integration bundle: `integrations/openclaw/README.md`
 - PR reproducibility loop (CodeRabbit + checks + merge gate): `docs/pr-review-loop.md`
-- Versioning and release policy: `VERSIONING.md`
+- Versioning and release automation: `VERSIONING.md`
 
 ## tutti.toml
 
