@@ -1035,6 +1035,7 @@ impl<'a> WorkflowExecutor<'a> {
                         } else {
                             None
                         };
+                        let post_idle_poll_secs = post_idle_artifact_poll_secs(*step_wait_timeout);
 
                         let baseline_pane_hash =
                             TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)
@@ -1330,6 +1331,48 @@ impl<'a> WorkflowExecutor<'a> {
                                             }
                                         }
 
+                                        if let (
+                                            Some((expanded_pattern, pre_snap)),
+                                            Some(art_name),
+                                        ) = (
+                                            artifact_pre_snapshot.as_ref(),
+                                            artifact_name.as_deref(),
+                                        ) {
+                                            let result = match capture_and_store_artifact_output(
+                                                self.project_root,
+                                                &run_id,
+                                                expanded_pattern,
+                                                pre_snap,
+                                                art_name,
+                                                post_idle_poll_secs,
+                                            ) {
+                                                Ok(result) => result,
+                                                Err(e) => {
+                                                    failed_steps.push(step_index);
+                                                    success = false;
+                                                    step_results.push(StepResult {
+                                                        index: step_index,
+                                                        step_type: "prompt".to_string(),
+                                                        status: StepStatus::Failed,
+                                                        duration_ms: started.elapsed().as_millis()
+                                                            as u64,
+                                                        exit_code: None,
+                                                        timed_out: false,
+                                                        message: Some(e.to_string()),
+                                                        stdout: None,
+                                                        stderr: None,
+                                                    });
+                                                    break;
+                                                }
+                                            };
+
+                                            output_files.insert(
+                                                art_name.to_string(),
+                                                result.json_path.display().to_string(),
+                                            );
+                                            outputs.insert(art_name.to_string(), result.value);
+                                        }
+
                                         step_results.push(StepResult {
                                             index: step_index,
                                             step_type: "prompt".to_string(),
@@ -1477,77 +1520,79 @@ impl<'a> WorkflowExecutor<'a> {
                                             agent,
                                         )?
                                     {
-                                        continue;
-                                    }
-                                    let retry_prompt = "Your previous attempt produced no commit beyond the branch baseline in .tutti/state/auto/branch.json. You are not done yet. If your worktree already has local code changes, do not keep exploring the repo. Review only the existing diff, keep the smallest valid slice, then stage it, commit it, and push it to the target branch now. If there are no useful local changes yet, make the smallest coherent code change now, commit it, and push it. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
-                                    if !TmuxSession::session_exists(session_name) {
-                                        start_and_wait_ready(
-                                            self.project_root,
-                                            self.config,
-                                            agent,
+                                        // Fall through to the shared post-step artifact capture
+                                        // and success recording below.
+                                    } else {
+                                        let retry_prompt = "Your previous attempt produced no commit beyond the branch baseline in .tutti/state/auto/branch.json. You are not done yet. If your worktree already has local code changes, do not keep exploring the repo. Review only the existing diff, keep the smallest valid slice, then stage it, commit it, and push it to the target branch now. If there are no useful local changes yet, make the smallest coherent code change now, commit it, and push it. If no valid code change is possible, reply with 'BLOCKED:' and the exact reason.";
+                                        if !TmuxSession::session_exists(session_name) {
+                                            start_and_wait_ready(
+                                                self.project_root,
+                                                self.config,
+                                                agent,
+                                                session_name,
+                                            )?;
+                                        }
+                                        TmuxSession::send_text(session_name, retry_prompt)?;
+                                        maybe_submit_buffered_prompt(session_name, retry_prompt)?;
+
+                                        if !wait_for_prompt_activity_or_output(
+                                            runtime,
                                             session_name,
+                                            retry_prompt,
+                                            None,
+                                            output_json.as_deref(),
+                                            Duration::from_secs(60),
+                                        )? {
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis() as u64,
+                                                exit_code: None,
+                                                timed_out: true,
+                                                message: Some(
+                                                    "implement_code retry did not start activity or produce output within 60s"
+                                                        .to_string(),
+                                                ),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                            break;
+                                        }
+
+                                        let retry_wait = health::wait_for_agent_idle(
+                                            runtime,
+                                            session_name,
+                                            Duration::from_secs((*wait_timeout_secs).max(1)),
+                                            Duration::from_secs(5),
+                                            Duration::from_secs(10),
                                         )?;
-                                    }
-                                    TmuxSession::send_text(session_name, retry_prompt)?;
-                                    maybe_submit_buffered_prompt(session_name, retry_prompt)?;
-
-                                    if !wait_for_prompt_activity_or_output(
-                                        runtime,
-                                        session_name,
-                                        retry_prompt,
-                                        None,
-                                        output_json.as_deref(),
-                                        Duration::from_secs(60),
-                                    )? {
-                                        failed_steps.push(step_index);
-                                        success = false;
-                                        step_results.push(StepResult {
-                                            index: step_index,
-                                            step_type: "prompt".to_string(),
-                                            status: StepStatus::Failed,
-                                            duration_ms: started.elapsed().as_millis() as u64,
-                                            exit_code: None,
-                                            timed_out: true,
-                                            message: Some(
-                                                "implement_code retry did not start activity or produce output within 60s"
-                                                    .to_string(),
-                                            ),
-                                            stdout: None,
-                                            stderr: None,
-                                        });
-                                        break;
-                                    }
-
-                                    let retry_wait = health::wait_for_agent_idle(
-                                        runtime,
-                                        session_name,
-                                        Duration::from_secs((*wait_timeout_secs).max(1)),
-                                        Duration::from_secs(5),
-                                        Duration::from_secs(10),
-                                    )?;
-                                    if !retry_wait.is_completed()
-                                        || !prompt_step_has_branch_progress(
-                                            self.project_root,
-                                            agent,
-                                        )?
-                                    {
-                                        failed_steps.push(step_index);
-                                        success = false;
-                                        step_results.push(StepResult {
-                                            index: step_index,
-                                            step_type: "prompt".to_string(),
-                                            status: StepStatus::Failed,
-                                            duration_ms: started.elapsed().as_millis() as u64,
-                                            exit_code: None,
-                                            timed_out: false,
-                                            message: Some(
-                                                "implement_code completed without a commit beyond the branch baseline"
-                                                    .to_string(),
-                                            ),
-                                            stdout: None,
-                                            stderr: None,
-                                        });
-                                        break;
+                                        if !retry_wait.is_completed()
+                                            || !prompt_step_has_branch_progress(
+                                                self.project_root,
+                                                agent,
+                                            )?
+                                        {
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis() as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(
+                                                    "implement_code completed without a commit beyond the branch baseline"
+                                                        .to_string(),
+                                                ),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -1564,22 +1609,38 @@ impl<'a> WorkflowExecutor<'a> {
                                 if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                                     (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
                                 {
-                                    std::thread::sleep(Duration::from_secs(2));
-                                    if let Ok(artifact_path) =
-                                        capture_artifact(pre_snap, expanded_pattern, art_name)
-                                        && let Ok(result) = store_artifact_output(
-                                            self.project_root,
-                                            &run_id,
-                                            art_name,
-                                            &artifact_path,
-                                        )
-                                    {
-                                        output_files.insert(
-                                            art_name.to_string(),
-                                            result.json_path.display().to_string(),
-                                        );
-                                        outputs.insert(art_name.to_string(), result.value);
-                                    }
+                                    let result = match capture_and_store_artifact_output(
+                                        self.project_root,
+                                        &run_id,
+                                        expanded_pattern,
+                                        pre_snap,
+                                        art_name,
+                                        post_idle_poll_secs,
+                                    ) {
+                                        Ok(result) => result,
+                                        Err(e) => {
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis() as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(e.to_string()),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                            break;
+                                        }
+                                    };
+
+                                    output_files.insert(
+                                        art_name.to_string(),
+                                        result.json_path.display().to_string(),
+                                    );
+                                    outputs.insert(art_name.to_string(), result.value);
                                 }
                                 step_results.push(StepResult {
                                     index: step_index,
@@ -1628,22 +1689,39 @@ impl<'a> WorkflowExecutor<'a> {
                                     if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                                         (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
                                     {
-                                        std::thread::sleep(Duration::from_secs(2));
-                                        if let Ok(artifact_path) =
-                                            capture_artifact(pre_snap, expanded_pattern, art_name)
-                                            && let Ok(result) = store_artifact_output(
-                                                self.project_root,
-                                                &run_id,
-                                                art_name,
-                                                &artifact_path,
-                                            )
-                                        {
-                                            output_files.insert(
-                                                art_name.to_string(),
-                                                result.json_path.display().to_string(),
-                                            );
-                                            outputs.insert(art_name.to_string(), result.value);
-                                        }
+                                        let result = match capture_and_store_artifact_output(
+                                            self.project_root,
+                                            &run_id,
+                                            expanded_pattern,
+                                            pre_snap,
+                                            art_name,
+                                            post_idle_poll_secs,
+                                        ) {
+                                            Ok(result) => result,
+                                            Err(e) => {
+                                                failed_steps.push(step_index);
+                                                success = false;
+                                                step_results.push(StepResult {
+                                                    index: step_index,
+                                                    step_type: "prompt".to_string(),
+                                                    status: StepStatus::Failed,
+                                                    duration_ms: started.elapsed().as_millis()
+                                                        as u64,
+                                                    exit_code: None,
+                                                    timed_out: false,
+                                                    message: Some(e.to_string()),
+                                                    stdout: None,
+                                                    stderr: None,
+                                                });
+                                                break;
+                                            }
+                                        };
+
+                                        output_files.insert(
+                                            art_name.to_string(),
+                                            result.json_path.display().to_string(),
+                                        );
+                                        outputs.insert(art_name.to_string(), result.value);
                                     }
                                     step_results.push(StepResult {
                                         index: step_index,
@@ -1714,44 +1792,29 @@ impl<'a> WorkflowExecutor<'a> {
                         if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                             (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
                         {
-                            // Brief settle time for filesystem I/O
-                            std::thread::sleep(Duration::from_secs(2));
+                            // Poll for the artifact to materialize. wait_for_agent_idle
+                            // can return as soon as the runtime emits a completion signal,
+                            // which may be before the agent's file write is flushed to disk.
+                            // Use a short bounded poll window proportional to wait_timeout_secs
+                            // (capped at 60s) so that fast steps stay fast and slow flushes
+                            // don't false-fail.
+                            // See https://github.com/nutthouse/tutti/issues/120
+                            let capture_result = capture_and_store_artifact_output(
+                                self.project_root,
+                                &run_id,
+                                expanded_pattern,
+                                pre_snap,
+                                art_name,
+                                post_idle_poll_secs,
+                            );
 
-                            match capture_artifact(pre_snap, expanded_pattern, art_name) {
-                                Ok(artifact_path) => {
-                                    match store_artifact_output(
-                                        self.project_root,
-                                        &run_id,
-                                        art_name,
-                                        &artifact_path,
-                                    ) {
-                                        Ok(result) => {
-                                            output_files.insert(
-                                                art_name.to_string(),
-                                                result.json_path.display().to_string(),
-                                            );
-                                            outputs.insert(art_name.to_string(), result.value);
-                                        }
-                                        Err(e) => {
-                                            failed_steps.push(step_index);
-                                            success = false;
-                                            step_results.push(StepResult {
-                                                index: step_index,
-                                                step_type: "prompt".to_string(),
-                                                status: StepStatus::Failed,
-                                                duration_ms: started.elapsed().as_millis() as u64,
-                                                exit_code: None,
-                                                timed_out: false,
-                                                message: Some(format!(
-                                                    "artifact capture failed for '{}': {e}",
-                                                    art_name
-                                                )),
-                                                stdout: None,
-                                                stderr: None,
-                                            });
-                                            break;
-                                        }
-                                    }
+                            match capture_result {
+                                Ok(result) => {
+                                    output_files.insert(
+                                        art_name.to_string(),
+                                        result.json_path.display().to_string(),
+                                    );
+                                    outputs.insert(art_name.to_string(), result.value);
                                 }
                                 Err(e) => {
                                     failed_steps.push(step_index);
@@ -2777,6 +2840,60 @@ fn snapshot_artifact_glob(pattern: &str) -> Result<HashSet<PathBuf>> {
         TuttiError::ConfigValidation(format!("invalid artifact_glob pattern '{}': {e}", pattern))
     })?;
     Ok(paths.filter_map(|p| p.ok()).collect())
+}
+
+fn post_idle_artifact_poll_secs(wait_timeout_secs: u64) -> u64 {
+    (wait_timeout_secs / 30).clamp(5, 60)
+}
+
+fn capture_artifact_with_poll(
+    pre_snapshot: &HashSet<PathBuf>,
+    pattern: &str,
+    artifact_name: &str,
+    poll_secs: u64,
+    poll_interval: Duration,
+) -> Result<PathBuf> {
+    let poll_deadline = Duration::from_secs(poll_secs);
+    let poll_start = std::time::Instant::now();
+
+    loop {
+        match capture_artifact(pre_snapshot, pattern, artifact_name) {
+            Ok(path) => break Ok(path),
+            Err(err) => {
+                if poll_start.elapsed() >= poll_deadline {
+                    break Err(TuttiError::ConfigValidation(format!(
+                        "artifact '{}' did not appear within {}s after completion; verify artifact_glob '{}' or increase wait_timeout_secs. Last capture error: {err}",
+                        artifact_name, poll_secs, pattern
+                    )));
+                }
+                std::thread::sleep(poll_interval);
+            }
+        }
+    }
+}
+
+fn capture_and_store_artifact_output(
+    project_root: &Path,
+    run_id: &str,
+    expanded_pattern: &str,
+    pre_snapshot: &HashSet<PathBuf>,
+    artifact_name: &str,
+    poll_secs: u64,
+) -> Result<ArtifactStoreResult> {
+    let artifact_path = capture_artifact_with_poll(
+        pre_snapshot,
+        expanded_pattern,
+        artifact_name,
+        poll_secs,
+        Duration::from_secs(1),
+    )?;
+
+    store_artifact_output(project_root, run_id, artifact_name, &artifact_path).map_err(|e| {
+        TuttiError::ConfigValidation(format!(
+            "artifact capture failed for '{}': {e}",
+            artifact_name
+        ))
+    })
 }
 
 /// After a step completes, capture the newest artifact that appeared since the pre-step snapshot.
@@ -6315,6 +6432,70 @@ mod tests {
         assert!(err.to_string().contains("matched no new files"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_with_poll_waits_for_late_file() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-poll");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+        let late_file = dir.join("design-late.md");
+        let writer_path = late_file.clone();
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            std::fs::write(&writer_path, "late artifact").unwrap();
+        });
+
+        let result = capture_artifact_with_poll(
+            &pre_snapshot,
+            &pattern,
+            "design_doc",
+            1,
+            std::time::Duration::from_millis(5),
+        )
+        .unwrap();
+        writer.join().unwrap();
+        assert_eq!(result, late_file);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_artifact_with_poll_timeout_is_actionable() {
+        let dir = std::env::temp_dir().join("tutti-test-capture-poll-timeout");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pattern = format!("{}/*.md", dir.display());
+        let pre_snapshot = snapshot_artifact_glob(&pattern).unwrap();
+
+        let err = capture_artifact_with_poll(
+            &pre_snapshot,
+            &pattern,
+            "design_doc",
+            0,
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("did not appear within 0s after completion"));
+        assert!(err.contains("verify artifact_glob"));
+        assert!(err.contains("increase wait_timeout_secs"));
+        assert!(err.contains("matched no new files"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_idle_artifact_poll_secs_is_bounded() {
+        assert_eq!(post_idle_artifact_poll_secs(30), 5);
+        assert_eq!(post_idle_artifact_poll_secs(1800), 60);
+        assert_eq!(post_idle_artifact_poll_secs(3600), 60);
     }
 
     #[test]
