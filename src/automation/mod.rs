@@ -1564,20 +1564,61 @@ impl<'a> WorkflowExecutor<'a> {
                                 // Run artifact capture before early success exit
                                 if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                                     (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
-                                    && let Ok(artifact_path) = capture_artifact_with_poll(
+                                {
+                                    let artifact_path = match capture_artifact_with_poll(
                                         pre_snap,
                                         expanded_pattern,
                                         art_name,
                                         post_idle_poll_secs,
                                         Duration::from_secs(1),
-                                    )
-                                    && let Ok(result) = store_artifact_output(
+                                    ) {
+                                        Ok(path) => path,
+                                        Err(e) => {
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis() as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(e.to_string()),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                            break;
+                                        }
+                                    };
+
+                                    let result = match store_artifact_output(
                                         self.project_root,
                                         &run_id,
                                         art_name,
                                         &artifact_path,
-                                    )
-                                {
+                                    ) {
+                                        Ok(result) => result,
+                                        Err(e) => {
+                                            failed_steps.push(step_index);
+                                            success = false;
+                                            step_results.push(StepResult {
+                                                index: step_index,
+                                                step_type: "prompt".to_string(),
+                                                status: StepStatus::Failed,
+                                                duration_ms: started.elapsed().as_millis() as u64,
+                                                exit_code: None,
+                                                timed_out: false,
+                                                message: Some(format!(
+                                                    "artifact capture failed for '{}': {e}",
+                                                    art_name
+                                                )),
+                                                stdout: None,
+                                                stderr: None,
+                                            });
+                                            break;
+                                        }
+                                    };
+
                                     output_files.insert(
                                         art_name.to_string(),
                                         result.json_path.display().to_string(),
@@ -1630,20 +1671,63 @@ impl<'a> WorkflowExecutor<'a> {
                                     // Run artifact capture before early success exit
                                     if let (Some((expanded_pattern, pre_snap)), Some(art_name)) =
                                         (artifact_pre_snapshot.as_ref(), artifact_name.as_deref())
-                                        && let Ok(artifact_path) = capture_artifact_with_poll(
+                                    {
+                                        let artifact_path = match capture_artifact_with_poll(
                                             pre_snap,
                                             expanded_pattern,
                                             art_name,
                                             post_idle_poll_secs,
                                             Duration::from_secs(1),
-                                        )
-                                        && let Ok(result) = store_artifact_output(
+                                        ) {
+                                            Ok(path) => path,
+                                            Err(e) => {
+                                                failed_steps.push(step_index);
+                                                success = false;
+                                                step_results.push(StepResult {
+                                                    index: step_index,
+                                                    step_type: "prompt".to_string(),
+                                                    status: StepStatus::Failed,
+                                                    duration_ms: started.elapsed().as_millis()
+                                                        as u64,
+                                                    exit_code: None,
+                                                    timed_out: false,
+                                                    message: Some(e.to_string()),
+                                                    stdout: None,
+                                                    stderr: None,
+                                                });
+                                                break;
+                                            }
+                                        };
+
+                                        let result = match store_artifact_output(
                                             self.project_root,
                                             &run_id,
                                             art_name,
                                             &artifact_path,
-                                        )
-                                    {
+                                        ) {
+                                            Ok(result) => result,
+                                            Err(e) => {
+                                                failed_steps.push(step_index);
+                                                success = false;
+                                                step_results.push(StepResult {
+                                                    index: step_index,
+                                                    step_type: "prompt".to_string(),
+                                                    status: StepStatus::Failed,
+                                                    duration_ms: started.elapsed().as_millis()
+                                                        as u64,
+                                                    exit_code: None,
+                                                    timed_out: false,
+                                                    message: Some(format!(
+                                                        "artifact capture failed for '{}': {e}",
+                                                        art_name
+                                                    )),
+                                                    stdout: None,
+                                                    stderr: None,
+                                                });
+                                                break;
+                                            }
+                                        };
+
                                         output_files.insert(
                                             art_name.to_string(),
                                             result.json_path.display().to_string(),
