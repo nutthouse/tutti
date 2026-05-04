@@ -14,6 +14,8 @@ tt runs     tt runs <id>    tt attach     tt logs
 
 ## Step 1: Find the Failed Run
 
+If `tt serve` is running, open the dashboard first. The operator console summarizes active runs, review state, merge-gate state, blockers, captured artifacts, and the next required action from `/v1/ops`.
+
 ```bash
 tt runs
 ```

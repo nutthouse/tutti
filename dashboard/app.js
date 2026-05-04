@@ -22,6 +22,7 @@ var appState = {
   selectedAgent: null, // composite key of currently selected agent
   selectedRun: null,   // correlation_id of currently selected run
   runs: {},        // correlation_id -> run state { stage, status, steps, workflow_name }
+  ops: null,       // /v1/ops summary for the operator console
 };
 
 // ── Run tracking ──
@@ -165,6 +166,10 @@ var $detailName  = document.getElementById("detail-name");
 var $detailMeta  = document.getElementById("detail-meta");
 var $detailEvts  = document.getElementById("detail-events");
 var $detailClose = document.getElementById("detail-close");
+var $opsConsole  = document.getElementById("operator-console");
+var $opsSummary  = document.getElementById("ops-summary");
+var $opsRuns     = document.getElementById("ops-runs");
+var $opsEvents   = document.getElementById("ops-events");
 
 // ── Classify agent state into a CSS class ──
 function stateClass(agent) {
@@ -537,6 +542,139 @@ function renderTimeline() {
   }
 }
 
+// ── Operator console ──
+function fetchOps() {
+  if (!$opsConsole) return Promise.resolve();
+  return fetch("/v1/ops").then(function(res) {
+    if (!res.ok) throw new Error("ops endpoint returned " + res.status);
+    return res.json();
+  }).then(function(json) {
+    appState.ops = json.data || null;
+    renderOperatorConsole();
+  }).catch(function(e) {
+    console.warn("ops fetch failed:", e);
+    appState.ops = null;
+    renderOperatorConsole();
+  });
+}
+
+function renderOperatorConsole() {
+  if (!$opsConsole || !$opsSummary || !$opsRuns || !$opsEvents) return;
+  var ops = appState.ops;
+  while ($opsSummary.firstChild) $opsSummary.removeChild($opsSummary.firstChild);
+  while ($opsRuns.firstChild) $opsRuns.removeChild($opsRuns.firstChild);
+  while ($opsEvents.firstChild) $opsEvents.removeChild($opsEvents.firstChild);
+
+  if (!ops) {
+    $opsRuns.appendChild(el("div", "ops-empty", "loading…"));
+    return;
+  }
+
+  var summary = ops.summary || {};
+  $opsSummary.appendChild(opsChip("runs", summary.active_runs || 0, ""));
+  $opsSummary.appendChild(opsChip("blocked", summary.blocked_runs || 0, summary.blocked_runs ? "danger" : ""));
+  $opsSummary.appendChild(opsChip("review", summary.review_waiting || 0, summary.review_waiting ? "warn" : ""));
+  $opsSummary.appendChild(opsChip("gate", summary.gate_ready || 0, summary.gate_ready ? "ok" : ""));
+
+  var runs = ops.runs || [];
+  if (runs.length === 0) {
+    $opsRuns.appendChild(el("div", "ops-empty", "no active runs"));
+  } else {
+    for (var i = 0; i < Math.min(runs.length, 6); i++) {
+      $opsRuns.appendChild(renderOpsRun(runs[i]));
+    }
+  }
+
+  var events = ops.recent_events || [];
+  if (events.length === 0) {
+    $opsEvents.appendChild(el("li", null, "no ops events"));
+  } else {
+    for (var j = 0; j < Math.min(events.length, 8); j++) {
+      var evt = events[j];
+      var li = document.createElement("li");
+      li.appendChild(el("span", "evt-type", evt.event || "event"));
+      if (evt.agent) {
+        li.appendChild(document.createTextNode(" "));
+        li.appendChild(el("span", "evt-agent", evt.agent));
+      }
+      li.appendChild(el("span", "evt-time", timeAgo(evt.timestamp)));
+      $opsEvents.appendChild(li);
+    }
+  }
+}
+
+function opsChip(label, value, className) {
+  var chip = el("span", "ops-chip" + (className ? " " + className : ""));
+  chip.appendChild(el("span", "ops-chip-value", String(value)));
+  chip.appendChild(el("span", "ops-chip-label", label));
+  return chip;
+}
+
+function renderOpsRun(run) {
+  var card = el("article", "ops-run " + opsRunClass(run));
+  var top = el("div", "ops-run-top");
+  var issue = run.issue || {};
+  var title = "#" + (issue.number || "—");
+  if (issue.title) title += " " + issue.title;
+  top.appendChild(el("h3", null, title));
+  top.appendChild(el("span", "ops-stage", run.stage || "run"));
+  card.appendChild(top);
+
+  var meta = el("div", "ops-run-meta");
+  meta.appendChild(el("span", null, run.workflow || "workflow"));
+  if (run.branch) meta.appendChild(el("span", null, run.branch));
+  if (run.updated_at) meta.appendChild(el("span", null, timeAgo(run.updated_at)));
+  card.appendChild(meta);
+
+  var states = el("div", "ops-state-row");
+  states.appendChild(opsStatePill("state", run.state || "unknown"));
+  states.appendChild(opsStatePill("review", (run.review && run.review.state) || "not_started"));
+  states.appendChild(opsStatePill("gate", (run.gate && run.gate.state) || "not_started"));
+  card.appendChild(states);
+
+  if (run.artifact && run.artifact.name) {
+    var artifact = el("div", "ops-artifact");
+    artifact.appendChild(el("span", "ops-artifact-label", "artifact"));
+    artifact.appendChild(el("span", null, run.artifact.name + " · " + (run.artifact.status || "pending")));
+    card.appendChild(artifact);
+  }
+
+  if (run.blocker) {
+    var blocker = el("div", "ops-blocker");
+    blocker.appendChild(el("span", "ops-blocker-label", run.blocker.category || "blocked"));
+    blocker.appendChild(document.createTextNode(" "));
+    blocker.appendChild(el("span", null, run.blocker.message || "blocked"));
+    card.appendChild(blocker);
+  }
+
+  var action = el("div", "ops-next", run.next_action || "No action required");
+  card.appendChild(action);
+  return card;
+}
+
+function opsStatePill(label, value) {
+  var pill = el("span", "ops-pill " + opsValueClass(value));
+  pill.appendChild(el("span", "ops-pill-label", label));
+  pill.appendChild(el("span", null, value.replace(/_/g, " ")));
+  return pill;
+}
+
+function opsRunClass(run) {
+  if (run.blocker) return "blocked";
+  var gate = run.gate && run.gate.state;
+  if (gate === "ready" || gate === "merged") return "ready";
+  var review = run.review && run.review.state;
+  if (review === "waiting" || gate === "checking") return "waiting";
+  return "active";
+}
+
+function opsValueClass(value) {
+  if (value === "blocked" || value === "failed") return "danger";
+  if (value === "waiting" || value === "checking" || value === "pr_open") return "warn";
+  if (value === "ready" || value === "merged" || value === "approved" || value === "ready_to_merge") return "ok";
+  return "";
+}
+
 // ── Debounce render to prevent flicker ──
 var renderTimer = null;
 function scheduleRender() {
@@ -661,6 +799,7 @@ function enterFocusMode(workspace, agent) {
 
   // Hide factory, show focus
   document.getElementById("factory").style.display = "none";
+  if ($opsConsole) $opsConsole.style.display = "none";
   document.getElementById("detail-drawer").style.display = "none";
   document.getElementById("dispatch-panel").style.display = "none";
   document.getElementById("timeline").style.display = "none";
@@ -698,6 +837,7 @@ function exitFocusMode() {
 
   $focusView.style.display = "none";
   document.getElementById("factory").style.display = "";
+  if ($opsConsole) $opsConsole.style.display = "";
   document.getElementById("dispatch-panel").style.display = "";
   document.getElementById("timeline").style.display = "";
 
@@ -1025,9 +1165,10 @@ function reconstructRuns() {
 
 // ── Boot ──
 fetchHealth().then(function() {
-  return reconstructRuns();
+  return Promise.all([reconstructRuns(), fetchOps()]);
 }).then(function() {
   connectSSE();
   // Re-fetch health periodically to stay in sync
   setInterval(fetchHealth, 15000);
+  setInterval(fetchOps, 15000);
 });

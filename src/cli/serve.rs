@@ -551,6 +551,7 @@ fn route_read(
         "/v1/status" | "/v1/voices" => Ok(api_ok("status.list", status_data(targets)?)),
         "/v1/workflows" => Ok(api_ok("workflows.list", workflows_data(targets))),
         "/v1/runs" => Ok(api_ok("runs.list", runs_data(targets)?)),
+        "/v1/ops" => Ok(api_ok("ops.summary", ops_data(targets)?)),
         "/v1/logs" => Ok(api_ok("logs.list", logs_data(targets)?)),
         "/v1/handoffs" => Ok(api_ok("handoffs.list", handoffs_data(targets)?)),
         "/v1/policy-decisions" => Ok(api_ok(
@@ -1266,6 +1267,298 @@ fn runs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     Ok(Value::Array(rows))
 }
 
+/// Build a read-only operator-console summary from the SDLC ledger, step
+/// intents, and recent control events.
+fn ops_data(targets: &[WorkspaceTarget]) -> Result<Value> {
+    let mut runs = Vec::new();
+    let mut recent_events = Vec::new();
+
+    for target in targets {
+        let active_runs = state::load_active_runs(&target.project_root)?;
+        for ledger in active_runs {
+            let steps = state::load_run_steps(&target.project_root, &ledger.run_id)?;
+            runs.push(ops_run_row(target, &ledger, &steps));
+        }
+
+        let mut events = state::load_control_events(&target.project_root)?;
+        events.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
+        for event in events.into_iter().take(20) {
+            recent_events.push(json!({
+                "workspace": target.name,
+                "event": event.event,
+                "agent": event.agent,
+                "timestamp": event.timestamp,
+                "correlation_id": event.correlation_id,
+            }));
+        }
+    }
+
+    runs.sort_by(|a, b| {
+        let a_ts = a
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let b_ts = b
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        b_ts.cmp(a_ts)
+    });
+    recent_events.sort_by(|a, b| {
+        let a_ts = a
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let b_ts = b
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        b_ts.cmp(a_ts)
+    });
+    recent_events.truncate(20);
+
+    let blocked = runs
+        .iter()
+        .filter(|run| run.get("blocker").is_some_and(|v| !v.is_null()))
+        .count();
+    let review_waiting = runs
+        .iter()
+        .filter(|run| {
+            run.pointer("/review/state")
+                .and_then(Value::as_str)
+                .is_some_and(|state| matches!(state, "waiting" | "blocked"))
+        })
+        .count();
+    let gate_ready = runs
+        .iter()
+        .filter(|run| {
+            run.pointer("/gate/state")
+                .and_then(Value::as_str)
+                .is_some_and(|state| state == "ready")
+        })
+        .count();
+
+    Ok(json!({
+        "summary": {
+            "active_runs": runs.len(),
+            "blocked_runs": blocked,
+            "review_waiting": review_waiting,
+            "gate_ready": gate_ready,
+        },
+        "runs": runs,
+        "recent_events": recent_events,
+    }))
+}
+
+fn ops_run_row(
+    target: &WorkspaceTarget,
+    ledger: &state::SdlcRunLedgerRecord,
+    steps: &[state::WorkflowStepIntentRecord],
+) -> Value {
+    let blocker = ops_blocker(ledger, steps);
+    json!({
+        "workspace": target.name,
+        "run_id": ledger.run_id,
+        "issue": {
+            "number": ledger.issue_number,
+            "title": ledger.issue_title,
+            "repository": ledger.repository,
+        },
+        "workflow": ledger.workflow_name,
+        "state": format_sdlc_state(&ledger.state),
+        "stage": ops_stage(&ledger.state),
+        "updated_at": ledger.updated_at,
+        "branch": ledger.branch,
+        "current_step": ledger.current_step_id,
+        "last_successful_step": ledger.last_successful_step_id,
+        "active_agents": ledger.active_agents,
+        "artifact": ops_latest_artifact(steps),
+        "review": ops_review_state(&ledger.state, steps),
+        "gate": ops_gate_state(&ledger.state, steps),
+        "blocker": blocker,
+        "resume_eligible": ledger.resume_eligible,
+        "next_action": ops_next_action(ledger, steps),
+    })
+}
+
+fn format_sdlc_state(state: &state::SdlcRunState) -> &'static str {
+    match state {
+        state::SdlcRunState::Selected => "selected",
+        state::SdlcRunState::Branched => "branched",
+        state::SdlcRunState::Implemented => "implemented",
+        state::SdlcRunState::Tested => "tested",
+        state::SdlcRunState::Docs => "docs",
+        state::SdlcRunState::PrOpen => "pr_open",
+        state::SdlcRunState::Reviewed => "reviewed",
+        state::SdlcRunState::ReadyToMerge => "ready_to_merge",
+        state::SdlcRunState::Merged => "merged",
+    }
+}
+
+fn ops_stage(state: &state::SdlcRunState) -> &'static str {
+    match state {
+        state::SdlcRunState::Selected | state::SdlcRunState::Branched => "intake",
+        state::SdlcRunState::Implemented
+        | state::SdlcRunState::Tested
+        | state::SdlcRunState::Docs => "execution",
+        state::SdlcRunState::PrOpen | state::SdlcRunState::Reviewed => "review",
+        state::SdlcRunState::ReadyToMerge => "gate",
+        state::SdlcRunState::Merged => "record",
+    }
+}
+
+fn ops_review_state(
+    state: &state::SdlcRunState,
+    steps: &[state::WorkflowStepIntentRecord],
+) -> Value {
+    let failed = steps.iter().any(|step| {
+        step.step_type == "review" && step.outcome.as_ref().is_some_and(|o| !o.success)
+    });
+    let pending = steps
+        .iter()
+        .any(|step| step.step_type == "review" && step.outcome.is_none());
+    let complete = steps
+        .iter()
+        .any(|step| step.step_type == "review" && step.outcome.as_ref().is_some_and(|o| o.success));
+
+    let review_state = if failed {
+        "blocked"
+    } else if complete
+        || matches!(
+            state,
+            state::SdlcRunState::Reviewed
+                | state::SdlcRunState::ReadyToMerge
+                | state::SdlcRunState::Merged
+        )
+    {
+        "approved"
+    } else if pending || matches!(state, state::SdlcRunState::PrOpen) {
+        "waiting"
+    } else {
+        "not_started"
+    };
+
+    json!({
+        "state": review_state,
+        "adapter": "review_gate",
+    })
+}
+
+fn ops_gate_state(state: &state::SdlcRunState, steps: &[state::WorkflowStepIntentRecord]) -> Value {
+    let failed = steps
+        .iter()
+        .any(|step| step.step_type == "land" && step.outcome.as_ref().is_some_and(|o| !o.success));
+    let pending = steps
+        .iter()
+        .any(|step| step.step_type == "land" && step.outcome.is_none());
+    let complete = steps
+        .iter()
+        .any(|step| step.step_type == "land" && step.outcome.as_ref().is_some_and(|o| o.success));
+
+    let gate_state = if failed {
+        "blocked"
+    } else if complete || matches!(state, state::SdlcRunState::Merged) {
+        "merged"
+    } else if matches!(state, state::SdlcRunState::ReadyToMerge) {
+        "ready"
+    } else if pending || matches!(state, state::SdlcRunState::Reviewed) {
+        "checking"
+    } else {
+        "not_started"
+    };
+
+    json!({
+        "state": gate_state,
+        "checks": if failed { "failed" } else { gate_state },
+    })
+}
+
+fn ops_blocker(
+    ledger: &state::SdlcRunLedgerRecord,
+    steps: &[state::WorkflowStepIntentRecord],
+) -> Option<Value> {
+    if let Some(step) = steps.iter().find(|step| {
+        step.outcome
+            .as_ref()
+            .is_some_and(|outcome| !outcome.success)
+    }) {
+        return Some(json!({
+            "category": ledger.failure_class.as_deref().unwrap_or(step.step_type.as_str()),
+            "step": step.step_id,
+            "message": step
+                .outcome
+                .as_ref()
+                .and_then(|outcome| outcome.message.clone())
+                .or_else(|| ledger.failure_message.clone())
+                .unwrap_or_else(|| "step failed".to_string()),
+        }));
+    }
+
+    ledger.failure_class.as_ref().map(|category| {
+        json!({
+            "category": category,
+            "step": ledger.current_step_id,
+            "message": ledger.failure_message,
+        })
+    })
+}
+
+fn ops_latest_artifact(steps: &[state::WorkflowStepIntentRecord]) -> Option<Value> {
+    steps.iter().rev().find_map(|step| {
+        step.intent
+            .get("artifact_name")
+            .and_then(Value::as_str)
+            .map(|name| {
+                json!({
+                    "name": name,
+                    "step": step.step_id,
+                    "status": step
+                        .outcome
+                        .as_ref()
+                        .map(|outcome| if outcome.success { "captured" } else { "failed" })
+                        .unwrap_or("pending"),
+                })
+            })
+    })
+}
+
+fn ops_next_action(
+    ledger: &state::SdlcRunLedgerRecord,
+    steps: &[state::WorkflowStepIntentRecord],
+) -> String {
+    if let Some(step) = steps.iter().find(|step| {
+        step.outcome
+            .as_ref()
+            .is_some_and(|outcome| !outcome.success)
+    }) {
+        if let Some(agent_name) = step
+            .intent
+            .get("agent")
+            .or_else(|| step.intent.get("agent_scope"))
+            .and_then(Value::as_str)
+        {
+            return format!("Inspect {agent_name} for failed step {}", step.step_id);
+        }
+        return format!("Inspect failed step {}", step.step_id);
+    }
+
+    if ledger.resume_eligible {
+        return format!("Run tt run --resume {}", ledger.run_id);
+    }
+
+    if steps.iter().any(|step| step.outcome.is_none()) {
+        return "Wait for pending workflow steps".to_string();
+    }
+
+    match ledger.state {
+        state::SdlcRunState::PrOpen => "Trigger or inspect the review adapter".to_string(),
+        state::SdlcRunState::Reviewed => "Run the merge gate".to_string(),
+        state::SdlcRunState::ReadyToMerge => "Land or merge the approved PR".to_string(),
+        state::SdlcRunState::Merged => "No action required".to_string(),
+        _ => "Continue the workflow".to_string(),
+    }
+}
+
 /// List log files with metadata from all served workspaces
 fn logs_data(targets: &[WorkspaceTarget]) -> Result<Value> {
     let mut rows = Vec::new();
@@ -1963,5 +2256,80 @@ auth = "bearer"
             parsed_default.serve.auth,
             crate::config::ServeAuthMode::None
         );
+    }
+
+    #[test]
+    fn ops_next_action_prioritizes_failed_step() {
+        let ledger = state::SdlcRunLedgerRecord {
+            run_id: "run-ops-1".to_string(),
+            issue_number: 42,
+            issue_title: Some("Fix review loop".to_string()),
+            repository: "nutthouse/tutti".to_string(),
+            workflow_name: "sdlc".to_string(),
+            state: state::SdlcRunState::PrOpen,
+            updated_at: Utc::now(),
+            actor: "tester".to_string(),
+            branch: Some("issue-42".to_string()),
+            failure_message: None,
+            failure_class: None,
+            current_step_id: Some("review-3".to_string()),
+            last_successful_step_id: Some("test-2".to_string()),
+            resume_eligible: false,
+            active_agents: vec!["reviewer".to_string()],
+            transitions: vec![],
+        };
+        let steps = vec![state::WorkflowStepIntentRecord {
+            run_id: "run-ops-1".to_string(),
+            workflow_name: "sdlc".to_string(),
+            step_index: 3,
+            step_id: "review-3".to_string(),
+            step_type: "review".to_string(),
+            planned_at: Utc::now(),
+            intent: json!({"agent": "implementer"}),
+            attempt: 1,
+            outcome: Some(state::WorkflowStepOutcomeRecord {
+                completed_at: Utc::now(),
+                status: "failed".to_string(),
+                success: false,
+                exit_code: Some(1),
+                timed_out: false,
+                message: Some("review feedback unresolved".to_string()),
+                side_effects: None,
+            }),
+        }];
+
+        assert_eq!(
+            ops_next_action(&ledger, &steps),
+            "Inspect implementer for failed step review-3"
+        );
+        assert_eq!(
+            ops_review_state(&ledger.state, &steps)
+                .pointer("/state")
+                .and_then(Value::as_str),
+            Some("blocked")
+        );
+    }
+
+    #[test]
+    fn ops_gate_state_marks_ready_to_merge() {
+        let steps = vec![state::WorkflowStepIntentRecord {
+            run_id: "run-ops-2".to_string(),
+            workflow_name: "sdlc".to_string(),
+            step_index: 4,
+            step_id: "land-4".to_string(),
+            step_type: "land".to_string(),
+            planned_at: Utc::now(),
+            intent: json!({"agent": "implementer", "pr": true}),
+            attempt: 1,
+            outcome: None,
+        }];
+
+        assert_eq!(
+            ops_gate_state(&state::SdlcRunState::ReadyToMerge, &steps)
+                .pointer("/state")
+                .and_then(Value::as_str),
+            Some("ready")
+        );
+        assert_eq!(ops_stage(&state::SdlcRunState::ReadyToMerge), "gate");
     }
 }
