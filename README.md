@@ -369,7 +369,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 - `tt serve` local control API endpoints:
-  - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/logs`, `/v1/handoffs`, `/v1/policy-decisions`, `/v1/events`
+  - Reads: `/v1/health`, `/v1/status`, `/v1/voices`, `/v1/workflows`, `/v1/runs`, `/v1/ops`, `/v1/logs`, `/v1/handoffs`, `/v1/policy-decisions`, `/v1/events`
   - Event cursor/list filter: `/v1/events?cursor=<RFC3339 timestamp>&workspace=<name>`
   - SSE stream: `/v1/events/stream?cursor=<RFC3339 timestamp>&workspace=<name>`
   - Stream emits lifecycle/control events (`agent.started`, `agent.stopped`, `agent.working`, `agent.idle`, `agent.auth_failed`, `workflow.started`, `workflow.completed`, `workflow.failed`, handoff events)

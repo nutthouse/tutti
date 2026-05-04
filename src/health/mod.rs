@@ -255,6 +255,7 @@ pub fn recovery_trigger(health: &AgentHealth) -> Option<RecoveryTrigger> {
 /// Minimum consecutive Working polls (without hash change) required to count as activity.
 /// Prevents flicker between Working/Unknown from falsely setting `saw_activity`.
 const WORKING_STATUS_CONSECUTIVE_THRESHOLD: u32 = 2;
+const _: () = assert!(WORKING_STATUS_CONSECUTIVE_THRESHOLD >= 2);
 
 fn completion_signal_can_finish_wait(
     saw_activity: bool,
@@ -627,12 +628,6 @@ mod tests {
             recovery_trigger(&provider),
             Some(RecoveryTrigger::ProviderDown)
         );
-    }
-
-    #[test]
-    fn working_consecutive_threshold_is_at_least_two() {
-        // The threshold prevents a single Working flicker from falsely setting saw_activity.
-        assert!(WORKING_STATUS_CONSECUTIVE_THRESHOLD >= 2);
     }
 
     #[test]
