@@ -83,12 +83,12 @@ jobs:
             }
             capture { print }
             END { if (!found) exit 1 }
-          ' CHANGELOG.md > release-notes.md || {
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md" || {
             {
               echo "## Tutti v$version"
               echo
               echo "See CHANGELOG.md for release details."
-            } > release-notes.md
+            } > "$RUNNER_TEMP/release-notes.md"
           }
 
       - name: Format
@@ -109,7 +109,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-notes
-          path: release-notes.md
+          path: ${{ runner.temp }}/release-notes.md
 
   build:
     name: Build ${{ matrix.name }}
