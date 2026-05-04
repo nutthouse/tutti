@@ -1,12 +1,14 @@
 # tutti
 
-**Multi-agent orchestration for AI coding tools. Coordinate Claude Code, Codex, and Aider agents as a team — with a real-time web dashboard, automated SDLC workflows, and per-agent git worktree isolation.**
+**Terraform-style agent operations for AI coding tools. Define your agent team, run repeatable workflows, track every artifact and gate, and move from messy terminal sessions to versioned engineering operations.**
 
 ```bash
 cargo install tutti
 ```
 
-Tutti spawns multiple AI coding agents in tmux sessions, gives each one its own git worktree, and orchestrates them through configurable workflows — plan, implement, test, review, ship. A web dashboard shows every agent's status in real time. Click any agent to see its live terminal output, token usage, and code changes.
+Tutti is the operations layer above Claude Code, Codex, Aider, OpenClaw, and API-direct agents. It gives each agent a role, worktree, workflow, audit trail, and dashboard so issue intake, implementation, review, CI, and merge gates happen as repeatable "org code" in `tutti.toml`.
+
+Agent SDKs help you build agents. Tutti helps you **run agent work**.
 
 ![Factory floor — 5 agents working through an SDLC pipeline](docs/images/factory-floor.png)
 
@@ -21,10 +23,11 @@ Tutti spawns multiple AI coding agents in tmux sessions, gives each one its own 
 ```bash
 cargo install tutti        # install the CLI (requires Rust)
 cd your-project
-tt init                    # auto-detect repo type and generate tutti.toml
-tt up                      # launch your agent team
-tt serve --port 4040       # start the web dashboard at localhost:4040
-tt run sdlc-gstack         # run an interactive design→review→implement→test→ship pipeline
+tt init --template rust-cli # generate a Rust CLI agent-ops config
+tt run --list              # see workflows generated for this repo
+tt run verify --strict     # first successful workflow: cargo test + clippy
+tt up                      # launch your persistent agent team
+tt serve --port 4040       # inspect runs, agents, logs, and handoffs
 ```
 
 Or pick a template explicitly:
@@ -35,25 +38,39 @@ tt init --template rust-cli         # 3-agent Rust project team
 tt init --template minimal          # 2-agent starter
 ```
 
-**Prerequisites:** Rust toolchain, tmux, and at least one AI coding CLI installed (Claude Code, Codex, or Aider).
+**Prerequisites:** Rust toolchain, tmux, and at least one AI coding CLI installed for agent sessions (Claude Code, Codex, or Aider). Command-only workflows such as the Rust template's `verify` can run before you launch agents. For non-Rust repos, start with `tt init` or `tt init --template minimal`, then add the smallest verification command your project already trusts.
+
+## The Agent Ops Loop
+
+Tutti models the engineering loop as pluggable operational stages:
+
+1. **Intake**: GitHub issue, Linear ticket, Jira ticket, local queue, or webhook event.
+2. **Execution**: Claude Code, Codex, Aider, OpenClaw, or API-direct model providers.
+3. **Review**: CodeRabbit, Claude/Codex reviewer packets, human approval, CI, or policy checks.
+4. **Gate**: required checks, resolved review threads, approval state, cost/policy limits.
+5. **Record**: run ledger, artifacts, logs, dashboard events, and replayable state.
+
+The built-in Tutti-for-Tutti workflow uses GitHub issue intake and CodeRabbit review because that is the first concrete adapter pair. It is not the product boundary. The product boundary is the loop.
 
 ## What Tutti Does
 
+- **Defines agent operations as code** in `tutti.toml`: roles, runtimes, workflows, hooks, gates, and policies
 - **Spawns and manages** multiple AI coding agent sessions (Claude Code, Codex, Aider) in tmux
 - **Isolates each agent** in its own git worktree to prevent merge conflicts
 - **Orchestrates workflows** — chain prompt steps, shell commands, and agent coordination into repeatable pipelines defined in `tutti.toml`
 - **Web dashboard** at `:4040` — factory-floor view of all agents with real-time SSE updates, state-driven visuals (working/idle/stopped/blocked), and workflow run tracking
 - **Agent Focus Mode** — click any agent to zoom into full-screen view with live terminal output, token usage, git diff, context health, and a prompt input bar
-- **Automated SDLC** — claim a GitHub issue, plan, implement, test, open PR, request review — fully unattended
+- **Automated SDLC** — claim work, plan, implement, test, open PRs, collect reviews, resolve feedback, and enforce merge gates
+- **API-direct agent loop** — optional ModelProvider path with built-in tools, policy gates, SQLite event log, and cost tracking
 - **Resilience** — detects auth failures, rate limits, and provider outages; auto-recovers sessions based on configured strategies
 - **Issue claim leases** — exclusive locks on GitHub issues for autonomous workflow runs
 
 ## What Tutti Does Not Do
 
-- **Not another agent.** Tutti orchestrates existing agents — it never calls an LLM API directly.
-- **Not tied to any provider.** Works with any agent CLI that runs in a terminal.
-- **No API keys required.** Uses your existing agent CLI authentication.
-- **No vendor lock-in.** Configuration is a single `tutti.toml` file you can version, share, or fork.
+- **Not another generic agent framework.** Tutti is the operations layer around agent work: lifecycle, workflow, state, review, policy, and observability.
+- **Not tied to one provider.** It can orchestrate terminal agents and, where configured, run API-direct model providers through the same operational controls.
+- **No API keys required for CLI-agent mode.** Existing Claude Code, Codex, Aider, or OpenClaw authentication keeps working. API-direct runs opt into provider credentials explicitly.
+- **No vendor lock-in.** Your agent operations live in a versioned `tutti.toml` file you can review, fork, and move.
 
 ## When To Use Tutti
 
@@ -127,11 +144,12 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-## Project Status (v0.8.0 — March 2026)
+## Project Status (v0.10.0+ — May 2026)
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
 - Runtime adapters: Claude Code, Codex CLI, Aider, OpenClaw
+- API-direct spine: `ModelProvider`, OpenAI-compatible provider, tool execution loop, policy gate, SQLite event log
 - Template packs: `tt init --template gstack-startup` generates a fully configured team from built-in or custom templates, with repo auto-detection
 - Role mapping: `[roles]` table maps logical roles to runtimes — swap providers without editing every agent
 - Artifact pipeline: prompt steps capture and pass typed artifacts between workflow stages via `artifact_glob`/`artifact_name`
@@ -153,6 +171,9 @@ source ~/.zshrc
 
 ### Planned / in progress
 - Session replacement flow (`tt handoff apply`) hardening and richer packet templates
+- CLI wiring for API-direct workflow runs (`tt run --direct`)
+- Replay UX for API-direct run event logs
+- Pluggable intake and review adapters beyond GitHub + CodeRabbit
 - Image upload to remote agents (bridging files to agent context from the browser)
 - Provider-level failover/rate-limit rotation
 - Richer cost attribution and context-health telemetry
@@ -160,6 +181,7 @@ source ~/.zshrc
 - Community phrase/arrangement registry
 
 ### Integration docs
+- Why Tutti exists: `docs/WHY_TUTTI.md`
 - External agent/orchestrator contract: `docs/AGENT_INTEGRATION_CONTRACT.md`
 - OpenClaw skill contract: `docs/OPENCLAW_SKILL_CONTRACT.md`
 - OpenClaw skill starter: `skills/openclaw/SKILL.md`
@@ -343,7 +365,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
 - Workflow `review`/`land` steps auto-start required sessions when they are not already running
-- Workflow `land` steps enforce a GitHub merge gate (required checks green + all PR review threads resolved)
+- Workflow `land` steps enforce a merge gate. Today the built-in gate targets GitHub PRs, required checks, and resolved review threads; the stage model is designed for other review systems.
 - `workflow_complete` hooks for deterministic chaining
 - Auto-reclaim of newly-started `persistent = false` sessions at workflow end
 - `tt serve` local control API endpoints:
@@ -361,6 +383,16 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - Profile/workspace token usage and capacity estimates (`tt usage`, API profiles only)
 - Interactive terminal watch mode with `PLAN` + live `CTX` plus quick attach/peek flow
 - Per-agent log capture and tailing (`tt logs`)
+- Workflow run telemetry at `.tutti/state/run-telemetry.jsonl`
+
+### API-Direct Agent Spine (Built + Planned)
+- OpenAI-compatible `ModelProvider` adapter (built)
+- Provider-neutral message/content model with tool-use blocks (built)
+- Built-in tools for file reads, writes, patches, shell commands, and grep/glob (built)
+- Policy gate before tool execution (built)
+- SQLite event log for model calls, tool calls, policy decisions, and costs (built)
+- `tt run --direct` workflow wiring (planned)
+- `tt replay` for API-direct run inspection (planned)
 
 ### Handoffs (Built + Planned)
 - `tt handoff generate <agent>` creates markdown packets in `.tutti/handoffs/`
@@ -428,29 +460,26 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│           tt (CLI)                  │
-│  init · up · status · watch · usage │
-├─────────────────────────────────────┤
-│        Orchestration Core           │
-│  Team topology · Agent lifecycle    │
-│  Context monitoring · Cost tracking │
-├──────────┬──────────┬───────────────┤
-│ Runtime  │ Runtime  │ Runtime       │
-│ Adapter: │ Adapter: │ Adapter:      │
-│ Claude   │ Codex    │ Aider/Custom  │
-├──────────┴──────────┴───────────────┤
-│       Terminal Session Layer        │
-│  tmux/zellij · git worktrees       │
-│  PTY capture · ANSI parsing        │
-├─────────────────────────────────────┤
-│        Observation Layer            │
-│  Token counting · Cost attribution  │
-│  Status detection · Context health  │
-├─────────────────────────────────────┤
-│         Dashboard (optional)        │
-│  Web UI · REST API · WebSocket feed │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│                tt (CLI)                  │
+│ init · run · up · serve · review · land  │
+├──────────────────────────────────────────┤
+│            Agent Ops Core                │
+│ topology · workflows · gates · policies  │
+├─────────────────────┬────────────────────┤
+│ CLI-Agent Path      │ API-Direct Path     │
+│ Claude/Codex/Aider  │ ModelProvider       │
+│ tmux · worktrees    │ tools · policy      │
+├─────────────────────┴────────────────────┤
+│              State + Artifacts            │
+│ ledgers · checkpoints · outputs · events  │
+├──────────────────────────────────────────┤
+│              Observability                │
+│ logs · run telemetry · status · replay    │
+├──────────────────────────────────────────┤
+│         Dashboard / Control API           │
+│ Web UI · REST API · SSE event stream      │
+└──────────────────────────────────────────┘
 ```
 
 ## Supported Runtimes
@@ -466,11 +495,13 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 ## Philosophy
 
-**BYOS: Bring Your Own Subscription.** Tutti never asks for your API keys. It spawns agents using whatever CLI tools you already have installed and authenticated. If you can run `claude` in your terminal, Tutti can orchestrate it.
+**BYOS: Bring Your Own Subscription.** In CLI-agent mode, Tutti uses whatever tools you already have installed and authenticated. If you can run `claude` in your terminal, Tutti can orchestrate it. API-direct mode is explicit and configured separately.
 
 **Org code is real code.** How you structure your agent team is as important as the code they write. It should be versioned, reviewed, and iterable — just like infrastructure-as-code or CI/CD pipelines.
 
-**Observe everything, control nothing.** Tutti watches what your agents do but doesn't intercept or modify their behavior. It's a coordination and visibility layer, not a proxy.
+**Operations beat demos.** A good agent demo writes code once. A good agent operation can be rerun, inspected, reviewed, resumed, and trusted.
+
+**Adapters, not a walled garden.** GitHub and CodeRabbit are useful first integrations. The model is intake, execution, review, gate, record. Other issue trackers, agent tools, and review systems should fit the same loop.
 
 **Start simple, scale up.** One agent in a `tutti.toml` is fine. You don't need five agents and a complex topology on day one. Tutti should make even a single agent session better through observability and handoff support, then earn the right to add more agents when the work naturally separates.
 
@@ -499,6 +530,9 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 - [x] `tt permissions suggest` for batch workflow pre-approval
 - [x] SDLC automation framework (issue → implement → test → PR → review → merge)
 - [x] Published on crates.io (`cargo install tutti`)
+- [x] API-direct agentic spine (provider trait, tools, agent loop, event log)
+- [ ] `tt run --direct` CLI wiring
+- [ ] Pluggable intake and review adapters beyond GitHub + CodeRabbit
 - [ ] Agent-to-agent message bus
 - [ ] Phrase registry (community prompts/skills)
 - [ ] Arrangement sharing (community team configs)
