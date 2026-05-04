@@ -14,7 +14,7 @@ Make PR handling deterministic:
 ## Canonical loop
 
 1. Open or update PR from the issue branch.
-2. Wait for CodeRabbit feedback (`wait_and_collect_coderabbit.py`).
+2. Wait for configured review-adapter feedback. For CodeRabbit today, use `wait_coderabbit.sh` plus `collect_coderabbit_feedback.sh`.
 3. Apply actionable feedback and push.
 4. Repeat until no unresolved feedback remains.
 5. Run final validation (`cargo test --quiet` + reviewer packet).

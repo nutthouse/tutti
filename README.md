@@ -115,7 +115,7 @@ wait_for_idle = true
 
 Swap `claude-code` for `codex` in `[roles]` and every agent using that role switches runtime — no per-agent edits. Version it. Share it. Fork someone else's.
 
-## Quick Start
+## Alternative Installation
 
 ```bash
 # Install from crates.io
