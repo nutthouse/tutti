@@ -6,7 +6,7 @@ use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::health::WaitFailureReason;
 use crate::permissions::evaluate_command_policy;
-use crate::runtime::{self, AgentStatus};
+use crate::runtime::{self, AgentStatus, RuntimeAdapter};
 use crate::session::TmuxSession;
 use crate::state::{
     AutomationRunRecord, ControlEvent, VerifyLastSummary, WorkflowStepIntentRecord,
@@ -2568,12 +2568,15 @@ fn wait_for_prompt_activity_or_output(
 
         let pane = TmuxSession::capture_pane(session_name, PROMPT_CAPTURE_LINES)?;
         let pane_hash = hash_output(&pane);
-        let consumed = baseline_pane_hash.is_some_and(|baseline| pane_hash != baseline)
-            && snippet.as_ref().is_none_or(|needle| !pane.contains(needle));
+        let consumed = pane_indicates_prompt_activity(
+            adapter.as_deref(),
+            &pane,
+            pane_hash,
+            baseline_pane_hash,
+            snippet.as_deref(),
+        );
 
-        if let Some(adapter) = &adapter
-            && matches!(adapter.detect_status(&pane), AgentStatus::Working)
-        {
+        if pane_indicates_runtime_working(adapter.as_deref(), &pane) {
             return Ok(true);
         }
 
@@ -2622,6 +2625,22 @@ fn hash_output(output: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     output.hash(&mut hasher);
     hasher.finish()
+}
+
+fn pane_indicates_runtime_working(adapter: Option<&dyn RuntimeAdapter>, pane: &str) -> bool {
+    adapter.is_some_and(|adapter| matches!(adapter.detect_status(pane), AgentStatus::Working))
+}
+
+fn pane_indicates_prompt_activity(
+    adapter: Option<&dyn RuntimeAdapter>,
+    pane: &str,
+    pane_hash: u64,
+    baseline_pane_hash: Option<u64>,
+    snippet: Option<&str>,
+) -> bool {
+    let consumed = baseline_pane_hash.is_some_and(|baseline| pane_hash != baseline)
+        && snippet.is_none_or(|needle| !pane.contains(needle));
+    consumed || pane_indicates_runtime_working(adapter, pane)
 }
 
 fn prompt_step_has_branch_progress(project_root: &Path, agent: &str) -> Result<bool> {
@@ -5575,5 +5594,63 @@ mod tests {
         assert!(matches!(resolved.steps[2], ResolvedStep::Review { .. }));
         assert!(matches!(resolved.steps[3], ResolvedStep::Land { .. }));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pane_activity_detects_claude_working_status_with_prompt_bar_present() {
+        let adapter = runtime::get_adapter("claude-code", None).unwrap();
+        let pane = r#"
+⏺ Searching for 1 pattern… (ctrl+o to expand)
+  ⎿  "budget: None,"
+
+✳ Scurrying… (4m 5s · ↑ 783 tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+"#;
+
+        let baseline = hash_output("before prompt submit");
+        let pane_hash = hash_output(pane);
+
+        assert!(pane_indicates_runtime_working(Some(adapter.as_ref()), pane));
+        assert!(pane_indicates_prompt_activity(
+            Some(adapter.as_ref()),
+            pane,
+            pane_hash,
+            Some(baseline),
+            Some("Implement the fix")
+        ));
+    }
+
+    #[test]
+    fn pane_activity_detects_consumed_prompt_without_runtime_signal() {
+        let pane = "Done writing files\n";
+        let baseline = hash_output("previous pane with prompt still visible");
+        let pane_hash = hash_output(pane);
+
+        assert!(pane_indicates_prompt_activity(
+            None,
+            pane,
+            pane_hash,
+            Some(baseline),
+            Some("Implement the fix")
+        ));
+    }
+
+    #[test]
+    fn pane_activity_rejects_unchanged_prompt_without_working_signal() {
+        let pane = "Implement the fix\n";
+        let pane_hash = hash_output(pane);
+
+        assert!(!pane_indicates_prompt_activity(
+            None,
+            pane,
+            pane_hash,
+            Some(pane_hash),
+            Some("Implement the fix")
+        ));
     }
 }

@@ -401,6 +401,8 @@ pub enum WorkspacesSubcommand {
 pub enum RunsSubcommand {
     /// List all tracked SDLC runs
     List,
+    /// Show whether this workspace has reached first successful workflow activation
+    Activation,
     /// Show detailed view of a single run
     Show {
         /// Run ID to inspect

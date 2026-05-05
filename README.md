@@ -1,12 +1,12 @@
 # tutti
 
-**Multi-agent orchestration for AI coding tools. Coordinate Claude Code, Codex, and Aider agents as a team — with a real-time web dashboard, automated SDLC workflows, and per-agent git worktree isolation.**
+**Tutti is the operator layer for multi-agent coding workflows.** It runs Claude Code, Codex, and Aider as a coordinated team, gives each agent its own git worktree, and shows you what’s happening in real time.
 
 ```bash
 cargo install tutti
 ```
 
-Tutti spawns multiple AI coding agents in tmux sessions, gives each one its own git worktree, and orchestrates them through configurable workflows — plan, implement, test, review, ship. A web dashboard shows every agent's status in real time. Click any agent to see its live terminal output, token usage, and code changes.
+Use Tutti when one agent is no longer the bottleneck, but unmanaged parallelism is. It handles session orchestration, workflow dispatch, and operator visibility so you stop doing the routing, tracking, and merge management by hand.
 
 ![Factory floor — 5 agents working through an SDLC pipeline](docs/images/factory-floor.png)
 
@@ -28,6 +28,19 @@ tt run sdlc-auto           # run a full plan→implement→test→review→ship 
 ```
 
 **Prerequisites:** Rust toolchain, tmux, and at least one AI coding CLI installed (Claude Code, Codex, or Aider).
+
+## Why Tutti exists
+
+If you already use coding agents, the pain is rarely “the model is bad.”
+It’s usually one of these:
+
+- you are manually routing work between multiple agent sessions
+- you lose track of which agent is doing what
+- agents step on each other’s changes
+- review, test, and handoff loops are inconsistent
+- parallel work creates more supervision overhead than it saves
+
+Tutti fixes that layer.
 
 ## What Tutti Does
 
@@ -85,7 +98,7 @@ wait_for_idle = true
 
 Version it. Share it. Fork someone else's.
 
-## Quick Start
+## Install from source
 
 ```bash
 # Install from crates.io
@@ -307,6 +320,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 ### Automation (Built)
 - `tt run` / `tt verify` reusable workflow execution with persisted run records
+- `tt runs activation` reports whether a workspace has reached its first successful workflow run
 - Run checkpoints persisted at `.tutti/state/workflow-checkpoints/<run_id>.json` + `tt run --resume <run_id>`
 - Workflow step types: `prompt`, `command`, `ensure_running`, `workflow` (nested), `review`, `land`
 - Workflow `review`/`land` steps auto-start required sessions when they are not already running

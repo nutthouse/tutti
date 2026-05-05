@@ -1,6 +1,17 @@
 use crate::error::{Result, TuttiError};
-use crate::state::{load_active_runs, load_run_steps, load_sdlc_run_ledger};
+use crate::state::{ControlEvent, load_active_runs, load_control_events, load_run_steps, load_sdlc_run_ledger};
+use chrono::{DateTime, Utc};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ActivationSummary {
+    activated: bool,
+    first_started_at: Option<DateTime<Utc>>,
+    first_completed_at: Option<DateTime<Utc>>,
+    workflow_name: Option<String>,
+    run_id: Option<String>,
+}
 
 pub fn list() -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -33,6 +44,43 @@ pub fn list() -> Result<()> {
     }
 
     println!("{table}");
+    Ok(())
+}
+
+pub fn activation() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (_config, config_path) = crate::config::TuttiConfig::load(&cwd)?;
+    let project_root = config_path.parent().ok_or_else(|| {
+        TuttiError::ConfigValidation("could not determine workspace root".to_string())
+    })?;
+
+    let events = load_control_events(project_root)?;
+    let summary = summarize_activation(&events);
+
+    println!(
+        "Activated: {}",
+        if summary.activated { "yes" } else { "no" }
+    );
+    println!(
+        "First workflow started: {}",
+        summary
+            .first_started_at
+            .map(|ts| ts.to_rfc3339())
+            .unwrap_or_else(|| "--".to_string())
+    );
+    println!(
+        "First successful workflow: {}",
+        summary
+            .first_completed_at
+            .map(|ts| ts.to_rfc3339())
+            .unwrap_or_else(|| "--".to_string())
+    );
+    println!(
+        "Workflow: {}",
+        summary.workflow_name.unwrap_or_else(|| "--".to_string())
+    );
+    println!("Run: {}", summary.run_id.unwrap_or_else(|| "--".to_string()));
+
     Ok(())
 }
 
@@ -225,11 +273,41 @@ fn format_issue(run: &crate::state::SdlcRunLedgerRecord) -> String {
     }
 }
 
+fn summarize_activation(events: &[ControlEvent]) -> ActivationSummary {
+    let first_started = events
+        .iter()
+        .filter(|event| event.event == "workflow.started")
+        .min_by_key(|event| event.timestamp);
+
+    let first_completed = events
+        .iter()
+        .filter(|event| event.event == "workflow.completed")
+        .min_by_key(|event| event.timestamp);
+
+    ActivationSummary {
+        activated: first_completed.is_some(),
+        first_started_at: first_started.map(|event| event.timestamp),
+        first_completed_at: first_completed.map(|event| event.timestamp),
+        workflow_name: first_completed.and_then(workflow_name_from_event),
+        run_id: first_completed.map(|event| event.correlation_id.clone()),
+    }
+}
+
+fn workflow_name_from_event(event: &ControlEvent) -> Option<String> {
+    event
+        .data
+        .as_ref()
+        .and_then(|data| data.get("workflow_name"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{SdlcRunLedgerRecord, SdlcRunState};
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
 
     fn stub_record(issue_title: Option<&str>) -> SdlcRunLedgerRecord {
         SdlcRunLedgerRecord {
@@ -303,5 +381,61 @@ mod tests {
         let mut ledger = stub_record(None);
         ledger.resume_eligible = true;
         assert!(derive_next_action(&ledger, &[]).contains("tt run --resume"));
+    }
+
+    #[test]
+    fn summarize_activation_reports_first_successful_workflow() {
+        let events = vec![
+            ControlEvent {
+                event: "workflow.started".to_string(),
+                workspace: "demo".to_string(),
+                agent: None,
+                timestamp: Utc.with_ymd_and_hms(2026, 5, 5, 5, 0, 0).unwrap(),
+                correlation_id: "run-1".to_string(),
+                data: Some(json!({"workflow_name": "verify"})),
+            },
+            ControlEvent {
+                event: "workflow.completed".to_string(),
+                workspace: "demo".to_string(),
+                agent: None,
+                timestamp: Utc.with_ymd_and_hms(2026, 5, 5, 5, 2, 0).unwrap(),
+                correlation_id: "run-1".to_string(),
+                data: Some(json!({"workflow_name": "verify", "success": true})),
+            },
+            ControlEvent {
+                event: "workflow.completed".to_string(),
+                workspace: "demo".to_string(),
+                agent: None,
+                timestamp: Utc.with_ymd_and_hms(2026, 5, 5, 5, 5, 0).unwrap(),
+                correlation_id: "run-2".to_string(),
+                data: Some(json!({"workflow_name": "sdlc-auto", "success": true})),
+            },
+        ];
+
+        let summary = summarize_activation(&events);
+        assert!(summary.activated);
+        assert_eq!(summary.run_id.as_deref(), Some("run-1"));
+        assert_eq!(summary.workflow_name.as_deref(), Some("verify"));
+        assert_eq!(
+            summary.first_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 5, 5, 5, 2, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn summarize_activation_reports_not_activated_without_success() {
+        let events = vec![ControlEvent {
+            event: "workflow.started".to_string(),
+            workspace: "demo".to_string(),
+            agent: None,
+            timestamp: Utc.with_ymd_and_hms(2026, 5, 5, 5, 0, 0).unwrap(),
+            correlation_id: "run-1".to_string(),
+            data: Some(json!({"workflow_name": "verify"})),
+        }];
+
+        let summary = summarize_activation(&events);
+        assert!(!summary.activated);
+        assert!(summary.first_started_at.is_some());
+        assert!(summary.first_completed_at.is_none());
     }
 }

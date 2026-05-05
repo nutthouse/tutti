@@ -143,6 +143,7 @@ fn main() {
         ),
         Commands::Runs { command } => match command {
             RunsSubcommand::List => cli::runs::list(),
+            RunsSubcommand::Activation => cli::runs::activation(),
             RunsSubcommand::Show { ref run_id } => cli::runs::show(run_id),
         },
         Commands::Verify {
