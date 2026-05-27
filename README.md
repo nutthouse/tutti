@@ -554,9 +554,10 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 
 MIT
 
-## Credits
+## Notes
 
-Zellij multiplexer support is credited to Chetan Gadgil (`chetan@metrum.ai`), Metrum AI Inc, 2006.
+The Zellij multiplexer path was refined from downstream operator use in the
+Metrum AI fork.
 
 ---
 
