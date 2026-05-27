@@ -1,6 +1,6 @@
 use super::{
-    Multiplexer, SessionMetadata, blocked_inherited_env_vars, command_error, shell_escape_value,
-    should_strip_inherited_env_var,
+    Multiplexer, SessionMetadata, blocked_inherited_env_vars, command_error, is_valid_env_key,
+    shell_escape_value, should_strip_inherited_env_var,
 };
 use crate::config::TmuxMultiplexerConfig;
 use crate::error::{Result, TuttiError};
@@ -59,7 +59,7 @@ impl Multiplexer for TmuxBackend {
         }
 
         for (key, value) in env_vars {
-            if should_strip_inherited_env_var(key) {
+            if should_strip_inherited_env_var(key) || !is_valid_env_key(key) {
                 continue;
             }
             let export_cmd = format!("export {}={}", key, shell_escape_value(value));
@@ -223,7 +223,7 @@ fn send_text_via_tmux_buffer(session: &str, text: &str, bracketed: bool) -> Resu
         ));
     }
 
-    let mut paste_args = vec!["paste-buffer", "-d"];
+    let mut paste_args = vec!["paste-buffer"];
     if bracketed {
         paste_args.push("-p");
     }
@@ -238,16 +238,38 @@ fn send_text_via_tmux_buffer(session: &str, text: &str, bracketed: bool) -> Resu
         ));
     }
 
+    let delete_output = Command::new("tmux")
+        .args(["delete-buffer", "-b", &buffer_name])
+        .output()?;
+    if !delete_output.status.success() {
+        return Err(command_error(
+            "tmux",
+            "delete-buffer",
+            session,
+            &delete_output.stderr,
+        ));
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_strip_inherited_env_var;
+    use super::{is_valid_env_key, should_strip_inherited_env_var};
 
     #[test]
     fn strips_claudecode_env_var_case_insensitive() {
         assert!(should_strip_inherited_env_var("CLAUDECODE"));
         assert!(should_strip_inherited_env_var("claudecode"));
+    }
+
+    #[test]
+    fn validates_shell_env_identifiers() {
+        assert!(is_valid_env_key("FOO"));
+        assert!(is_valid_env_key("_FOO_1"));
+        assert!(!is_valid_env_key(""));
+        assert!(!is_valid_env_key("1FOO"));
+        assert!(!is_valid_env_key("BAD-NAME"));
+        assert!(!is_valid_env_key("BAD; echo nope"));
     }
 }

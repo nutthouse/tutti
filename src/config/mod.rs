@@ -77,10 +77,12 @@ pub struct DefaultsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OrchestratorConfig {
+    /// Terminal multiplexer backend used for agent sessions.
     #[serde(default)]
     pub multiplexer_type: MultiplexerType,
 }
 
+/// Supported terminal multiplexer backends.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MultiplexerType {
@@ -91,16 +93,21 @@ pub enum MultiplexerType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MultiplexerConfig {
+    /// tmux-specific settings.
     #[serde(default)]
     pub tmux: TmuxMultiplexerConfig,
+    /// Zellij-specific settings.
     #[serde(default)]
     pub zellij: ZellijMultiplexerConfig,
 }
 
+/// tmux backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TmuxMultiplexerConfig {
+    /// Logical socket name reserved for future tmux namespacing.
     #[serde(default = "default_tmux_socket_name")]
     pub socket_name: String,
+    /// Preferred pane/window base index reserved for future tmux setup.
     #[serde(default = "default_tmux_base_index")]
     pub base_index: u32,
 }
@@ -116,8 +123,10 @@ impl Default for TmuxMultiplexerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZellijMultiplexerConfig {
+    /// Optional layout path for future Zellij session customization.
     #[serde(default)]
     pub layout_path: Option<String>,
+    /// Optional theme name exported to Zellij-launched sessions.
     #[serde(default)]
     pub theme: Option<String>,
 }

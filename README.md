@@ -450,7 +450,7 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 - `tt doctor` reports pass/warn/fail for the configured multiplexer, profile wiring, runtime binaries, and tool-pack prerequisites
 - `tt doctor` also probes running agents for auth health (`auth/<agent>` checks)
 - `tt doctor` validates serve readiness (`serve/state_dir`, `serve/events_log`, `serve/scheduler`, `serve/port`)
-- CI smoke profile (`.github/workflows/ci.yml`) runs headless `tt doctor --strict` + `tt run smoke-check --strict`
+- GitHub CI smoke profile (`.github/workflows/ci.yml`) runs headless `tt doctor --strict` + `tt run smoke-check --strict`
 
 ### Terminal Multiplexers
 Tutti defaults to tmux for backwards compatibility. Set `[orchestrator].multiplexer_type = "zellij"` to launch, attach, send prompts to, and capture output from Zellij sessions instead.

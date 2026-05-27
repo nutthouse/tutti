@@ -1,6 +1,6 @@
 use super::{
-    Multiplexer, SessionMetadata, blocked_inherited_env_vars, command_error, shell_escape_value,
-    should_strip_inherited_env_var,
+    Multiplexer, SessionMetadata, blocked_inherited_env_vars, command_error, is_valid_env_key,
+    shell_escape_value, should_strip_inherited_env_var,
 };
 use crate::config::ZellijMultiplexerConfig;
 use crate::error::{Result, TuttiError};
@@ -248,7 +248,7 @@ fn build_launch_script(exec_cmd: &str, env_vars: &HashMap<String, String>) -> St
         lines.push(format!("unset {key}"));
     }
     for (key, value) in env_vars {
-        if should_strip_inherited_env_var(key) {
+        if should_strip_inherited_env_var(key) || !is_valid_env_key(key) {
             continue;
         }
         lines.push(format!("export {}={}", key, shell_escape_value(value)));
@@ -322,11 +322,13 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("FOO".to_string(), "bar baz".to_string());
         env.insert("CLAUDECODE".to_string(), "1".to_string());
+        env.insert("BAD-NAME".to_string(), "ignored".to_string());
 
         let script = build_launch_script("codex --help", &env);
         assert!(script.contains("unset CLAUDECODE"));
         assert!(script.contains("export FOO='bar baz'"));
         assert!(!script.contains("export CLAUDECODE"));
+        assert!(!script.contains("BAD-NAME"));
         assert!(script.ends_with("codex --help"));
     }
 

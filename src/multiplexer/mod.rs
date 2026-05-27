@@ -10,31 +10,45 @@ pub mod zellij;
 
 #[derive(Debug, Clone)]
 pub struct SessionMetadata {
+    /// Stable backend session identifier, usually `tutti-{workspace}-{agent}`.
     pub session_id: String,
+    /// Agent name used for backend labels such as Zellij pane names.
     pub target_agent: String,
+    /// Working directory where the agent runtime command starts.
     pub worktree_dir: PathBuf,
 }
 
 pub trait Multiplexer: Send + Sync {
+    /// Verify that the backend executable is available.
     fn check_available(&self) -> Result<()>;
+    /// Spawn a detached session or pane that runs the provided agent command.
     fn spawn_detached(
         &self,
         meta: &SessionMetadata,
         exec_cmd: &str,
         env_vars: &HashMap<String, String>,
     ) -> Result<String>;
+    /// Attach the user's terminal to the running backend session.
     fn attach_interactive(&self, session_id: &str) -> Result<ExitStatus>;
+    /// Terminate a backend session.
     fn kill_session(&self, session_id: &str) -> Result<()>;
+    /// Check whether a backend session is still present.
     fn is_alive(&self, session_id: &str) -> Result<bool>;
+    /// Capture recent terminal output for status, health, dashboard, and logs.
     fn capture_pane(&self, session_id: &str, lines: u32) -> Result<String>;
+    /// Send text to the target pane and submit it.
     fn send_text(&self, session_id: &str, text: &str) -> Result<()>;
+    /// Send one or more Enter keypresses to the target pane.
     fn send_enter_presses(&self, session_id: &str, count: u32) -> Result<()>;
+    /// Set a backend-specific status hint when supported.
     fn set_status_bar(&self, session_id: &str, text: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
 pub struct RuntimeMultiplexerConfig {
+    /// Selected backend kind.
     pub kind: MultiplexerType,
+    /// Backend-specific settings parsed from `tutti.toml`.
     pub config: MultiplexerConfig,
 }
 
@@ -55,17 +69,16 @@ pub fn set_current_config(config: &TuttiConfig) {
         config: config.multiplexer.clone(),
     };
     let lock = CURRENT_CONFIG.get_or_init(|| Mutex::new(RuntimeMultiplexerConfig::default()));
-    if let Ok(mut guard) = lock.lock() {
-        *guard = runtime;
-    }
+    let mut guard = lock.lock().unwrap_or_else(|poison| poison.into_inner());
+    *guard = runtime;
 }
 
 pub fn current_backend() -> Box<dyn Multiplexer> {
-    let runtime = CURRENT_CONFIG
-        .get_or_init(|| Mutex::new(load_runtime_config_from_cwd()))
+    let lock = CURRENT_CONFIG.get_or_init(|| Mutex::new(load_runtime_config_from_cwd()));
+    let runtime = lock
         .lock()
-        .map(|guard| guard.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
     create_multiplexer(&runtime)
 }
 
@@ -111,4 +124,15 @@ pub(crate) fn should_strip_inherited_env_var(key: &str) -> bool {
 
 pub(crate) fn blocked_inherited_env_vars() -> &'static [&'static str] {
     &["CLAUDECODE"]
+}
+
+pub(crate) fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
