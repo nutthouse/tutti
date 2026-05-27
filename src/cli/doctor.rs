@@ -1,4 +1,6 @@
-use crate::config::{GlobalConfig, LaunchMode, LaunchPolicyMode, ToolPackConfig, TuttiConfig};
+use crate::config::{
+    GlobalConfig, LaunchMode, LaunchPolicyMode, MultiplexerType, ToolPackConfig, TuttiConfig,
+};
 use crate::error::{Result, TuttiError};
 use crate::health;
 use crate::permissions::has_configured_policy;
@@ -89,17 +91,21 @@ fn evaluate_checks(
     let mut checks = Vec::new();
     let launch_settings = resolve_launch_settings(config);
 
-    checks.push(if command_exists("tmux") {
+    let multiplexer_command = match config.orchestrator.multiplexer_type {
+        MultiplexerType::Tmux => "tmux",
+        MultiplexerType::Zellij => "zellij",
+    };
+    checks.push(if command_exists(multiplexer_command) {
         DoctorCheck {
-            check: "tmux".to_string(),
+            check: "multiplexer".to_string(),
             status: DoctorStatus::Pass,
-            detail: "tmux is available".to_string(),
+            detail: format!("{multiplexer_command} is available"),
         }
     } else {
         DoctorCheck {
-            check: "tmux".to_string(),
+            check: "multiplexer".to_string(),
             status: DoctorStatus::Fail,
-            detail: "tmux not found on PATH".to_string(),
+            detail: format!("{multiplexer_command} not found on PATH"),
         }
     });
 
@@ -490,7 +496,9 @@ fn print_report(report: &DoctorReport) {
 
 fn suggestion_for_check(check: &DoctorCheck) -> Option<&'static str> {
     match check.check.as_str() {
-        "tmux" if check.status == DoctorStatus::Fail => Some("Install tmux and re-run doctor"),
+        "multiplexer" if check.status == DoctorStatus::Fail => {
+            Some("Install the configured multiplexer and re-run doctor")
+        }
         "auth profile" if check.status == DoctorStatus::Fail => {
             Some("Set workspace.auth.default_profile to an existing profile")
         }
@@ -579,6 +587,8 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            orchestrator: Default::default(),
+            multiplexer: Default::default(),
             launch: None,
             agents: vec![AgentConfig {
                 name: "backend".to_string(),

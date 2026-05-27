@@ -21,6 +21,9 @@ pub enum TuttiError {
     #[error("tmux command failed: {0}")]
     TmuxError(String),
 
+    #[error("multiplexer command failed: {0}")]
+    MultiplexerError(String),
+
     #[error("runtime '{0}' is not installed or not on PATH")]
     RuntimeNotAvailable(String),
 

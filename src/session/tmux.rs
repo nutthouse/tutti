@@ -1,15 +1,13 @@
-use crate::error::{Result, TuttiError};
+use crate::error::Result;
+use crate::multiplexer::{SessionMetadata, current_backend};
 use std::collections::HashMap;
-use std::io::Write;
-use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
-const BLOCKED_INHERITED_ENV_VARS: &[&str] = &["CLAUDECODE"];
-
-/// Check that tmux is installed and on PATH.
+/// Check that the configured terminal multiplexer is installed and on PATH.
+///
+/// Kept under the old name for compatibility with existing call sites.
 pub fn check_tmux() -> Result<()> {
-    which::which("tmux").map_err(|_| TuttiError::TmuxNotInstalled)?;
-    Ok(())
+    current_backend().check_available()
 }
 
 pub struct TmuxSession;
@@ -20,266 +18,47 @@ impl TmuxSession {
         format!("tutti-{team}-{agent}")
     }
 
-    /// Check if a tmux session exists.
     pub fn session_exists(session: &str) -> bool {
-        Command::new("tmux")
-            .args(["has-session", "-t", session])
-            .output()
-            .is_ok_and(|out| out.status.success())
+        current_backend().is_alive(session).unwrap_or(false)
     }
 
-    /// Create a new tmux session and run the given command inside it.
-    /// The session starts a normal shell, then sends the command via `send-keys`
-    /// so the shell survives if the command exits. Environment variables are
-    /// exported before the command runs.
     pub fn create_session(
         session: &str,
         working_dir: &str,
         shell_cmd: &str,
         env_vars: &HashMap<String, String>,
     ) -> Result<()> {
-        // Create a detached session with a normal shell
-        let output = Command::new("tmux")
-            .args(["new-session", "-d", "-s", session, "-c", working_dir])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TuttiError::TmuxError(format!(
-                "failed to create session '{session}': {stderr}"
-            )));
-        }
-
-        // Avoid nested Claude Code detection when Tutti is launched from inside Claude Code.
-        for key in BLOCKED_INHERITED_ENV_VARS {
-            Self::send_text(session, &format!("unset {key}"))?;
-        }
-
-        // Export env vars into the shell
-        for (key, value) in env_vars {
-            if should_strip_inherited_env_var(key) {
-                continue;
-            }
-            let export_cmd = format!("export {}={}", key, shell_escape_value(value));
-            Self::send_text(session, &export_cmd)?;
-        }
-
-        // Send the actual command
-        Self::send_text(session, shell_cmd)?;
-
-        Ok(())
+        let meta = SessionMetadata {
+            session_id: session.to_string(),
+            target_agent: session.to_string(),
+            worktree_dir: PathBuf::from(working_dir),
+        };
+        current_backend()
+            .spawn_detached(&meta, shell_cmd, env_vars)
+            .map(|_| ())
     }
 
-    /// Kill a tmux session.
     pub fn kill_session(session: &str) -> Result<()> {
-        let output = Command::new("tmux")
-            .args(["kill-session", "-t", session])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TuttiError::TmuxError(format!(
-                "failed to kill session '{session}': {stderr}"
-            )));
-        }
-        Ok(())
+        current_backend().kill_session(session)
     }
 
-    /// Capture the visible pane content of a session.
     pub fn capture_pane(session: &str, lines: u32) -> Result<String> {
-        let start_line = -(lines as i64);
-        let output = Command::new("tmux")
-            .args([
-                "capture-pane",
-                "-t",
-                session,
-                "-p",
-                "-S",
-                &start_line.to_string(),
-            ])
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TuttiError::TmuxError(format!(
-                "failed to capture pane for '{session}': {stderr}"
-            )));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        current_backend().capture_pane(session, lines)
     }
 
-    /// Send text to a running session and press Enter.
-    ///
-    /// The entire text is pasted as a single tmux buffer then submitted.
-    /// Multi-line text uses bracketed paste mode (`-p`) so it arrives
-    /// atomically; a second Enter is sent because some TUI applications
-    /// (e.g. codex) consume the first Enter as "finalize paste" rather
-    /// than "submit". Single-line text skips bracketed paste to avoid
-    /// that extra-Enter issue with simple shell commands.
     pub fn send_text(session: &str, text: &str) -> Result<()> {
-        if !Self::session_exists(session) {
-            return Err(TuttiError::TmuxError(format!(
-                "session '{}' is not running",
-                session
-            )));
-        }
-
-        let is_multiline = text.contains('\n');
-
-        if !text.is_empty() {
-            send_text_via_tmux_buffer(session, text, is_multiline)?;
-        }
-
-        // First Enter: for multi-line bracketed pastes, some TUIs treat this
-        // as "close the paste bracket" rather than "submit".
-        send_enter(session)?;
-
-        // Second Enter when bracketed paste was used — actually submits.
-        if is_multiline {
-            send_enter(session)?;
-        }
-
-        Ok(())
+        current_backend().send_text(session, text)
     }
 
-    /// Send one or more Enter keypresses to an existing session.
     pub fn send_enter_presses(session: &str, count: u32) -> Result<()> {
-        if !Self::session_exists(session) {
-            return Err(TuttiError::TmuxError(format!(
-                "session '{}' is not running",
-                session
-            )));
-        }
-        for _ in 0..count.max(1) {
-            send_enter(session)?;
-        }
-        Ok(())
+        current_backend().send_enter_presses(session, count)
     }
 
-    /// Set a sticky status bar on a session (bottom line).
     pub fn set_status_bar(session: &str, text: &str) -> Result<()> {
-        // Enable status bar for this session
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", session, "status", "on"])
-            .output();
-        let _ = Command::new("tmux")
-            .args([
-                "set-option",
-                "-t",
-                session,
-                "status-style",
-                "bg=#1a1a2e,fg=#e0e0e0",
-            ])
-            .output();
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", session, "status-left-length", "120"])
-            .output();
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", session, "status-left", text])
-            .output();
-        let _ = Command::new("tmux")
-            .args(["set-option", "-t", session, "status-right", ""])
-            .output();
-        Ok(())
+        current_backend().set_status_bar(session, text)
     }
 
-    /// Exec into tmux attach (replaces the current process on unix).
     pub fn attach_session(session: &str) -> Result<()> {
-        let status = Command::new("tmux")
-            .args(["attach-session", "-t", session])
-            .status()?;
-
-        if !status.success() {
-            return Err(TuttiError::TmuxError(format!(
-                "failed to attach to session '{session}'"
-            )));
-        }
-        Ok(())
-    }
-}
-
-/// Shell-escape a value for use in `env KEY=VALUE` commands.
-fn shell_escape_value(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn send_enter(session: &str) -> Result<()> {
-    let out = Command::new("tmux")
-        .args(["send-keys", "-t", session, "Enter"])
-        .output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(TuttiError::TmuxError(format!(
-            "failed to send Enter to '{session}': {stderr}"
-        )));
-    }
-    Ok(())
-}
-
-/// Load text into a tmux buffer and paste it into the target session.
-///
-/// When `bracketed` is true, uses `-p` flag for bracketed paste mode so the
-/// receiving application treats embedded newlines as part of the paste rather
-/// than as individual Enter keypresses.
-fn send_text_via_tmux_buffer(session: &str, text: &str, bracketed: bool) -> Result<()> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let buffer_name = format!("tutti-send-{}-{nanos}", std::process::id());
-
-    let mut child = Command::new("tmux")
-        .args(["load-buffer", "-b", &buffer_name, "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes())?;
-    }
-    let load_output = child.wait_with_output()?;
-    if !load_output.status.success() {
-        let stderr = String::from_utf8_lossy(&load_output.stderr);
-        return Err(TuttiError::TmuxError(format!(
-            "failed to load tmux buffer for '{session}': {stderr}"
-        )));
-    }
-
-    let mut paste_args = vec!["paste-buffer", "-d"];
-    if bracketed {
-        paste_args.push("-p");
-    }
-    paste_args.extend(["-b", &buffer_name, "-t", session]);
-    let paste_output = Command::new("tmux").args(&paste_args).output()?;
-    if !paste_output.status.success() {
-        let stderr = String::from_utf8_lossy(&paste_output.stderr);
-        return Err(TuttiError::TmuxError(format!(
-            "failed to paste text to '{session}': {stderr}"
-        )));
-    }
-
-    Ok(())
-}
-
-fn should_strip_inherited_env_var(key: &str) -> bool {
-    BLOCKED_INHERITED_ENV_VARS
-        .iter()
-        .any(|blocked| key.eq_ignore_ascii_case(blocked))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_strip_inherited_env_var;
-
-    #[test]
-    fn strips_claudecode_env_var_case_insensitive() {
-        assert!(should_strip_inherited_env_var("CLAUDECODE"));
-        assert!(should_strip_inherited_env_var("claudecode"));
-    }
-
-    #[test]
-    fn does_not_strip_unrelated_env_var() {
-        assert!(!should_strip_inherited_env_var("OPENAI_API_KEY"));
+        current_backend().attach_interactive(session).map(|_| ())
     }
 }

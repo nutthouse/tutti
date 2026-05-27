@@ -245,6 +245,8 @@ mod tests {
                 worktree: true,
                 runtime: Some("claude-code".to_string()),
             },
+            orchestrator: Default::default(),
+            multiplexer: Default::default(),
             launch: None,
             agents: vec![AgentConfig {
                 name: "backend".to_string(),

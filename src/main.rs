@@ -6,6 +6,7 @@ mod config;
 mod dashboard;
 mod error;
 mod health;
+mod multiplexer;
 mod permissions;
 mod provider;
 mod runtime;

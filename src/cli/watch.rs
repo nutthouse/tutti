@@ -812,6 +812,8 @@ mod tests {
                 }),
             },
             defaults: DefaultsConfig::default(),
+            orchestrator: Default::default(),
+            multiplexer: Default::default(),
             launch: None,
             agents: agents
                 .iter()
