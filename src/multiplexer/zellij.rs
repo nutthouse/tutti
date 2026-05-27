@@ -86,7 +86,7 @@ impl Multiplexer for ZellijBackend {
             "--cwd",
             &meta.worktree_dir.to_string_lossy(),
             "--name",
-            &meta.target_agent,
+            &meta.target_voice,
             "--",
             "bash",
             "-lc",

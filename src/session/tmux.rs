@@ -30,7 +30,7 @@ impl TmuxSession {
     ) -> Result<()> {
         let meta = SessionMetadata {
             session_id: session.to_string(),
-            target_agent: session.to_string(),
+            target_voice: session.to_string(),
             worktree_dir: PathBuf::from(working_dir),
         };
         current_backend()

@@ -12,8 +12,8 @@ pub mod zellij;
 pub struct SessionMetadata {
     /// Stable backend session identifier, usually `tutti-{workspace}-{agent}`.
     pub session_id: String,
-    /// Agent name used for backend labels such as Zellij pane names.
-    pub target_agent: String,
+    /// Voice name used for backend labels such as Zellij pane names.
+    pub target_voice: String,
     /// Working directory where the agent runtime command starts.
     pub worktree_dir: PathBuf,
 }
