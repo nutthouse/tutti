@@ -735,7 +735,10 @@ fn resolve_launch_permissions<'a>(
 }
 
 fn runtime_supports_policy_constrained_no_prompt(runtime_name: &str) -> bool {
-    matches!(runtime_name, "claude-code" | "codex" | "openclaw" | "aider")
+    matches!(
+        runtime_name,
+        "claude-code" | "codex" | "openclaw" | "aider" | "opencode"
+    )
 }
 
 fn build_launch_command(
@@ -855,6 +858,26 @@ fn build_launch_command(
             })?;
             let shim_path = write_shell_policy_shims(project_root, agent_name, "aider", policy)?;
             let policy_appendix = runtime_policy_appendix("Aider", "aider", policy);
+            let prompt = append_policy_prompt(base_prompt, &policy_appendix);
+            let cmd = adapter.build_spawn_command(prompt.as_deref());
+            Ok((
+                wrap_launch_command_with_shim_path(&cmd, &shim_path),
+                LaunchCommandWarnings {
+                    constrained_policy_via_shim: true,
+                    unsupported_constrained_runtime: false,
+                    bypass_mode: false,
+                },
+            ))
+        }
+        "opencode" => {
+            let policy = permissions_policy.ok_or_else(|| {
+                TuttiError::ConfigValidation(
+                    "opencode constrained launch requires configured [permissions] policy"
+                        .to_string(),
+                )
+            })?;
+            let shim_path = write_shell_policy_shims(project_root, agent_name, "opencode", policy)?;
+            let policy_appendix = runtime_policy_appendix("OpenCode", "opencode", policy);
             let prompt = append_policy_prompt(base_prompt, &policy_appendix);
             let cmd = adapter.build_spawn_command(prompt.as_deref());
             Ok((

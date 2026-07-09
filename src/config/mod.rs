@@ -678,7 +678,7 @@ impl TuttiConfig {
         }
 
         // Check runtimes are known
-        let known_runtimes = ["claude-code", "codex", "aider", "openclaw"];
+        let known_runtimes = ["claude-code", "codex", "aider", "openclaw", "opencode"];
         for agent in &self.agents {
             if let Some(rt) = agent.resolved_runtime(&self.defaults, &self.roles)
                 && !known_runtimes.contains(&rt.as_str())
