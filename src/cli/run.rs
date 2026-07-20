@@ -270,25 +270,41 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                 model,
                 policy,
                 text,
+                inject_files,
+                artifact_glob,
+                artifact_name,
+                wait_for_idle,
+                wait_timeout_secs,
+                startup_grace_secs,
                 output_json,
                 ..
-            } => table.add_row(vec![
-                (idx + 1).to_string(),
-                "direct".to_string(),
-                "--".to_string(),
-                "workspace".to_string(),
-                "closed".to_string(),
-                truncate(
-                    &format!(
-                        "provider:{provider} model:{model} policy:{policy} prompt:{text}{}",
-                        output_json
-                            .as_ref()
-                            .map(|path| format!(" [output:{}]", path.display()))
-                            .unwrap_or_default()
-                    ),
-                    80,
-                ),
-            ]),
+            } => {
+                let mut summary =
+                    format!("provider:{provider} model:{model} policy:{policy} prompt:{text}");
+                if !inject_files.is_empty() {
+                    summary = format!("{summary} [inject:{}]", inject_files.len());
+                }
+                if *wait_for_idle {
+                    summary = format!(
+                        "{summary} [wait:{}s startup:{}s]",
+                        wait_timeout_secs, startup_grace_secs
+                    );
+                }
+                if let (Some(glob_pat), Some(name)) = (artifact_glob, artifact_name) {
+                    summary = format!("{summary} [artifact:{name} glob:{glob_pat}]");
+                }
+                if let Some(path) = output_json {
+                    summary = format!("{summary} [output:{}]", path.display());
+                }
+                table.add_row(vec![
+                    (idx + 1).to_string(),
+                    "direct".to_string(),
+                    "--".to_string(),
+                    "workspace".to_string(),
+                    "closed".to_string(),
+                    truncate(&summary, 80),
+                ])
+            }
             crate::automation::ResolvedStep::Command {
                 run,
                 cwd,
@@ -391,6 +407,15 @@ enum DryRunStep {
         model: String,
         policy: String,
         summary: String,
+        inject_files: usize,
+        inject_files_raw: Vec<String>,
+        wait_for_idle: bool,
+        wait_timeout_secs: u64,
+        startup_grace_secs: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact_glob: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         output_json: Option<String>,
     },
@@ -453,6 +478,13 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 model,
                 policy,
                 text,
+                inject_files,
+                inject_files_raw,
+                wait_for_idle,
+                wait_timeout_secs,
+                startup_grace_secs,
+                artifact_glob,
+                artifact_name,
                 output_json,
                 ..
             } => steps.push(DryRunStep::Direct {
@@ -461,6 +493,13 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 model: model.clone(),
                 policy: policy.clone(),
                 summary: text.clone(),
+                inject_files: inject_files.len(),
+                inject_files_raw: inject_files_raw.clone(),
+                wait_for_idle: *wait_for_idle,
+                wait_timeout_secs: *wait_timeout_secs,
+                startup_grace_secs: *startup_grace_secs,
+                artifact_glob: artifact_glob.clone(),
+                artifact_name: artifact_name.clone(),
                 output_json: output_json.as_ref().map(|path| path.display().to_string()),
             }),
             ResolvedStep::Command {
@@ -671,7 +710,14 @@ mod tests {
                 model: "gpt-test".to_string(),
                 policy: "read_only".to_string(),
                 text: "Inspect the repository".to_string(),
+                inject_files: vec![],
+                inject_files_raw: vec!["docs/brief.md".to_string()],
                 output_json: None,
+                wait_for_idle: true,
+                wait_timeout_secs: 120,
+                startup_grace_secs: 5,
+                artifact_glob: Some("out/*.json".to_string()),
+                artifact_name: Some("plan".to_string()),
             }],
         };
 
@@ -681,5 +727,12 @@ mod tests {
         assert_eq!(value["steps"][0]["model"], "gpt-test");
         assert_eq!(value["steps"][0]["policy"], "read_only");
         assert_eq!(value["steps"][0]["summary"], "Inspect the repository");
+        assert_eq!(value["steps"][0]["inject_files"], 0);
+        assert_eq!(value["steps"][0]["inject_files_raw"][0], "docs/brief.md");
+        assert_eq!(value["steps"][0]["wait_for_idle"], true);
+        assert_eq!(value["steps"][0]["wait_timeout_secs"], 120);
+        assert_eq!(value["steps"][0]["startup_grace_secs"], 5);
+        assert_eq!(value["steps"][0]["artifact_glob"], "out/*.json");
+        assert_eq!(value["steps"][0]["artifact_name"], "plan");
     }
 }

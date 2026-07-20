@@ -884,6 +884,16 @@ impl TuttiConfig {
                                 )));
                             }
                         }
+                        if let Some(policy) = policy.as_deref()
+                            && !matches!(policy, "read_only" | "workspace_write")
+                        {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} has unsupported direct policy '{}'; supported policies are read_only and workspace_write",
+                                workflow.name,
+                                idx + 1,
+                                policy
+                            )));
+                        }
                         if direct.unwrap_or(false) && (provider.is_none() || model.is_none()) {
                             return Err(TuttiError::ConfigValidation(format!(
                                 "workflow '{}', step {} sets direct = true but is missing provider/model; set both fields explicitly",
@@ -2568,6 +2578,35 @@ direct = true
         assert!(err.to_string().contains("direct = true"));
         assert!(err.to_string().contains("provider"));
         assert!(err.to_string().contains("model"));
+    }
+
+    #[test]
+    fn direct_prompt_rejects_unknown_policy() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+
+[[workflow]]
+name = "plan"
+
+[[workflow.step]]
+type = "prompt"
+agent = "planner"
+text = "Inspect the repository"
+direct = true
+provider = "openai"
+model = "gpt-test"
+policy = "read_ony"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+
+        assert!(err.to_string().contains("unsupported direct policy"));
+        assert!(err.to_string().contains("read_only"));
+        assert!(err.to_string().contains("workspace_write"));
     }
 
     #[test]

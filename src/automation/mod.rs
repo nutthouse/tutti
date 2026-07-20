@@ -216,8 +216,17 @@ impl<'a> WorkflowResolver<'a> {
                             model,
                             policy: policy.clone().unwrap_or_else(|| "read_only".to_string()),
                             text: text.clone(),
+                            inject_files: self
+                                .resolve_prompt_injected_files(effective_agent, inject_files),
+                            inject_files_raw: inject_files.clone(),
                             output_json: self
                                 .resolve_prompt_output_path(effective_agent, output_json)?,
+                            wait_for_idle: wait_for_idle.unwrap_or(false),
+                            wait_timeout_secs: wait_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+                            startup_grace_secs: startup_grace_secs
+                                .unwrap_or(DEFAULT_STARTUP_GRACE_SECS),
+                            artifact_glob: artifact_glob.clone(),
+                            artifact_name: artifact_name.clone(),
                         });
                         continue;
                     }
@@ -544,7 +553,14 @@ pub enum ResolvedStep {
         model: String,
         policy: String,
         text: String,
+        inject_files: Vec<PromptInjectedFile>,
+        inject_files_raw: Vec<String>,
         output_json: Option<PathBuf>,
+        wait_for_idle: bool,
+        wait_timeout_secs: u64,
+        startup_grace_secs: u64,
+        artifact_glob: Option<String>,
+        artifact_name: Option<String>,
     },
     Command {
         step_id: Option<String>,
@@ -5228,12 +5244,83 @@ mod tests {
                 model,
                 policy,
                 text,
+                inject_files,
+                inject_files_raw,
+                wait_for_idle,
+                wait_timeout_secs,
+                startup_grace_secs,
+                artifact_glob,
+                artifact_name,
                 ..
             } => {
                 assert_eq!(provider, "openai");
                 assert_eq!(model, "gpt-test");
                 assert_eq!(policy, "read_only");
                 assert_eq!(text, "Inspect the repository");
+                assert!(inject_files.is_empty());
+                assert!(inject_files_raw.is_empty());
+                assert!(!wait_for_idle);
+                assert_eq!(*wait_timeout_secs, DEFAULT_TIMEOUT_SECS);
+                assert_eq!(*startup_grace_secs, DEFAULT_STARTUP_GRACE_SECS);
+                assert!(artifact_glob.is_none());
+                assert!(artifact_name.is_none());
+            }
+            _ => panic!("expected direct step"),
+        }
+    }
+
+    #[test]
+    fn resolver_direct_step_preserves_prompt_inputs_and_controls() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut workflow = prompt_workflow(
+            Some(true),
+            Some("openai"),
+            Some("gpt-test"),
+            Some("workspace_write"),
+        );
+        if let WorkflowStepConfig::Prompt {
+            inject_files,
+            wait_for_idle,
+            wait_timeout_secs,
+            startup_grace_secs,
+            artifact_glob,
+            artifact_name,
+            ..
+        } = &mut workflow.steps[0]
+        {
+            inject_files.push("docs/brief.md".to_string());
+            *wait_for_idle = Some(true);
+            *wait_timeout_secs = Some(123);
+            *startup_grace_secs = Some(7);
+            *artifact_glob = Some("out/*.json".to_string());
+            *artifact_name = Some("plan".to_string());
+        }
+        let config = sample_config(workflow, vec![]);
+
+        let resolved = WorkflowResolver::new(&config, dir.path())
+            .resolve("plan", None, &run_options(false))
+            .unwrap();
+
+        match &resolved.steps[0] {
+            ResolvedStep::Direct {
+                inject_files,
+                inject_files_raw,
+                wait_for_idle,
+                wait_timeout_secs,
+                startup_grace_secs,
+                artifact_glob,
+                artifact_name,
+                policy,
+                ..
+            } => {
+                assert_eq!(policy, "workspace_write");
+                assert_eq!(inject_files.len(), 1);
+                assert_eq!(inject_files_raw, &vec!["docs/brief.md".to_string()]);
+                assert!(*wait_for_idle);
+                assert_eq!(*wait_timeout_secs, 123);
+                assert_eq!(*startup_grace_secs, 7);
+                assert_eq!(artifact_glob.as_deref(), Some("out/*.json"));
+                assert_eq!(artifact_name.as_deref(), Some("plan"));
             }
             _ => panic!("expected direct step"),
         }
