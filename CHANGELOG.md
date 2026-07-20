@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **OpenCode runtime adapter**: agents can now set `runtime = "opencode"`.
+  The adapter launches the OpenCode TUI with the agent prompt via `--prompt`,
+  and is wired through config validation, `tt doctor`, and constrained-launch
+  shell-policy shims like the other CLI runtimes.
+
 ## [0.10.1] - 2026-05-05
 
 ### Added

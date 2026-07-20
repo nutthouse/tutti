@@ -2,6 +2,7 @@ pub mod aider;
 pub mod claude_code;
 pub mod codex;
 pub mod openclaw;
+pub mod opencode;
 use crate::error::{Result, TuttiError};
 use serde::{Deserialize, Serialize};
 
@@ -358,6 +359,7 @@ pub fn get_adapter(
         "codex" => &codex::CONFIG,
         "aider" => &aider::CONFIG,
         "openclaw" => &openclaw::CONFIG,
+        "opencode" => &opencode::CONFIG,
         _ => return None,
     };
     Some(Box::new(CommonAdapter {
@@ -401,6 +403,7 @@ pub fn compatible_command_override<'a>(
         "codex" => command_lc.contains("codex") || provider == "openai",
         "aider" => command_lc.contains("aider"),
         "openclaw" => command_lc.contains("openclaw") || provider == "openclaw",
+        "opencode" => command_lc.contains("opencode") || provider == "opencode",
         _ => false,
     };
 
@@ -688,6 +691,43 @@ mod tests {
     fn openclaw_spawn_without_prompt() {
         let a = adapter("openclaw");
         assert_eq!(a.build_spawn_command(None), "openclaw");
+    }
+
+    #[test]
+    fn opencode_detect_working_from_spinner() {
+        let a = adapter("opencode");
+        assert_eq!(a.detect_status("⠋ Thinking"), AgentStatus::Working);
+    }
+
+    #[test]
+    fn opencode_detect_unknown() {
+        let a = adapter("opencode");
+        assert_eq!(
+            a.detect_status("random output with nothing recognizable"),
+            AgentStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn opencode_spawn_with_prompt() {
+        let a = adapter("opencode");
+        let cmd = a.build_spawn_command(Some("You are a backend developer"));
+        assert!(cmd.contains("opencode"));
+        assert!(cmd.contains("--prompt"));
+    }
+
+    #[test]
+    fn opencode_spawn_without_prompt() {
+        let a = adapter("opencode");
+        assert_eq!(a.build_spawn_command(None), "opencode");
+    }
+
+    #[test]
+    fn opencode_override_matches_runtime() {
+        assert_eq!(
+            compatible_command_override("opencode", Some("opencode"), Some("opencode")),
+            Some("opencode")
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 cargo install tutti
 ```
 
-Tutti is the operations layer above Claude Code, Codex, Aider, OpenClaw, and API-direct agents. It gives each agent a role, worktree, workflow, audit trail, and dashboard so issue intake, implementation, review, CI, and merge gates happen as repeatable "org code" in `tutti.toml`.
+Tutti is the operations layer above Claude Code, Codex, Aider, OpenClaw, OpenCode, and API-direct agents. It gives each agent a role, worktree, workflow, audit trail, and dashboard so issue intake, implementation, review, CI, and merge gates happen as repeatable "org code" in `tutti.toml`.
 
 Agent SDKs help you build agents. Tutti helps you **run agent work**.
 
@@ -45,7 +45,7 @@ tt init --template minimal          # 2-agent starter
 Tutti models the engineering loop as pluggable operational stages:
 
 1. **Intake**: GitHub issue, Linear ticket, Jira ticket, local queue, or webhook event.
-2. **Execution**: Claude Code, Codex, Aider, OpenClaw, or API-direct model providers.
+2. **Execution**: Claude Code, Codex, Aider, OpenClaw, OpenCode, or API-direct model providers.
 3. **Review**: CodeRabbit, Claude/Codex reviewer packets, human approval, CI, or policy checks.
 4. **Gate**: required checks, resolved review threads, approval state, cost/policy limits.
 5. **Record**: run ledger, artifacts, logs, dashboard events, and replayable state.
@@ -148,7 +148,7 @@ source ~/.zshrc
 
 ### Built and usable now
 - Core CLI commands: `init`, `up`, `down`, `status`, `voices`, `watch`, `switch`, `diff`, `detect`, `land`, `review`, `send`, `handoff`, `attach`, `peek`, `logs`, `usage`, `run`, `verify`, `doctor`, `permissions`, `workspaces`, `issue-claim`
-- Runtime adapters: Claude Code, Codex CLI, Aider, OpenClaw
+- Runtime adapters: Claude Code, Codex CLI, Aider, OpenClaw, OpenCode
 - API-direct spine: `ModelProvider`, OpenAI-compatible provider, tool execution loop, policy gate, SQLite event log
 - Template packs: `tt init --template gstack-startup` generates a fully configured team from built-in or custom templates, with repo auto-detection
 - Role mapping: `[roles]` table maps logical roles to runtimes — swap providers without editing every agent

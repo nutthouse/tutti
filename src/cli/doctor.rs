@@ -153,7 +153,12 @@ fn evaluate_checks(
         agent
             .resolved_runtime(&config.defaults, &config.roles)
             .as_deref()
-            .is_some_and(|rt| matches!(rt, "claude-code" | "codex" | "openclaw" | "aider"))
+            .is_some_and(|rt| {
+                matches!(
+                    rt,
+                    "claude-code" | "codex" | "openclaw" | "aider" | "opencode"
+                )
+            })
     });
     let policy_configured = has_configured_policy(global);
     if launch_requires_constrained_policy(launch_settings) && launch_targets_supported_runtime {
@@ -187,7 +192,7 @@ fn evaluate_checks(
             agent
                 .resolved_runtime(&config.defaults, &config.roles)
                 .as_deref()
-                .is_some_and(|rt| matches!(rt, "codex" | "openclaw" | "aider"))
+                .is_some_and(|rt| matches!(rt, "codex" | "openclaw" | "aider" | "opencode"))
         })
     {
         checks.push(DoctorCheck {
