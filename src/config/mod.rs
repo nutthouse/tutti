@@ -170,6 +170,14 @@ pub enum WorkflowStepConfig {
         artifact_glob: Option<String>,
         #[serde(default)]
         artifact_name: Option<String>,
+        #[serde(default)]
+        direct: Option<bool>,
+        #[serde(default)]
+        provider: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        policy: Option<String>,
     },
     Command {
         #[serde(default)]
@@ -830,6 +838,10 @@ impl TuttiConfig {
                         startup_grace_secs,
                         artifact_glob,
                         artifact_name,
+                        direct,
+                        provider,
+                        model,
+                        policy,
                         ..
                     } => {
                         // Allow wait_timeout_secs/startup_grace_secs when artifact_glob
@@ -855,6 +867,36 @@ impl TuttiConfig {
                         if text.trim().is_empty() {
                             return Err(TuttiError::ConfigValidation(format!(
                                 "workflow '{}', step {} has empty prompt text",
+                                workflow.name,
+                                idx + 1
+                            )));
+                        }
+                        for (field, value) in [
+                            ("provider", provider.as_deref()),
+                            ("model", model.as_deref()),
+                            ("policy", policy.as_deref()),
+                        ] {
+                            if value.is_some_and(|value| value.trim().is_empty()) {
+                                return Err(TuttiError::ConfigValidation(format!(
+                                    "workflow '{}', step {} has empty direct {field}",
+                                    workflow.name,
+                                    idx + 1
+                                )));
+                            }
+                        }
+                        if let Some(policy) = policy.as_deref()
+                            && !matches!(policy, "read_only" | "workspace_write")
+                        {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} has unsupported direct policy '{}'; supported policies are read_only and workspace_write",
+                                workflow.name,
+                                idx + 1,
+                                policy
+                            )));
+                        }
+                        if direct.unwrap_or(false) && (provider.is_none() || model.is_none()) {
+                            return Err(TuttiError::ConfigValidation(format!(
+                                "workflow '{}', step {} sets direct = true but is missing provider/model; set both fields explicitly",
                                 workflow.name,
                                 idx + 1
                             )));
@@ -2468,6 +2510,103 @@ name = "test"
 "#;
         let config: TuttiConfig = toml::from_str(toml_str).unwrap();
         assert!(config.webhooks.is_empty());
+    }
+
+    #[test]
+    fn direct_prompt_metadata_parses_from_toml() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+runtime = "claude-code"
+
+[[workflow]]
+name = "plan"
+
+[[workflow.step]]
+type = "prompt"
+agent = "planner"
+text = "Inspect the repository"
+direct = true
+provider = "openai"
+model = "gpt-test"
+policy = "workspace_write"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        config.validate().unwrap();
+
+        match &config.workflows[0].steps[0] {
+            WorkflowStepConfig::Prompt {
+                direct,
+                provider,
+                model,
+                policy,
+                ..
+            } => {
+                assert_eq!(*direct, Some(true));
+                assert_eq!(provider.as_deref(), Some("openai"));
+                assert_eq!(model.as_deref(), Some("gpt-test"));
+                assert_eq!(policy.as_deref(), Some("workspace_write"));
+            }
+            _ => panic!("expected prompt"),
+        }
+    }
+
+    #[test]
+    fn direct_prompt_requires_explicit_provider_and_model() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+
+[[workflow]]
+name = "plan"
+
+[[workflow.step]]
+type = "prompt"
+agent = "planner"
+text = "Inspect the repository"
+direct = true
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+
+        assert!(err.to_string().contains("direct = true"));
+        assert!(err.to_string().contains("provider"));
+        assert!(err.to_string().contains("model"));
+    }
+
+    #[test]
+    fn direct_prompt_rejects_unknown_policy() {
+        let toml_str = r#"
+[workspace]
+name = "test"
+
+[[agent]]
+name = "planner"
+
+[[workflow]]
+name = "plan"
+
+[[workflow.step]]
+type = "prompt"
+agent = "planner"
+text = "Inspect the repository"
+direct = true
+provider = "openai"
+model = "gpt-test"
+policy = "read_ony"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate().unwrap_err();
+
+        assert!(err.to_string().contains("unsupported direct policy"));
+        assert!(err.to_string().contains("read_only"));
+        assert!(err.to_string().contains("workspace_write"));
     }
 
     #[test]

@@ -137,15 +137,17 @@ fn main() {
             json,
             strict,
             dry_run,
-        } => cli::run::run(
-            workflow.as_deref(),
-            resume.as_deref(),
+            direct,
+        } => cli::run::run(cli::run::RunRequest {
+            workflow: workflow.as_deref(),
+            resume: resume.as_deref(),
             list,
-            agent.as_deref(),
+            agent: agent.as_deref(),
             json,
             strict,
             dry_run,
-        ),
+            direct,
+        }),
         Commands::Runs { command } => match command {
             RunsSubcommand::List => cli::runs::list(),
             RunsSubcommand::Show { ref run_id } => cli::runs::show(run_id),

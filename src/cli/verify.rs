@@ -42,6 +42,7 @@ pub fn run(
         strict,
         // Verify defaults to lenient unless strict is explicitly requested.
         force_open_commands: !strict,
+        direct: false,
         command_policy,
         retry_policy,
         origin: ExecutionOrigin::Verify,

@@ -735,7 +735,16 @@ fn execute_action(action: &str, body: &Value, target: &WorkspaceTarget) -> Resul
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             with_project_root(&target.project_root, || {
-                super::run::run(Some(workflow), None, false, agent, false, strict, dry_run)
+                super::run::run(super::run::RunRequest {
+                    workflow: Some(workflow),
+                    resume: None,
+                    list: false,
+                    agent,
+                    json: false,
+                    strict,
+                    dry_run,
+                    direct: false,
+                })
             })?;
             Ok(json!({
                 "workspace": target.name,
@@ -843,15 +852,16 @@ fn route_webhook(request: &mut Request, targets: &[WorkspaceTarget]) -> Result<V
     for wh in &matched {
         if let Some(workflow) = &wh.workflow {
             with_project_root(&target.project_root, || {
-                super::run::run(
-                    Some(workflow),
-                    None,
-                    false,
-                    wh.agent.as_deref(),
-                    false,
-                    false,
-                    false,
-                )
+                super::run::run(super::run::RunRequest {
+                    workflow: Some(workflow),
+                    resume: None,
+                    list: false,
+                    agent: wh.agent.as_deref(),
+                    json: false,
+                    strict: false,
+                    dry_run: false,
+                    direct: false,
+                })
             })?;
             webhook::log_event(
                 &target.project_root,

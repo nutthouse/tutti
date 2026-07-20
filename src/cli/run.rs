@@ -10,21 +10,24 @@ use crate::{budget, budget::BudgetGuardOutcome};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
 
-pub fn run(
-    workflow: Option<&str>,
-    resume: Option<&str>,
-    list: bool,
-    agent: Option<&str>,
-    json: bool,
-    strict: bool,
-    dry_run: bool,
-) -> Result<()> {
+pub struct RunRequest<'a> {
+    pub workflow: Option<&'a str>,
+    pub resume: Option<&'a str>,
+    pub list: bool,
+    pub agent: Option<&'a str>,
+    pub json: bool,
+    pub strict: bool,
+    pub dry_run: bool,
+    pub direct: bool,
+}
+
+pub fn run(request: RunRequest<'_>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (config, config_path) = TuttiConfig::load(&cwd)?;
     config.validate()?;
 
-    if list {
-        print_workflow_list(&config, json)?;
+    if request.list {
+        print_workflow_list(&config, request.json)?;
         return Ok(());
     }
 
@@ -32,7 +35,7 @@ pub fn run(
         TuttiError::ConfigValidation("could not determine workspace root".to_string())
     })?;
 
-    let resume_context = if let Some(run_id) = resume {
+    let resume_context = if let Some(run_id) = request.resume {
         load_resume_context(project_root, run_id)?
     } else {
         None
@@ -41,14 +44,14 @@ pub fn run(
     let workflow_name = if let Some(ctx) = resume_context.as_ref() {
         ctx.workflow_name.as_str()
     } else {
-        workflow.ok_or_else(|| {
+        request.workflow.ok_or_else(|| {
             TuttiError::ConfigValidation(
                 "workflow name is required unless --list or --resume is set".to_string(),
             )
         })?
     };
 
-    let effective_agent = agent.or_else(|| {
+    let effective_agent = request.agent.or_else(|| {
         resume_context
             .as_ref()
             .and_then(|r| r.agent_scope.as_deref())
@@ -56,7 +59,7 @@ pub fn run(
     let budget_outcome = budget::enforce_pre_exec(&config, project_root, "run", effective_agent)?;
     print_budget_warnings(&budget_outcome);
 
-    let effective_strict = strict || resume_context.as_ref().is_some_and(|r| r.strict);
+    let effective_strict = request.strict || resume_context.as_ref().is_some_and(|r| r.strict);
     let global = GlobalConfig::load().ok();
     let command_policy = global.as_ref().and_then(|g| g.permissions.clone());
     let retry_policy = global
@@ -66,6 +69,7 @@ pub fn run(
     let options = ExecuteOptions {
         strict: effective_strict,
         force_open_commands: false,
+        direct: request.direct,
         command_policy,
         retry_policy,
         origin: ExecutionOrigin::Run,
@@ -113,23 +117,24 @@ pub fn run(
         }
     }
 
-    if dry_run {
+    if request.dry_run {
         // Validate artifact_glob dependencies at dry-run time
         for (idx, step) in resolved.steps.iter().enumerate() {
-            if let crate::automation::ResolvedStep::Prompt {
-                artifact_glob: Some(glob_pat),
-                ..
-            } = step
-                && glob_pat.contains("{slug}")
-                && let Err(e) = crate::automation::validate_gstack_slug_available()
-            {
-                return Err(crate::error::TuttiError::ConfigValidation(format!(
-                    "workflow step {} uses {{slug}} in artifact_glob but {e}",
-                    idx + 1
-                )));
+            let artifact_glob = match step {
+                ResolvedStep::Prompt { artifact_glob, .. }
+                | ResolvedStep::Direct { artifact_glob, .. } => artifact_glob.as_deref(),
+                _ => None,
+            };
+            if artifact_glob.is_some_and(|glob_pat| glob_pat.contains("{slug}")) {
+                crate::automation::validate_gstack_slug_available().map_err(|e| {
+                    crate::error::TuttiError::ConfigValidation(format!(
+                        "workflow step {} uses {{slug}} in artifact_glob but {e}",
+                        idx + 1
+                    ))
+                })?;
             }
         }
-        if json {
+        if request.json {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serialize_dry_run(&resolved, effective_strict))?
@@ -148,7 +153,7 @@ pub fn run(
         effective_agent,
         resume_context.as_ref(),
     )?;
-    if json {
+    if request.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print_execution_result(&result);
@@ -261,6 +266,46 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                     truncate(&summary, 80),
                 ])
             }
+            ResolvedStep::Direct {
+                provider,
+                model,
+                policy,
+                text,
+                inject_files,
+                artifact_glob,
+                artifact_name,
+                wait_for_idle,
+                wait_timeout_secs,
+                startup_grace_secs,
+                output_json,
+                ..
+            } => {
+                let mut summary =
+                    format!("provider:{provider} model:{model} policy:{policy} prompt:{text}");
+                if !inject_files.is_empty() {
+                    summary = format!("{summary} [inject:{}]", inject_files.len());
+                }
+                if *wait_for_idle {
+                    summary = format!(
+                        "{summary} [wait:{}s startup:{}s]",
+                        wait_timeout_secs, startup_grace_secs
+                    );
+                }
+                if let (Some(glob_pat), Some(name)) = (artifact_glob, artifact_name) {
+                    summary = format!("{summary} [artifact:{name} glob:{glob_pat}]");
+                }
+                if let Some(path) = output_json {
+                    summary = format!("{summary} [output:{}]", path.display());
+                }
+                table.add_row(vec![
+                    (idx + 1).to_string(),
+                    "direct".to_string(),
+                    "--".to_string(),
+                    "workspace".to_string(),
+                    "closed".to_string(),
+                    truncate(&summary, 80),
+                ])
+            }
             crate::automation::ResolvedStep::Command {
                 run,
                 cwd,
@@ -357,6 +402,24 @@ enum DryRunStep {
         #[serde(skip_serializing_if = "Option::is_none")]
         artifact_name: Option<String>,
     },
+    Direct {
+        index: usize,
+        provider: String,
+        model: String,
+        policy: String,
+        summary: String,
+        inject_files: usize,
+        inject_files_raw: Vec<String>,
+        wait_for_idle: bool,
+        wait_timeout_secs: u64,
+        startup_grace_secs: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact_glob: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_json: Option<String>,
+    },
     Command {
         index: usize,
         agent: Option<String>,
@@ -410,6 +473,35 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 inject_files: inject_files.len(),
                 artifact_glob: artifact_glob.clone(),
                 artifact_name: artifact_name.clone(),
+            }),
+            ResolvedStep::Direct {
+                provider,
+                model,
+                policy,
+                text,
+                inject_files,
+                inject_files_raw,
+                wait_for_idle,
+                wait_timeout_secs,
+                startup_grace_secs,
+                artifact_glob,
+                artifact_name,
+                output_json,
+                ..
+            } => steps.push(DryRunStep::Direct {
+                index: idx + 1,
+                provider: provider.clone(),
+                model: model.clone(),
+                policy: policy.clone(),
+                summary: text.clone(),
+                inject_files: inject_files.len(),
+                inject_files_raw: inject_files_raw.clone(),
+                wait_for_idle: *wait_for_idle,
+                wait_timeout_secs: *wait_timeout_secs,
+                startup_grace_secs: *startup_grace_secs,
+                artifact_glob: artifact_glob.clone(),
+                artifact_name: artifact_name.clone(),
+                output_json: output_json.as_ref().map(|path| path.display().to_string()),
             }),
             ResolvedStep::Command {
                 run,
@@ -605,5 +697,43 @@ mod tests {
             }
             _ => panic!("expected command"),
         }
+    }
+
+    #[test]
+    fn serialize_dry_run_contains_direct_metadata_and_prompt_summary() {
+        let workflow = ResolvedWorkflow {
+            name: "plan".to_string(),
+            description: None,
+            steps: vec![ResolvedStep::Direct {
+                step_id: Some("inspect".to_string()),
+                depends_on: vec![],
+                provider: "openai".to_string(),
+                model: "gpt-test".to_string(),
+                policy: "read_only".to_string(),
+                text: "Inspect the repository".to_string(),
+                inject_files: vec![],
+                inject_files_raw: vec!["docs/brief.md".to_string()],
+                output_json: None,
+                wait_for_idle: true,
+                wait_timeout_secs: 120,
+                startup_grace_secs: 5,
+                artifact_glob: Some("out/*.json".to_string()),
+                artifact_name: Some("plan".to_string()),
+            }],
+        };
+
+        let value = serde_json::to_value(serialize_dry_run(&workflow, false)).unwrap();
+        assert_eq!(value["steps"][0]["type"], "direct");
+        assert_eq!(value["steps"][0]["provider"], "openai");
+        assert_eq!(value["steps"][0]["model"], "gpt-test");
+        assert_eq!(value["steps"][0]["policy"], "read_only");
+        assert_eq!(value["steps"][0]["summary"], "Inspect the repository");
+        assert_eq!(value["steps"][0]["inject_files"], 0);
+        assert_eq!(value["steps"][0]["inject_files_raw"][0], "docs/brief.md");
+        assert_eq!(value["steps"][0]["wait_for_idle"], true);
+        assert_eq!(value["steps"][0]["wait_timeout_secs"], 120);
+        assert_eq!(value["steps"][0]["startup_grace_secs"], 5);
+        assert_eq!(value["steps"][0]["artifact_glob"], "out/*.json");
+        assert_eq!(value["steps"][0]["artifact_name"], "plan");
     }
 }
