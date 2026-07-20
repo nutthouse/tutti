@@ -120,17 +120,18 @@ pub fn run(request: RunRequest<'_>) -> Result<()> {
     if request.dry_run {
         // Validate artifact_glob dependencies at dry-run time
         for (idx, step) in resolved.steps.iter().enumerate() {
-            if let crate::automation::ResolvedStep::Prompt {
-                artifact_glob: Some(glob_pat),
-                ..
-            } = step
-                && glob_pat.contains("{slug}")
-                && let Err(e) = crate::automation::validate_gstack_slug_available()
-            {
-                return Err(crate::error::TuttiError::ConfigValidation(format!(
-                    "workflow step {} uses {{slug}} in artifact_glob but {e}",
-                    idx + 1
-                )));
+            let artifact_glob = match step {
+                ResolvedStep::Prompt { artifact_glob, .. }
+                | ResolvedStep::Direct { artifact_glob, .. } => artifact_glob.as_deref(),
+                _ => None,
+            };
+            if artifact_glob.is_some_and(|glob_pat| glob_pat.contains("{slug}")) {
+                crate::automation::validate_gstack_slug_available().map_err(|e| {
+                    crate::error::TuttiError::ConfigValidation(format!(
+                        "workflow step {} uses {{slug}} in artifact_glob but {e}",
+                        idx + 1
+                    ))
+                })?;
             }
         }
         if request.json {
