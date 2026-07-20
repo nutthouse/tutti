@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Configurable terminal multiplexer support: `tmux` remains the default, with
+  Zellij available via `[orchestrator].multiplexer_type = "zellij"`.
+- Zellij-backed launch, attach, prompt send, pane capture, health/workflow
+  waits, and shutdown paths for agent sessions.
+- Integration coverage for Zellij `tt send --auto-up`, `tt peek`, and `tt down`.
+
 ## [0.10.1] - 2026-05-05
 
 ### Added

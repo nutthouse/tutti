@@ -38,7 +38,7 @@ tt init --template rust-cli         # 3-agent Rust project team
 tt init --template minimal          # 2-agent starter
 ```
 
-**Prerequisites:** Rust toolchain, tmux, and at least one AI coding CLI installed for agent sessions (Claude Code, Codex, or Aider). Command-only workflows such as the Rust template's `verify` can run before you launch agents. For non-Rust repos, start with `tt init` or `tt init --template minimal`, then add the smallest verification command your project already trusts.
+**Prerequisites:** Rust toolchain, tmux or Zellij, and at least one AI coding CLI installed for agent sessions (Claude Code, Codex, or Aider). Command-only workflows such as the Rust template's `verify` can run before you launch agents. For non-Rust repos, start with `tt init` or `tt init --template minimal`, then add the smallest verification command your project already trusts.
 
 ## The Agent Ops Loop
 
@@ -55,7 +55,7 @@ The built-in Tutti-for-Tutti workflow uses GitHub issue intake and CodeRabbit re
 ## What Tutti Does
 
 - **Defines agent operations as code** in `tutti.toml`: roles, runtimes, workflows, hooks, gates, and policies
-- **Spawns and manages** multiple AI coding agent sessions (Claude Code, Codex, Aider) in tmux
+- **Spawns and manages** multiple AI coding agent sessions (Claude Code, Codex, Aider) in tmux or Zellij
 - **Isolates each agent** in its own git worktree to prevent merge conflicts
 - **Orchestrates workflows** — chain prompt steps, shell commands, and agent coordination into repeatable pipelines defined in `tutti.toml`
 - **Web dashboard** at `:4040` — factory-floor view of all agents with real-time SSE updates, state-driven visuals (working/idle/stopped/blocked), and workflow run tracking
@@ -447,10 +447,22 @@ Reusable prompt components and skills are **phrases**. A phrase might be a CLAUD
 
 ### Tool Packs (Built, Opt-in)
 - Declarative `[[tool_pack]]` blocks in `tutti.toml` (`required_commands`, `required_env`)
-- `tt doctor` reports pass/warn/fail for tmux, profile wiring, runtime binaries, and tool-pack prerequisites
+- `tt doctor` reports pass/warn/fail for the configured multiplexer, profile wiring, runtime binaries, and tool-pack prerequisites
 - `tt doctor` also probes running agents for auth health (`auth/<agent>` checks)
 - `tt doctor` validates serve readiness (`serve/state_dir`, `serve/events_log`, `serve/scheduler`, `serve/port`)
-- CI smoke profile (`.github/workflows/ci.yml`) runs headless `tt doctor --strict` + `tt run smoke-check --strict`
+- GitHub CI smoke profile (`.github/workflows/ci.yml`) runs headless `tt doctor --strict` + `tt run smoke-check --strict`
+
+### Terminal Multiplexers
+Tutti defaults to tmux for backwards compatibility. Set `[orchestrator].multiplexer_type = "zellij"` to launch, attach, send prompts to, and capture output from Zellij sessions instead.
+
+```toml
+[orchestrator]
+multiplexer_type = "zellij"
+
+[multiplexer.zellij]
+layout_path = "./.tutti/layouts/agent_default.kdl"
+theme = "dracula"
+```
 
 ### Community (Planned)
 - Share and discover arrangements (team configs)
@@ -541,6 +553,11 @@ Tutti is early. If this resonates with how you work, we want to hear from you.
 ## License
 
 MIT
+
+## Notes
+
+The Zellij multiplexer path was refined from downstream operator use in the
+Metrum AI fork.
 
 ---
 

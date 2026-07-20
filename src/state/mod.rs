@@ -432,6 +432,7 @@ impl From<&TuttiError> for FailureCategory {
             TuttiError::Git(_) | TuttiError::Worktree(_) => FailureCategory::Routing,
             TuttiError::TmuxNotInstalled
             | TuttiError::TmuxError(_)
+            | TuttiError::MultiplexerError(_)
             | TuttiError::RuntimeNotAvailable(_)
             | TuttiError::RuntimeUnknown(_)
             | TuttiError::AgentNotRunning(_) => FailureCategory::Runtime,
@@ -483,6 +484,9 @@ pub fn classify_failure(error: &TuttiError) -> FailureAttribution {
         }
         TuttiError::TmuxNotInstalled => "Install tmux: brew install tmux".to_string(),
         TuttiError::TmuxError(_) => "Check tmux is running and sessions are accessible".to_string(),
+        TuttiError::MultiplexerError(_) => {
+            "Check the configured multiplexer is installed and sessions are accessible".to_string()
+        }
         TuttiError::RuntimeNotAvailable(rt) => {
             format!("Ensure '{rt}' is installed and on PATH")
         }

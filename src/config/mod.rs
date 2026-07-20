@@ -12,6 +12,10 @@ pub struct TuttiConfig {
     pub workspace: WorkspaceConfig,
     #[serde(default)]
     pub defaults: DefaultsConfig,
+    #[serde(default)]
+    pub orchestrator: OrchestratorConfig,
+    #[serde(default)]
+    pub multiplexer: MultiplexerConfig,
     /// Role-to-runtime mapping table. Agents with `role` resolve their runtime here.
     #[serde(default)]
     pub roles: Option<HashMap<String, String>>,
@@ -69,6 +73,62 @@ pub struct DefaultsConfig {
     pub worktree: bool,
     #[serde(default)]
     pub runtime: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OrchestratorConfig {
+    /// Terminal multiplexer backend used for agent sessions.
+    #[serde(default)]
+    pub multiplexer_type: MultiplexerType,
+}
+
+/// Supported terminal multiplexer backends.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiplexerType {
+    #[default]
+    Tmux,
+    Zellij,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MultiplexerConfig {
+    /// tmux-specific settings.
+    #[serde(default)]
+    pub tmux: TmuxMultiplexerConfig,
+    /// Zellij-specific settings.
+    #[serde(default)]
+    pub zellij: ZellijMultiplexerConfig,
+}
+
+/// tmux backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TmuxMultiplexerConfig {
+    /// Logical socket name reserved for future tmux namespacing.
+    #[serde(default = "default_tmux_socket_name")]
+    pub socket_name: String,
+    /// Preferred pane/window base index reserved for future tmux setup.
+    #[serde(default = "default_tmux_base_index")]
+    pub base_index: u32,
+}
+
+impl Default for TmuxMultiplexerConfig {
+    fn default() -> Self {
+        Self {
+            socket_name: default_tmux_socket_name(),
+            base_index: default_tmux_base_index(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZellijMultiplexerConfig {
+    /// Optional layout path for future Zellij session customization.
+    #[serde(default)]
+    pub layout_path: Option<String>,
+    /// Optional theme name exported to Zellij-launched sessions.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -489,6 +549,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_tmux_socket_name() -> String {
+    "tutti".to_string()
+}
+
+fn default_tmux_base_index() -> u32 {
+    1
+}
+
 fn default_threshold() -> f64 {
     0.2
 }
@@ -620,6 +688,12 @@ impl AgentConfig {
 impl TuttiConfig {
     /// Walk up from `start_dir` to find tutti.toml, then parse it.
     pub fn load(start_dir: &Path) -> Result<(Self, PathBuf)> {
+        let (config, path) = Self::load_without_side_effect(start_dir)?;
+        crate::multiplexer::set_current_config(&config);
+        Ok((config, path))
+    }
+
+    pub(crate) fn load_without_side_effect(start_dir: &Path) -> Result<(Self, PathBuf)> {
         let config_path = find_config(start_dir)?;
         let contents = std::fs::read_to_string(&config_path)?;
         let config: TuttiConfig =
@@ -1490,6 +1564,38 @@ runtime = "claude-code"
         assert_eq!(config.workspace.name, "test-project");
         assert_eq!(config.agents.len(), 1);
         assert_eq!(config.agents[0].name, "backend");
+        assert_eq!(config.orchestrator.multiplexer_type, MultiplexerType::Tmux);
+        assert_eq!(config.multiplexer.tmux.socket_name, "tutti");
+        assert_eq!(config.multiplexer.tmux.base_index, 1);
+    }
+
+    #[test]
+    fn parse_zellij_multiplexer_config() {
+        let toml_str = r#"
+[workspace]
+name = "test-project"
+
+[orchestrator]
+multiplexer_type = "zellij"
+
+[multiplexer.zellij]
+layout_path = "./.tutti/layouts/agent_default.kdl"
+theme = "dracula"
+
+[[agent]]
+name = "backend"
+runtime = "codex"
+"#;
+        let config: TuttiConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.orchestrator.multiplexer_type,
+            MultiplexerType::Zellij
+        );
+        assert_eq!(
+            config.multiplexer.zellij.layout_path.as_deref(),
+            Some("./.tutti/layouts/agent_default.kdl")
+        );
+        assert_eq!(config.multiplexer.zellij.theme.as_deref(), Some("dracula"));
     }
 
     #[test]

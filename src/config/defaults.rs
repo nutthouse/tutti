@@ -33,6 +33,18 @@ runtime = "claude-code"   # default runtime for agents
 # - constrained mode requires [permissions] in ~/.config/tutti/config.toml.
 # - mode = "unattended" + policy = "bypass" is highest autonomy and highest risk.
 
+# Terminal multiplexer settings (optional)
+# [orchestrator]
+# multiplexer_type = "tmux" # tmux | zellij
+#
+# [multiplexer.tmux]
+# socket_name = "tutti"
+# base_index = 1
+#
+# [multiplexer.zellij]
+# layout_path = "./.tutti/layouts/agent_default.kdl"
+# theme = "dracula"
+
 # Budget guardrails (optional, API profiles only)
 # [budget]
 # mode = "warn"                  # warn | enforce
