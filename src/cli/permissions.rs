@@ -240,6 +240,7 @@ fn suggest_workflow_permissions(
     let options = ExecuteOptions {
         strict: false,
         force_open_commands: false,
+        direct: false,
         command_policy: global.permissions.clone(),
         retry_policy: None,
         origin: ExecutionOrigin::Run,

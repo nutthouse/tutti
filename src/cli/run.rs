@@ -10,21 +10,24 @@ use crate::{budget, budget::BudgetGuardOutcome};
 use comfy_table::{Table, presets::UTF8_BORDERS_ONLY};
 use serde::Serialize;
 
-pub fn run(
-    workflow: Option<&str>,
-    resume: Option<&str>,
-    list: bool,
-    agent: Option<&str>,
-    json: bool,
-    strict: bool,
-    dry_run: bool,
-) -> Result<()> {
+pub struct RunRequest<'a> {
+    pub workflow: Option<&'a str>,
+    pub resume: Option<&'a str>,
+    pub list: bool,
+    pub agent: Option<&'a str>,
+    pub json: bool,
+    pub strict: bool,
+    pub dry_run: bool,
+    pub direct: bool,
+}
+
+pub fn run(request: RunRequest<'_>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (config, config_path) = TuttiConfig::load(&cwd)?;
     config.validate()?;
 
-    if list {
-        print_workflow_list(&config, json)?;
+    if request.list {
+        print_workflow_list(&config, request.json)?;
         return Ok(());
     }
 
@@ -32,7 +35,7 @@ pub fn run(
         TuttiError::ConfigValidation("could not determine workspace root".to_string())
     })?;
 
-    let resume_context = if let Some(run_id) = resume {
+    let resume_context = if let Some(run_id) = request.resume {
         load_resume_context(project_root, run_id)?
     } else {
         None
@@ -41,14 +44,14 @@ pub fn run(
     let workflow_name = if let Some(ctx) = resume_context.as_ref() {
         ctx.workflow_name.as_str()
     } else {
-        workflow.ok_or_else(|| {
+        request.workflow.ok_or_else(|| {
             TuttiError::ConfigValidation(
                 "workflow name is required unless --list or --resume is set".to_string(),
             )
         })?
     };
 
-    let effective_agent = agent.or_else(|| {
+    let effective_agent = request.agent.or_else(|| {
         resume_context
             .as_ref()
             .and_then(|r| r.agent_scope.as_deref())
@@ -56,7 +59,7 @@ pub fn run(
     let budget_outcome = budget::enforce_pre_exec(&config, project_root, "run", effective_agent)?;
     print_budget_warnings(&budget_outcome);
 
-    let effective_strict = strict || resume_context.as_ref().is_some_and(|r| r.strict);
+    let effective_strict = request.strict || resume_context.as_ref().is_some_and(|r| r.strict);
     let global = GlobalConfig::load().ok();
     let command_policy = global.as_ref().and_then(|g| g.permissions.clone());
     let retry_policy = global
@@ -66,6 +69,7 @@ pub fn run(
     let options = ExecuteOptions {
         strict: effective_strict,
         force_open_commands: false,
+        direct: request.direct,
         command_policy,
         retry_policy,
         origin: ExecutionOrigin::Run,
@@ -113,7 +117,7 @@ pub fn run(
         }
     }
 
-    if dry_run {
+    if request.dry_run {
         // Validate artifact_glob dependencies at dry-run time
         for (idx, step) in resolved.steps.iter().enumerate() {
             if let crate::automation::ResolvedStep::Prompt {
@@ -129,7 +133,7 @@ pub fn run(
                 )));
             }
         }
-        if json {
+        if request.json {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serialize_dry_run(&resolved, effective_strict))?
@@ -148,7 +152,7 @@ pub fn run(
         effective_agent,
         resume_context.as_ref(),
     )?;
-    if json {
+    if request.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print_execution_result(&result);
@@ -261,6 +265,30 @@ fn print_dry_run(workflow: &crate::automation::ResolvedWorkflow, strict: bool) {
                     truncate(&summary, 80),
                 ])
             }
+            ResolvedStep::Direct {
+                provider,
+                model,
+                policy,
+                text,
+                output_json,
+                ..
+            } => table.add_row(vec![
+                (idx + 1).to_string(),
+                "direct".to_string(),
+                "--".to_string(),
+                "workspace".to_string(),
+                "closed".to_string(),
+                truncate(
+                    &format!(
+                        "provider:{provider} model:{model} policy:{policy} prompt:{text}{}",
+                        output_json
+                            .as_ref()
+                            .map(|path| format!(" [output:{}]", path.display()))
+                            .unwrap_or_default()
+                    ),
+                    80,
+                ),
+            ]),
             crate::automation::ResolvedStep::Command {
                 run,
                 cwd,
@@ -357,6 +385,15 @@ enum DryRunStep {
         #[serde(skip_serializing_if = "Option::is_none")]
         artifact_name: Option<String>,
     },
+    Direct {
+        index: usize,
+        provider: String,
+        model: String,
+        policy: String,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_json: Option<String>,
+    },
     Command {
         index: usize,
         agent: Option<String>,
@@ -410,6 +447,21 @@ fn serialize_dry_run(workflow: &ResolvedWorkflow, strict: bool) -> DryRunPlan {
                 inject_files: inject_files.len(),
                 artifact_glob: artifact_glob.clone(),
                 artifact_name: artifact_name.clone(),
+            }),
+            ResolvedStep::Direct {
+                provider,
+                model,
+                policy,
+                text,
+                output_json,
+                ..
+            } => steps.push(DryRunStep::Direct {
+                index: idx + 1,
+                provider: provider.clone(),
+                model: model.clone(),
+                policy: policy.clone(),
+                summary: text.clone(),
+                output_json: output_json.as_ref().map(|path| path.display().to_string()),
             }),
             ResolvedStep::Command {
                 run,
@@ -605,5 +657,29 @@ mod tests {
             }
             _ => panic!("expected command"),
         }
+    }
+
+    #[test]
+    fn serialize_dry_run_contains_direct_metadata_and_prompt_summary() {
+        let workflow = ResolvedWorkflow {
+            name: "plan".to_string(),
+            description: None,
+            steps: vec![ResolvedStep::Direct {
+                step_id: Some("inspect".to_string()),
+                depends_on: vec![],
+                provider: "openai".to_string(),
+                model: "gpt-test".to_string(),
+                policy: "read_only".to_string(),
+                text: "Inspect the repository".to_string(),
+                output_json: None,
+            }],
+        };
+
+        let value = serde_json::to_value(serialize_dry_run(&workflow, false)).unwrap();
+        assert_eq!(value["steps"][0]["type"], "direct");
+        assert_eq!(value["steps"][0]["provider"], "openai");
+        assert_eq!(value["steps"][0]["model"], "gpt-test");
+        assert_eq!(value["steps"][0]["policy"], "read_only");
+        assert_eq!(value["steps"][0]["summary"], "Inspect the repository");
     }
 }

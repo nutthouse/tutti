@@ -77,6 +77,7 @@ impl ExecutionOrigin {
 pub struct ExecuteOptions {
     pub strict: bool,
     pub force_open_commands: bool,
+    pub direct: bool,
     pub command_policy: Option<PermissionsConfig>,
     pub retry_policy: Option<RetryPolicy>,
     pub origin: ExecutionOrigin,
@@ -193,9 +194,33 @@ impl<'a> WorkflowResolver<'a> {
                     startup_grace_secs,
                     artifact_glob,
                     artifact_name,
+                    direct,
+                    provider,
+                    model,
+                    policy,
                 } => {
                     let effective_agent = agent_override.unwrap_or(agent.as_str());
                     self.ensure_agent_exists(effective_agent)?;
+                    if options.direct || direct.unwrap_or(false) {
+                        let provider = resolve_direct_metadata(
+                            "provider",
+                            provider.as_deref(),
+                            options.direct,
+                        )?;
+                        let model =
+                            resolve_direct_metadata("model", model.as_deref(), options.direct)?;
+                        steps.push(ResolvedStep::Direct {
+                            step_id: id.clone(),
+                            depends_on: depends_on.clone(),
+                            provider,
+                            model,
+                            policy: policy.clone().unwrap_or_else(|| "read_only".to_string()),
+                            text: text.clone(),
+                            output_json: self
+                                .resolve_prompt_output_path(effective_agent, output_json)?,
+                        });
+                        continue;
+                    }
                     let session_name =
                         TmuxSession::session_name(&self.config.workspace.name, effective_agent);
                     let runtime = self
@@ -450,6 +475,18 @@ fn resolve_optional_path(cwd: &Path, maybe: Option<&str>) -> Option<PathBuf> {
     }
 }
 
+fn resolve_direct_metadata(field: &str, value: Option<&str>, forced: bool) -> Result<String> {
+    if let Some(value) = value {
+        return Ok(value.to_string());
+    }
+    if forced {
+        return Ok("default".to_string());
+    }
+    Err(TuttiError::ConfigValidation(format!(
+        "prompt step with direct = true requires {field}; set `{field} = \"...\"` or use `--direct --dry-run` to inspect placeholder resolution"
+    )))
+}
+
 fn effective_fail_mode(
     configured: Option<WorkflowFailMode>,
     strict: bool,
@@ -500,6 +537,15 @@ pub enum ResolvedStep {
         artifact_glob: Option<String>,
         artifact_name: Option<String>,
     },
+    Direct {
+        step_id: Option<String>,
+        depends_on: Vec<usize>,
+        provider: String,
+        model: String,
+        policy: String,
+        text: String,
+        output_json: Option<PathBuf>,
+    },
     Command {
         step_id: Option<String>,
         depends_on: Vec<usize>,
@@ -541,6 +587,7 @@ pub enum ResolvedStep {
 fn step_depends_on(step: &ResolvedStep) -> &[usize] {
     match step {
         ResolvedStep::Prompt { depends_on, .. } => depends_on,
+        ResolvedStep::Direct { depends_on, .. } => depends_on,
         ResolvedStep::Command { depends_on, .. } => depends_on,
         ResolvedStep::EnsureRunning { depends_on, .. } => depends_on,
         ResolvedStep::Workflow { depends_on, .. } => depends_on,
@@ -561,6 +608,7 @@ fn step_is_control(step: &ResolvedStep) -> bool {
 fn step_type_name(step: &ResolvedStep) -> &'static str {
     match step {
         ResolvedStep::Prompt { .. } => "prompt",
+        ResolvedStep::Direct { .. } => "direct",
         ResolvedStep::Command { .. } => "command",
         ResolvedStep::EnsureRunning { .. } => "ensure_running",
         ResolvedStep::Workflow { .. } => "workflow",
@@ -572,6 +620,7 @@ fn step_type_name(step: &ResolvedStep) -> &'static str {
 fn step_agent_name(step: &ResolvedStep) -> Option<&str> {
     match step {
         ResolvedStep::Prompt { agent, .. } => Some(agent),
+        ResolvedStep::Direct { .. } => None,
         ResolvedStep::Command { agent, .. } => agent.as_deref(),
         ResolvedStep::EnsureRunning { agent, .. } => Some(agent),
         ResolvedStep::Workflow { .. } => None,
@@ -595,7 +644,9 @@ fn sanitize_step_key(input: &str) -> String {
 
 fn step_file_key(step: &ResolvedStep, step_index: usize) -> String {
     let base = match step {
-        ResolvedStep::Prompt { step_id, .. } | ResolvedStep::Command { step_id, .. } => {
+        ResolvedStep::Prompt { step_id, .. }
+        | ResolvedStep::Direct { step_id, .. }
+        | ResolvedStep::Command { step_id, .. } => {
             step_id.as_deref().unwrap_or_else(|| step_type_name(step))
         }
         _ => step_type_name(step),
@@ -735,6 +786,19 @@ impl<'a> WorkflowExecutor<'a> {
         run_id: Option<&str>,
         resume: Option<&ResumeContext>,
     ) -> Result<ExecutionResult> {
+        if let Some((idx, _)) = workflow
+            .steps
+            .iter()
+            .enumerate()
+            .find(|(_, step)| matches!(step, ResolvedStep::Direct { .. }))
+        {
+            return Err(TuttiError::ConfigValidation(format!(
+                "workflow '{}' step {} uses direct execution, but direct execution is not implemented yet; use `tt run {} --dry-run` (optionally with `--json`) to inspect the plan",
+                workflow.name,
+                idx + 1,
+                workflow.name
+            )));
+        }
         let started_at = resume.map(|r| r.started_at).unwrap_or_else(Utc::now);
         let run_id = run_id
             .map(ToString::to_string)
@@ -840,6 +904,9 @@ impl<'a> WorkflowExecutor<'a> {
                     break;
                 }
                 match step {
+                    ResolvedStep::Direct { .. } => {
+                        unreachable!("direct steps are rejected before workflow execution")
+                    }
                     ResolvedStep::Prompt {
                         agent,
                         step_id,
@@ -2222,6 +2289,7 @@ impl<'a> WorkflowExecutor<'a> {
                         let nested_options = ExecuteOptions {
                             strict: *strict,
                             force_open_commands: options.force_open_commands,
+                            direct: options.direct,
                             command_policy: options.command_policy.clone(),
                             retry_policy: options.retry_policy,
                             origin: options.origin,
@@ -3737,6 +3805,18 @@ fn step_intent_payload(step: &ResolvedStep) -> Value {
             "artifact_glob": artifact_glob,
             "artifact_name": artifact_name,
         }),
+        ResolvedStep::Direct {
+            provider,
+            model,
+            policy,
+            text,
+            ..
+        } => json!({
+            "provider": provider,
+            "model": model,
+            "policy": policy,
+            "text_chars": text.chars().count(),
+        }),
         ResolvedStep::Command {
             run,
             cwd,
@@ -4689,6 +4769,7 @@ fn dispatch_agent_stop_hook(
     let options = ExecuteOptions {
         strict: false,
         force_open_commands: false,
+        direct: false,
         command_policy: load_command_policy(),
         retry_policy: load_retry_policy(),
         origin: ExecutionOrigin::HookAgentStop,
@@ -4766,6 +4847,7 @@ fn dispatch_workflow_complete_hook(
     let options = ExecuteOptions {
         strict: false,
         force_open_commands: false,
+        direct: false,
         command_policy: load_command_policy(),
         retry_policy: load_retry_policy(),
         origin: ExecutionOrigin::HookWorkflowComplete,
@@ -5085,6 +5167,125 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    fn prompt_workflow(
+        direct: Option<bool>,
+        provider: Option<&str>,
+        model: Option<&str>,
+        policy: Option<&str>,
+    ) -> WorkflowConfig {
+        WorkflowConfig {
+            name: "plan".to_string(),
+            description: None,
+            schedule: None,
+            steps: vec![WorkflowStepConfig::Prompt {
+                id: Some("inspect".to_string()),
+                depends_on: vec![],
+                agent: "backend".to_string(),
+                text: "Inspect the repository".to_string(),
+                inject_files: vec![],
+                output_json: None,
+                wait_for_idle: None,
+                wait_timeout_secs: None,
+                startup_grace_secs: None,
+                artifact_glob: None,
+                artifact_name: None,
+                direct,
+                provider: provider.map(str::to_string),
+                model: model.map(str::to_string),
+                policy: policy.map(str::to_string),
+            }],
+        }
+    }
+
+    fn run_options(direct: bool) -> ExecuteOptions {
+        ExecuteOptions {
+            strict: false,
+            force_open_commands: false,
+            direct,
+            command_policy: None,
+            retry_policy: None,
+            origin: ExecutionOrigin::Run,
+            hook_event: None,
+            hook_agent: None,
+        }
+    }
+
+    #[test]
+    fn resolver_selects_direct_step_from_prompt_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = sample_config(
+            prompt_workflow(Some(true), Some("openai"), Some("gpt-test"), None),
+            vec![],
+        );
+
+        let resolved = WorkflowResolver::new(&config, dir.path())
+            .resolve("plan", None, &run_options(false))
+            .unwrap();
+
+        match &resolved.steps[0] {
+            ResolvedStep::Direct {
+                provider,
+                model,
+                policy,
+                text,
+                ..
+            } => {
+                assert_eq!(provider, "openai");
+                assert_eq!(model, "gpt-test");
+                assert_eq!(policy, "read_only");
+                assert_eq!(text, "Inspect the repository");
+            }
+            _ => panic!("expected direct step"),
+        }
+    }
+
+    #[test]
+    fn resolver_cli_direct_override_uses_placeholder_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = sample_config(prompt_workflow(Some(false), None, None, None), vec![]);
+
+        let resolved = WorkflowResolver::new(&config, dir.path())
+            .resolve("plan", None, &run_options(true))
+            .unwrap();
+
+        match &resolved.steps[0] {
+            ResolvedStep::Direct {
+                provider,
+                model,
+                policy,
+                ..
+            } => {
+                assert_eq!(provider, "default");
+                assert_eq!(model, "default");
+                assert_eq!(policy, "read_only");
+            }
+            _ => panic!("expected direct step"),
+        }
+    }
+
+    #[test]
+    fn direct_step_execution_returns_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = sample_config(
+            prompt_workflow(Some(true), Some("openai"), Some("gpt-test"), None),
+            vec![],
+        );
+        let options = run_options(false);
+        let resolved = WorkflowResolver::new(&config, dir.path())
+            .resolve("plan", None, &options)
+            .unwrap();
+
+        let err = WorkflowExecutor::new(&config, dir.path())
+            .execute(&resolved, &options, None, None, None)
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("direct execution is not implemented")
+        );
+        assert!(err.to_string().contains("--dry-run"));
+    }
+
     #[test]
     fn command_fail_open_continues() {
         let workflow = WorkflowConfig {
@@ -5137,6 +5338,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -5207,6 +5409,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -5253,6 +5456,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: true,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Verify,
@@ -5297,6 +5501,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -5344,6 +5549,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -5389,6 +5595,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: Some(PermissionsConfig {
                 allow: vec!["git status".to_string()],
             }),
@@ -5469,6 +5676,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: Some(PermissionsConfig {
                 allow: vec!["git status".to_string()],
             }),
@@ -5528,6 +5736,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -5815,6 +6024,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -5971,6 +6181,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -6052,6 +6263,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -6134,6 +6346,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -6178,6 +6391,7 @@ mod tests {
         let opts = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,
@@ -6336,6 +6550,7 @@ mod tests {
         let options = ExecuteOptions {
             strict: false,
             force_open_commands: false,
+            direct: false,
             command_policy: None,
             retry_policy: None,
             origin: ExecutionOrigin::Run,

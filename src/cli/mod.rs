@@ -328,6 +328,10 @@ pub enum Commands {
         /// Print resolved steps without executing
         #[arg(long)]
         dry_run: bool,
+
+        /// Resolve prompt steps as API-direct steps (dry-run planning only)
+        #[arg(long)]
+        direct: bool,
     },
 
     /// Inspect SDLC run history
@@ -575,4 +579,19 @@ pub enum RemoteSubcommand {
     },
     /// Show registered remotes and their reachability
     Status,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_accepts_direct_flag() {
+        let cli = Cli::try_parse_from(["tt", "run", "verify", "--direct"]).unwrap();
+
+        match cli.command {
+            Commands::Run { direct, .. } => assert!(direct),
+            _ => panic!("expected run command"),
+        }
+    }
 }
