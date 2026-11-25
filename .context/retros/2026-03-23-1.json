@@ -1,0 +1,30 @@
+{
+  "date": "2026-03-23",
+  "window": "7d",
+  "metrics": {
+    "commits": 50,
+    "contributors": 2,
+    "prs_merged": 68,
+    "insertions": 17200,
+    "deletions": 938,
+    "net_loc": 16262,
+    "test_loc": 593,
+    "test_ratio": 0.03,
+    "active_days": 8,
+    "sessions": 18,
+    "deep_sessions": 8,
+    "avg_session_minutes": 55,
+    "loc_per_session_hour": 1000,
+    "feat_pct": 0.42,
+    "fix_pct": 0.14,
+    "peak_hour": 23,
+    "ai_assisted_commits": 42
+  },
+  "authors": {
+    "nutt-adam": { "commits": 42, "insertions": 15800, "deletions": 850, "test_ratio": 0.03, "top_area": "src/" },
+    "wren-nutthouse": { "commits": 8, "insertions": 1400, "deletions": 88, "test_ratio": 0.05, "top_area": "src/automation/" }
+  },
+  "version_range": ["0.3.0", "0.9.0"],
+  "streak_days": 12,
+  "tweetable": "Week of Mar 16: 50 commits, 17.2k LOC, 68 PRs merged, v0.3.0→v0.9.0, 12-day shipping streak | 2 contributors"
+}
